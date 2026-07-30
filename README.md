@@ -1,10 +1,41 @@
-# Local Agents
+<h1 align="center">Foreman Stack</h1>
 
-Local source of truth and installer for coding-agent configuration. The `agents` CLI installs selected resources transactionally into a home directory while preserving unrelated files and private runtime state.
+<p align="center">
+  <strong>A handcrafted, open-source stack of agentic coding tools for high-quality engineering work.</strong>
+</p>
 
-## Local setup
+<p align="center">
+  Skills · prompts · Pi extensions · teams · themes · instructions · safe installation
+</p>
 
-Prerequisites: Node.js 22.19.0 or newer, npm, Git, and Pi 0.83.0 for Pi resources. No registry publication or remote is required.
+The **Foreman Stack** is the reusable coding-agent setup behind a productive, quality-first
+engineering workflow. It packages the small tools, habits, and guardrails that make agent work
+more deliberate: plan before changing, delegate with context, keep durable memory, review deeply,
+and make every mutation reversible.
+
+It has been handcrafted and battle-tested through real enterprise engineering work. The goal is
+not to hide a magic prompt. The goal is to share a complete, inspectable foundation that you can
+adapt to your own team, repositories, and standards.
+
+## What is included
+
+- **Pi configuration** with extensions for planning, subagents, teams, worktrees, checkpoints,
+  memory, jobs, LSP navigation, usage, and focused transcript workflows.
+- **Engineering skills** for planning, pull requests, deep code review, specialist review,
+  GitHub workflows, and estimation readiness.
+- **Prompts, teams, themes, and instructions** that coordinate repeatable work across supported
+  coding-agent harnesses.
+- **The `agents` CLI**, which installs selected components transactionally into an alternate home,
+  preserves unrelated files, and supports status, diagnostics, removal, backup, and rollback.
+
+The public repository contains the reusable harness. Personal model choices, MCP endpoints,
+keybindings, and other private Pi settings stay local and are intentionally excluded from the
+public package. That boundary lets you reproduce the workflow without publishing credentials,
+sessions, or personal runtime state.
+
+## Quick start
+
+Prerequisites: Node.js 22.19.0 or newer, npm, Git, and Pi 0.83.0 for Pi resources.
 
 ```bash
 npm ci
@@ -13,71 +44,79 @@ npm link
 agents
 ```
 
-`npm link` exposes the locally built `agents` command. Run `npm unlink --global @anjulgarg/agents` to remove that link. Rebuild after source changes, and run `/reload` in each active Pi session after changing installed Pi resources.
-
-## Commands
+The interactive dashboard lets you select a profile or individual component. For a quick install
+of the default profile:
 
 ```bash
-agents                              # interactive dashboard
-agents install --yes                # default profile
-agents install --profile pi --yes
+agents install --yes
+```
+
+For a disposable or alternate home, always pass `--home`:
+
+```bash
+agents install --profile pi --home /absolute/fixture-home --yes
+agents doctor --home /absolute/fixture-home
+```
+
+Use `agents list` to inspect availability and drift. Use `agents doctor` when something looks
+unexpected. Every mutation presents a plan, requires confirmation unless `--yes` is supplied, and
+can roll back a failed transaction.
+
+## Profiles and components
+
+| Profile   | Includes                                          |
+| --------- | ------------------------------------------------- |
+| `default` | Every approved component available in the catalog |
+| `pi`      | Pi resources plus shared instructions             |
+| `skills`  | All retained cross-harness skills                 |
+
+Components can also be selected directly:
+
+```bash
 agents install --category skill --yes
 agents install --component skill:pr --yes
 agents remove --component skill:pr --yes
-agents remove --profile skills --yes
 agents list
 agents doctor
 ```
 
-Mutations show a plan before applying it. Interactive use asks for confirmation; scripts must pass `--yes`. Add `--home /absolute/fixture-home` to every command to operate on a disposable or alternate home. Add `--json` to `list`, `doctor`, or a confirmed mutation for schema-versioned output. `--debug` adds stack details to errors.
+The catalog covers `skill`, `pi-extension`, `pi-config`, `pi-package`, `pi-prompt`, `pi-theme`,
+`pi-team`, `instructions`, and `harness` resources. Dependencies are resolved automatically.
 
-### Interactive keys
-
-- Dashboard: Up/Down, Enter to open, Escape to cancel, Ctrl+C to quit.
-- Selection: Up/Down, Space to toggle, A for all visible, C for the category, X to clear, Tab/Shift+Tab to change category.
-- Selection shortcuts: 1 default, 2 Pi, 3 skills, `/` search, F installed-only, Enter review.
-- Preview and confirmation: Enter continues, Y applies, N or Escape cancels.
-
-The interface requires at least 60 columns and never relies on color alone.
-
-## Profiles and categories
-
-Profiles are `default` for every approved component, `pi` for Pi resources plus shared instructions, and `skills` for all retained cross-harness skills. Categories are `skill`, `pi-extension`, `pi-config`, `pi-package`, `pi-prompt`, `pi-theme`, `pi-team`, `instructions`, and `harness`. Dependencies are added automatically, such as the subagent extension for the product team.
-
-`agents list` reports:
-
-- `available`: not installed and ready to select.
-- `installed`: all outputs match this repository.
-- `drifted`: an installed output differs from source.
-- `partial`: only some outputs match.
-- `unavailable`: an output cannot be inspected safely, often because JSON is malformed.
-- `managed`: recorded in the current receipt; `legacy detected` identifies an approved old direct copy; `unmanaged` remains outside CLI ownership.
-
-## Doctor, removal, and recovery
-
-Run `agents doctor --home <home>` after installation or whenever status is unexpected. It checks runtimes, required commands and pinned packages, component integrity, stale filters, receipts, and legacy copies without reading sessions, credentials, caches, or other private state.
-
-Removal is selective and preserves unknown resources and unowned JSON. Preview it interactively or use explicit selection with `--yes`; bare noninteractive removal is refused. Reinstalling a drifted component restores the repository version transactionally.
-
-On a normal failure, inspect the message, run `agents doctor`, and retry after fixing the cause. Automatic rollback leaves the fixture unchanged. If `rollback-failed` is reported, preserve the printed recovery backup and restore it manually before retrying. For migration, live backup, pre-cutover restoration, and unlink steps, follow [Migration and recovery](docs/migration-and-recovery.md).
-
-## Repository guide
+## Explore the stack
 
 - [Architecture and component catalog](docs/architecture.md)
 - [Migration and recovery](docs/migration-and-recovery.md)
+- [Pi resources](pi/)
+- [Skills](skills/)
+- [Prompts](prompts/)
+- [Teams](teams/)
+- [Harness integrations](harnesses/)
 
-Pi-only resources live in `pi/`, including extensions, themes, and keybindings. The personal Pi settings, model overrides, and MCP configuration files under `pi/config/` are intentionally local-only and ignored from the public repository. Other runtime resources live in `harnesses/`, `instructions/`, `prompts/`, `skills/`, and `teams/`. Never add credentials, authentication, sessions, state, caches, or other private runtime files.
-
-## Development checks
+## Development
 
 ```bash
-npm run format:check
-npm run lint
-npm run typecheck
-npm test
+npm ci
+npm run check
 npm run test:e2e
-npm run build
 npm run pack:check
 ```
 
-The E2E suite uses a unique temporary home per test, runs offline, and never mutates the live home or the dotfiles repository. Live model-call smoke files are intentionally excluded from normal checks.
+`npm run check` audits the repository, checks formatting and lint, type-checks, runs tests, tests
+extensions, and builds the CLI. The end-to-end suite runs offline with unique temporary homes and
+never mutates a real home directory.
+
+## Principles
+
+The Foreman Stack is opinionated about the parts that protect engineering quality:
+
+- **Inspect before editing.** Understand the repository and define done first.
+- **Make work legible.** Keep plans, progress, decisions, and failures visible.
+- **Delegate deliberately.** Give every worker a bounded task, context, and verification target.
+- **Protect the operator.** Preserve unknown files, private state, and unowned configuration.
+- **Prefer reversible changes.** Use confirmation, backups, receipts, locking, and rollback.
+- **Share the method.** The resources are open for inspection, adaptation, and contribution.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

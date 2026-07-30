@@ -38,8 +38,8 @@ minimalMode({
 		handlers.set(event, list);
 	},
 } as any);
-const emit = (event: string, payload: any = {}) => {
-	for (const handler of handlers.get(event) ?? []) handler(payload, {});
+const emit = (event: string, payload: any = {}, ctx: any = {}) => {
+	for (const handler of handlers.get(event) ?? []) handler(payload, ctx);
 };
 const emitResults = async (event: string, payload: any): Promise<unknown[]> =>
 	Promise.all((handlers.get(event) ?? []).map((handler) => handler(payload, {})));
@@ -495,6 +495,130 @@ assert(
 	JSON.stringify({ runningEdit, completedEdit }),
 );
 
+const secondEditArgs = { path: "src/b.ts", edits: [] };
+const secondEditContext = renderContext("edit-two", secondEditArgs, { isPartial: false });
+const secondEditResult = {
+	content: [{ type: "text", text: "Successfully replaced 1 block" }],
+	details: { diff: "-20 old line\n+20 new line" },
+};
+const groupedEdits =
+	editTool
+		.renderResult?.(
+			secondEditResult,
+			{ expanded: false, isPartial: false },
+			theme,
+			secondEditContext,
+		)
+		.render(100) ?? [];
+const hiddenFirstEdit =
+	editTool
+		.renderResult?.(
+			{
+				content: [{ type: "text", text: "Successfully replaced 1 block" }],
+				details: { diff: "-10 old first line\n+10 new first line\n+11 another line" },
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			editContext,
+		)
+		.render(100) ?? [];
+const expandedSecondEdit =
+	editTool
+		.renderResult?.(secondEditResult, { expanded: true, isPartial: false }, theme, {
+			...secondEditContext,
+			expanded: true,
+		})
+		.render(100)
+		.join("\n") ?? "";
+assert(
+	"consecutive successful edit receipts group while expanded diffs stay local",
+	groupedEdits.length === 3 &&
+		groupedEdits[0]?.trim() === "edit" &&
+		groupedEdits[1]?.includes("├─ src/a.ts · +2 −1") &&
+		groupedEdits[2]?.includes("└─ src/b.ts · +1 −1") &&
+		hiddenFirstEdit.length === 0 &&
+		expandedSecondEdit.includes("20 old line") &&
+		expandedSecondEdit.includes("20 new line"),
+	JSON.stringify({ groupedEdits, hiddenFirstEdit, expandedSecondEdit }),
+);
+
+const failedEditArgs = { path: "src/fail.ts", edits: [] };
+const failedEditContext = renderContext("edit-failed", failedEditArgs, {
+	isPartial: false,
+	isError: true,
+});
+const failedEdit =
+	editTool
+		.renderResult?.(
+			{ content: [{ type: "text", text: "oldText not found" }], details: {} },
+			{ expanded: false, isPartial: false },
+			theme,
+			failedEditContext,
+		)
+		.render(100) ?? [];
+const afterFailureArgs = { path: "src/after-failure.ts", edits: [] };
+const afterFailureContext = renderContext("edit-after-failure", afterFailureArgs, {
+	isPartial: false,
+});
+const afterFailedEdit =
+	editTool
+		.renderResult?.(
+			{ content: [{ type: "text", text: "done" }], details: {} },
+			{ expanded: false, isPartial: false },
+			theme,
+			afterFailureContext,
+		)
+		.render(100) ?? [];
+editTool
+	.renderResult?.(
+		{ content: [{ type: "text", text: "oldText not found" }], details: {} },
+		{ expanded: false, isPartial: false },
+		theme,
+		failedEditContext,
+	)
+	.render(100);
+const afterFailureSecondArgs = { path: "src/after-failure-two.ts", edits: [] };
+const afterFailureSecondContext = renderContext("edit-after-failure-two", afterFailureSecondArgs, {
+	isPartial: false,
+});
+const groupedAfterFailure =
+	editTool
+		.renderResult?.(
+			{ content: [{ type: "text", text: "done" }], details: {} },
+			{ expanded: false, isPartial: false },
+			theme,
+			afterFailureSecondContext,
+		)
+		.render(100) ?? [];
+emit("tool_execution_start", { toolName: "write", toolCallId: "write-boundary" });
+const afterBoundaryArgs = { path: "src/after-write.ts", edits: [] };
+const afterBoundaryContext = renderContext("edit-after-write", afterBoundaryArgs, {
+	isPartial: false,
+});
+const afterWriteBoundary =
+	editTool
+		.renderResult?.(
+			{ content: [{ type: "text", text: "done" }], details: {} },
+			{ expanded: false, isPartial: false },
+			theme,
+			afterBoundaryContext,
+		)
+		.render(100) ?? [];
+assert(
+	"failed edits stay standalone and ungrouped tools split successful receipts",
+	failedEdit.length === 1 &&
+		failedEdit[0]?.includes("× edit src/fail.ts") &&
+		afterFailedEdit.length === 1 &&
+		afterFailedEdit[0]?.includes("edit src/after-failure.ts") &&
+		groupedAfterFailure.length === 3 &&
+		groupedAfterFailure[1]?.includes("├─ src/after-failure.ts") &&
+		groupedAfterFailure[2]?.includes("└─ src/after-failure-two.ts") &&
+		afterWriteBoundary.length === 1 &&
+		afterWriteBoundary[0]?.includes("edit src/after-write.ts"),
+	JSON.stringify({ failedEdit, afterFailedEdit, groupedAfterFailure, afterWriteBoundary }),
+);
+
+emit("session_start");
 const pathStyles: Array<{ color: string; text: string }> = [];
 const trackingTheme = {
 	fg: (color: string, text: string) => {
@@ -527,6 +651,74 @@ assert(
 	pathStyles.length >= 4 && pathStyles.every(({ color }) => color === "muted"),
 	JSON.stringify(pathStyles),
 );
+
+const historicalBranch = [
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "edit-history-1", name: "edit", arguments: {} }],
+		},
+	},
+	{
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolCallId: "edit-history-1",
+			toolName: "edit",
+			content: [],
+		},
+	},
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "edit-history-2", name: "edit", arguments: {} }],
+		},
+	},
+];
+emit("session_start", {}, { sessionManager: { getBranch: () => historicalBranch } });
+const historicalEditResult = {
+	content: [{ type: "text", text: "done" }],
+	details: { diff: "-1 old\n+1 new" },
+};
+const historicalEditOneContext = renderContext(
+	"edit-history-1",
+	{ path: "src/history-one.ts", edits: [] },
+	{ executionStarted: false, isPartial: false },
+);
+const historicalEditTwoContext = renderContext(
+	"edit-history-2",
+	{ path: "src/history-two.ts", edits: [] },
+	{ executionStarted: false, isPartial: false },
+);
+const historicalEditOne =
+	editTool
+		.renderResult?.(
+			historicalEditResult,
+			{ expanded: false, isPartial: false },
+			theme,
+			historicalEditOneContext,
+		)
+		.render(100) ?? [];
+const historicalEditTwo =
+	editTool
+		.renderResult?.(
+			historicalEditResult,
+			{ expanded: false, isPartial: false },
+			theme,
+			historicalEditTwoContext,
+		)
+		.render(100) ?? [];
+assert(
+	"restored consecutive edit receipts retain their tree topology",
+	historicalEditOne.length === 0 &&
+		historicalEditTwo.length === 3 &&
+		historicalEditTwo[1]?.includes("├─ src/history-one.ts · +1 −1") &&
+		historicalEditTwo[2]?.includes("└─ src/history-two.ts · +1 −1"),
+	JSON.stringify({ historicalEditOne, historicalEditTwo }),
+);
+emit("session_start");
 
 const grepArgs = { pattern: "needle", path: "/missing" };
 const grepContext = renderContext("grep-failed", grepArgs, { isPartial: false, isError: true });

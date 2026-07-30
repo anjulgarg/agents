@@ -5,7 +5,6 @@ import { auditRepository } from "../../scripts/audit-repository.ts";
 
 const root = process.cwd();
 const retainedSkills = [
-	"deep-code-review",
 	"foreman-plan",
 	"foreman-review",
 	"foreman-worker",
@@ -19,7 +18,7 @@ describe("approved first-party inventory", () => {
 	it("passes the repository audit with exact category counts", async () => {
 		const result = await auditRepository(root);
 		expect(result.failures).toEqual([]);
-		expect(result.summary).toMatchObject({ skills: 8, extensions: 28, prompts: 1, themes: 1 });
+		expect(result.summary).toMatchObject({ skills: 7, extensions: 28, prompts: 1, themes: 1 });
 		expect(result.summary.sourceBytes).toBeLessThanOrEqual(2.5 * 1024 * 1024);
 	});
 

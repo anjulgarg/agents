@@ -85,7 +85,6 @@
       "pi/extensions/worktree.ts"
     ],
     "skills": [
-      "skills/deep-code-review",
       "skills/foreman-plan",
       "skills/foreman-review",
       "skills/foreman-worker",

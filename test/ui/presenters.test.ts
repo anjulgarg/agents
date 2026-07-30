@@ -15,7 +15,6 @@ import {
 import { FakeServices, inspection } from "./fakes.ts";
 
 const statuses = inspection({
-	"skill:deep-code-review": { status: "available", managed: false },
 	"skill:foreman-plan": { status: "installed", managed: true },
 	"skill:foreman-review": { status: "drifted", managed: false, legacy: true },
 	"skill:foreman-worker": { status: "partial", managed: true },
@@ -65,7 +64,7 @@ describe("semantic responsive renders", () => {
 				selection: renderSelector(
 					{
 						operation: "install",
-						selected: new Set(["skill:deep-code-review"] as const),
+						selected: new Set(["skill:foreman-plan"] as const),
 						visible: components.slice(0, 3),
 						inspections: byInspection,
 						focus: 0,

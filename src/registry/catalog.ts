@@ -22,7 +22,6 @@ export const localPiConfigFiles = {
 } as const;
 
 const skills = [
-	"deep-code-review",
 	"foreman-plan",
 	"foreman-review",
 	"foreman-worker",

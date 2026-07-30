@@ -1,9 +1,9 @@
 /**
  * Compact built-in tool rendering for the default Pi transcript.
  *
- * Stable inspection calls soft-group by consecutive exact tool name. Active
- * rows shimmer, Bash/mutation receipts stay individually visible, and full
- * output remains behind Ctrl+O. Failures remain visible without expansion.
+ * Stable inspection calls and successful edit receipts soft-group by exact
+ * tool name. Active rows shimmer, Bash/write receipts stay individually
+ * visible, and full output remains behind Ctrl+O. Failures stay attributable.
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -311,8 +311,10 @@ async function ensureRipgrep(warmUp: () => Promise<unknown>): Promise<string> {
 
 export default function (pi: ExtensionAPI) {
 	const bashDurations = new Map<string, number>();
-	const inspectionGroupTracker = new SoftGroupTracker();
-	bindSoftGroupTracker(pi as any, inspectionGroupTracker, ["read", "find", "grep", "ls"]);
+	const isolatedEditFailures = new Set<string>();
+	const toolGroupTracker = new SoftGroupTracker();
+	bindSoftGroupTracker(pi as any, toolGroupTracker, ["read", "find", "grep", "ls", "edit"]);
+	pi.on("session_start", () => isolatedEditFailures.clear());
 
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "bash") return;
@@ -351,7 +353,7 @@ export default function (pi: ExtensionAPI) {
 				const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
 				pathSummary += `:${startLine}${endLine ? `-${endLine}` : ""}`;
 			}
-			return renderToolCallLine(inspectionGroupTracker, theme, "read", "", context, pathSummary);
+			return renderToolCallLine(toolGroupTracker, theme, "read", "", context, pathSummary);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
@@ -571,14 +573,32 @@ export default function (pi: ExtensionAPI) {
 		renderResult(result, { expanded, isPartial }, theme, context) {
 			const activity = syncToolActivity(context);
 			const diff = (result.details as { diff?: unknown } | undefined)?.diff;
+			const path = shortenPath(context.args.path || "") || "...";
+			const stats = diffStats(typeof diff === "string" ? diff : undefined);
+			const details = [stats, formatToolDuration(activity.elapsedMs)].filter(Boolean).join(" · ");
+			let receipt: Component | undefined;
+			if (!isPartial) {
+				const toolCallId = context.toolCallId?.trim();
+				if (context.isError && toolCallId && !isolatedEditFailures.has(toolCallId)) {
+					isolatedEditFailures.add(toolCallId);
+					if (!toolGroupTracker.has(toolCallId)) {
+						toolGroupTracker.seedItem({ groupId: "edit", toolCallId, label: "edit" });
+					}
+				}
+				receipt = renderToolCallLine(
+					toolGroupTracker,
+					theme,
+					"edit",
+					`${path}${details ? ` · ${details}` : ""}`,
+					{ ...context, expanded },
+				);
+			}
+
 			if (!expanded) {
 				if (isPartial) return emptyCollapsedToolRender();
-				const path = shortenPath(context.args.path || "") || "...";
-				const stats = diffStats(typeof diff === "string" ? diff : undefined);
-				const details = [stats, formatToolDuration(activity.elapsedMs)].filter(Boolean).join(" · ");
-				const prefix = context.isError ? `${theme.fg("error", "×")} ` : "";
+				if (!context.isError) return receipt ?? emptyCollapsedToolRender();
 				return new Text(
-					`${prefix}${theme.fg("toolTitle", "edit")} ${theme.fg("muted", path)}` +
+					`${theme.fg("error", "×")} ${theme.fg("toolTitle", "edit")} ${theme.fg("muted", path)}` +
 						theme.fg("muted", details ? ` · ${details}` : ""),
 					CHAT_PADDING,
 					0,
@@ -619,7 +639,7 @@ export default function (pi: ExtensionAPI) {
 			const path = shortenPath(args.path || ".");
 			const limit = args.limit !== undefined ? ` · limit ${args.limit}` : "";
 			return renderToolCallLine(
-				inspectionGroupTracker,
+				toolGroupTracker,
 				theme,
 				"find",
 				`${pattern}${limit}`,
@@ -708,14 +728,7 @@ export default function (pi: ExtensionAPI) {
 				.filter(Boolean)
 				.join(" · ");
 			const summary = `/${pattern}/${details ? ` · ${details}` : ""}`;
-			return renderToolCallLine(
-				inspectionGroupTracker,
-				theme,
-				"grep",
-				summary,
-				context,
-				`in ${path}`,
-			);
+			return renderToolCallLine(toolGroupTracker, theme, "grep", summary, context, `in ${path}`);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
@@ -760,7 +773,7 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args, theme, context) {
 			const path = shortenPath(args.path || ".");
 			const summary = `${path}${args.limit !== undefined ? ` · limit ${args.limit}` : ""}`;
-			return renderToolCallLine(inspectionGroupTracker, theme, "ls", "", context, summary);
+			return renderToolCallLine(toolGroupTracker, theme, "ls", "", context, summary);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {

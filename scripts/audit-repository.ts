@@ -4,7 +4,6 @@ import { parseArgs } from "node:util";
 
 const MAX_SOURCE_BYTES = 2.5 * 1024 * 1024;
 const EXPECTED_SKILLS = [
-	"deep-code-review",
 	"foreman-plan",
 	"foreman-review",
 	"foreman-worker",
