@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": false,
+    "noEmit": false,
+    "noCheck": true
+  },
+  "include": [
+    "cli.ts",
+    "src/**/*.ts",
+    "pi/extensions/**/*.ts",
+    "harnesses/**/*.ts",
+    "scripts/**/*.ts",
+    "skills/**/*.ts"
+  ],
+  "exclude": ["dist", "node_modules", "test", "**/*.test.ts", "**/*.smoke.ts", "**/*.e2e.ts"]
+}

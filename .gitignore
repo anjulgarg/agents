@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+docs/plans/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example

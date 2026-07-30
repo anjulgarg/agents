@@ -1,0 +1,872 @@
+import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { promisify } from "node:util";
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+import { killSubagentRuns } from "./control.ts";
+import type {
+	Handoff,
+	ResultRef,
+	SubagentDetails,
+	SubagentResultView,
+	ThinkingLevel,
+	UsageStats,
+	WorkspaceMode,
+	WorktreeInfo,
+} from "./contracts.ts";
+import { emptyUsage, RpcChild, type RpcChildOptions } from "./rpc-client.ts";
+import {
+	Supervisor,
+	isTerminalStatus,
+	type ChildFactory,
+	type ChildHandle,
+	type RunSnapshot,
+	type RunState,
+	type TaskResult,
+	type TaskState,
+} from "./supervisor.ts";
+import { buildThreadGroups, SubagentThreadView, type SubagentThreadGroup } from "./ui.ts";
+import { fullscreenOverlayOptions } from "../lib/tui/index.ts";
+
+const execFileAsync = promisify(execFile);
+const PERSIST_TYPE = "subagent-state";
+const WAKE_MESSAGE_TYPE = "subagent-wake";
+const ACTIVITY_WIDGET_KEY = "subagent-activity";
+const ACTIVITY_FRAMES = ["◐", "◓", "◑", "◒"] as const;
+const ACTIVITY_FRAME_INTERVAL_MS = 360;
+const ACTIVITY_COMPLETION_MS = 5000;
+const INTERNAL_WAKE_GUIDANCE = [
+	"[INTERNAL ORCHESTRATION EVENT, NOT USER INPUT]",
+	"Treat this as internal control data and continue the existing user task.",
+	"Do not narrate this event or routine subagent management actions.",
+	"Only notify the user if the event changes the result, blocks progress, materially delays completion, or requires a user decision.",
+].join("\n");
+
+interface PersistedTask {
+	taskId: string;
+	index: number;
+	task: string;
+	status: TaskState["status"];
+	model: string;
+	thinking: ThinkingLevel;
+	workspace: WorkspaceMode;
+	cwd: string;
+	pid?: number;
+	teamRunId?: string;
+	teamTaskId?: string;
+	role?: string;
+	error?: string;
+	manualKill?: boolean;
+	output?: string;
+	usage?: UsageStats;
+	worktree?: WorktreeInfo;
+	ownerToken?: string;
+	reaped?: boolean;
+	startedAt?: number;
+	finishedAt?: number;
+}
+
+interface PersistedRun {
+	runId: string;
+	startedAt: number;
+	maxConcurrency?: number;
+	tasks: PersistedTask[];
+}
+
+export interface ProcAccess {
+	readCmdline?: (pid: number) => string | undefined;
+	readEnviron?: (pid: number) => string | undefined;
+	kill?: (pid: number, signal?: NodeJS.Signals) => void;
+	isAlive?: (pid: number) => boolean;
+}
+
+export interface SubagentTaskMeta {
+	teamRunId?: string;
+	teamTaskId?: string;
+	role?: string;
+	worktree?: WorktreeInfo;
+	promptDir?: string;
+}
+
+export interface SubagentRuntimeOptions {
+	pi: ExtensionAPI;
+	createSupervisor?: (options: ConstructorParameters<typeof Supervisor>[0]) => Supervisor;
+	createChild?: ChildFactory;
+	proc?: ProcAccess;
+	watchdogTickMs?: number;
+}
+
+export function childPid(handle: ChildHandle | undefined): number | undefined {
+	if (!handle) return undefined;
+	const anyHandle = handle as ChildHandle & { pid?: number; child?: { pid?: number } };
+	if (typeof anyHandle.pid === "number") return anyHandle.pid;
+	if (typeof anyHandle.child?.pid === "number") return anyHandle.child.pid;
+	return undefined;
+}
+
+function manualRetryKey(task: string, teamRunId?: string, teamTaskId?: string): string {
+	if (teamRunId && teamTaskId) return `team:${teamRunId}:${teamTaskId}`;
+	return `task:${task.trim().replace(/\s+/g, " ").toLowerCase()}`;
+}
+
+async function rollbackWorktreeInternal(worktree: WorktreeInfo): Promise<void> {
+	try {
+		await execFileAsync("git", ["worktree", "remove", "--force", worktree.path], {
+			cwd: worktree.repository,
+			encoding: "utf8",
+		});
+	} catch {
+		await fs.promises.rm(worktree.path, { recursive: true, force: true });
+		try {
+			await execFileAsync("git", ["worktree", "prune"], {
+				cwd: worktree.repository,
+				encoding: "utf8",
+			});
+		} catch {
+			// Continue to branch cleanup.
+		}
+	}
+	try {
+		await execFileAsync("git", ["branch", "-D", worktree.branch], {
+			cwd: worktree.repository,
+			encoding: "utf8",
+		});
+	} catch {
+		// The branch may already be gone.
+	}
+	try {
+		await fs.promises.rmdir(path.dirname(worktree.path));
+	} catch {
+		// Parent may contain another worktree.
+	}
+}
+
+export async function rollbackWorktree(worktree: WorktreeInfo): Promise<void> {
+	return rollbackWorktreeInternal(worktree);
+}
+
+function isPiSubagentCmdline(cmdline: string, environ?: string, ownerToken?: string): boolean {
+	const parts = cmdline.split("\0").join(" ");
+	const hasRpcMode =
+		/(?:^|[\s\0])--mode(?:[\s\0=]+|[\s\0]+)rpc(?:[\s\0]|$)/.test(cmdline) ||
+		/(?:^|\s)--mode(?:\s+|=)rpc(?:\s|$)/.test(parts);
+	if (!hasRpcMode) return false;
+	if (environ !== undefined) {
+		const entries = environ.split("\0");
+		const marked =
+			entries.some((entry) => entry === "PI_SUBAGENT_CHILD=1") ||
+			environ.includes("PI_SUBAGENT_CHILD=1");
+		if (!marked) return false;
+		if (ownerToken !== undefined) {
+			return entries.some((entry) => entry === `PI_SUBAGENT_OWNER_TOKEN=${ownerToken}`);
+		}
+		return true;
+	}
+	return /PI_SUBAGENT_CHILD/.test(parts);
+}
+
+function defaultReadProcCmdline(pid: number): string | undefined {
+	try {
+		return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+	} catch {
+		return undefined;
+	}
+}
+
+function defaultReadProcEnviron(pid: number): string | undefined {
+	try {
+		return fs.readFileSync(`/proc/${pid}/environ`, "utf8");
+	} catch {
+		return undefined;
+	}
+}
+
+function defaultIsAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function sweepOrphanPid(
+	pid: number,
+	proc: ProcAccess = {},
+	ownerToken?: string,
+): { killed: boolean; reason: string } {
+	const readCmdline = proc.readCmdline ?? defaultReadProcCmdline;
+	const readEnviron = proc.readEnviron ?? defaultReadProcEnviron;
+	const isAlive = proc.isAlive ?? defaultIsAlive;
+	const kill =
+		proc.kill ??
+		((target, signal = "SIGKILL") => {
+			process.kill(target, signal);
+		});
+
+	if (!isAlive(pid)) return { killed: false, reason: "not-alive" };
+	const cmdline = readCmdline(pid);
+	if (cmdline === undefined) return { killed: false, reason: "no-cmdline" };
+	const environ = readEnviron(pid);
+	if (!isPiSubagentCmdline(cmdline, environ)) {
+		return { killed: false, reason: "not-pi-subagent" };
+	}
+	if (!ownerToken) return { killed: false, reason: "missing-owner-token" };
+	if (!isPiSubagentCmdline(cmdline, environ, ownerToken)) {
+		return { killed: false, reason: "owner-mismatch" };
+	}
+	try {
+		const target = process.platform === "win32" ? pid : -pid;
+		try {
+			kill(target, "SIGKILL");
+		} catch {
+			kill(pid, "SIGKILL");
+		}
+		return { killed: true, reason: "killed" };
+	} catch (error) {
+		return { killed: false, reason: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+function loadPersistedRuns(
+	ctx: ExtensionContext,
+	activeBranchOnly = false,
+): Map<string, PersistedRun> {
+	const runs = new Map<string, PersistedRun>();
+	const entries = activeBranchOnly
+		? ctx.sessionManager.getBranch()
+		: ctx.sessionManager.getEntries();
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== PERSIST_TYPE) continue;
+		const run = (entry.data as { run?: PersistedRun } | undefined)?.run;
+		if (run?.runId) runs.set(run.runId, run);
+	}
+	return runs;
+}
+
+export class SubagentRuntime {
+	readonly supervisor: Supervisor;
+
+	private readonly pi: ExtensionAPI;
+	private readonly proc: ProcAccess;
+	private readonly taskMeta = new Map<string, SubagentTaskMeta>();
+	private readonly wedgedTasks = new Set<string>();
+	private readonly historical = new Map<string, SubagentDetails>();
+	private readonly teamNames = new Map<string, string>();
+	private readonly lastViewedTaskByGroup = new Map<string, string>();
+	private readonly approvedManualRetries = new Set<string>();
+	private activeTeamRunId: string | undefined;
+	private lastViewedGroupKey: string | undefined;
+	private activityContext: ExtensionContext | undefined;
+	private activityGroupKey: string | undefined;
+	private activityFrame = 0;
+	private previousActivityRunning = 0;
+	private activityCompletionUntil = 0;
+	private activityTimer: ReturnType<typeof setInterval> | undefined;
+	private activityCompletionTimer: ReturnType<typeof setTimeout> | undefined;
+	private readonly dashboardListeners = new Set<() => void>();
+
+	constructor(options: SubagentRuntimeOptions) {
+		this.pi = options.pi;
+		this.proc = options.proc ?? {};
+		const createChild: ChildFactory =
+			options.createChild ?? ((childOptions: RpcChildOptions) => new RpcChild(childOptions));
+		const sendWakeMessage = (
+			content: string,
+			msgOptions?: { deliverAs?: "steer" | "followUp" },
+		) => {
+			this.syncFromSupervisor();
+			this.trackWedgedFromWake(String(content));
+			this.pi.sendMessage(
+				{
+					customType: WAKE_MESSAGE_TYPE,
+					content: `${INTERNAL_WAKE_GUIDANCE}\n\nEvent:\n${content}`,
+					display: false,
+				},
+				{ ...msgOptions, triggerTurn: true },
+			);
+		};
+
+		this.supervisor =
+			options.createSupervisor?.({
+				sendUserMessage: sendWakeMessage,
+				createChild,
+				watchdogTickMs: options.watchdogTickMs,
+			}) ??
+			new Supervisor({
+				sendUserMessage: sendWakeMessage,
+				createChild,
+				watchdogTickMs: options.watchdogTickMs,
+			});
+
+		this.supervisor.subscribe(() => {
+			this.notifyDashboards();
+			this.updateActivityWidget();
+		});
+		this.pi.events.on("team:state", (data: unknown) => this.updateTeamState(data));
+	}
+
+	setTaskMeta(taskId: string, meta: SubagentTaskMeta): void {
+		this.taskMeta.set(taskId, meta);
+	}
+
+	detailsFromRun(run: RunState): SubagentDetails {
+		return {
+			runId: run.runId,
+			startedAt: run.startedAt,
+			results: run.tasks.map((task) => this.viewFromTask(run, task)),
+		};
+	}
+
+	parentSafeDetails(details: SubagentDetails): SubagentDetails {
+		return {
+			...details,
+			results: details.results.map(
+				({ messages: _messages, uiState: _uiState, ...result }) => result,
+			),
+		};
+	}
+
+	persistRun(run: RunState): void {
+		const persisted: PersistedRun = {
+			runId: run.runId,
+			startedAt: run.startedAt,
+			maxConcurrency: run.maxConcurrency,
+			tasks: run.tasks.map((task) => {
+				const meta = this.taskMeta.get(task.taskId);
+				return {
+					taskId: task.taskId,
+					index: task.index,
+					task: task.task,
+					status: task.status,
+					model: task.model,
+					thinking: task.thinking,
+					workspace: task.workspace,
+					cwd: task.cwd,
+					pid: childPid(task.child),
+					teamRunId: meta?.teamRunId,
+					teamTaskId: meta?.teamTaskId,
+					role: meta?.role,
+					error: task.error,
+					manualKill: task.manualKill,
+					output: task.output,
+					usage: { ...task.usage },
+					worktree: meta?.worktree,
+					ownerToken: task.ownerToken,
+					reaped: task.reaped,
+					startedAt: task.startedAt,
+					finishedAt: task.finishedAt,
+				};
+			}),
+		};
+		this.pi.appendEntry(PERSIST_TYPE, { run: persisted });
+	}
+
+	syncFromSupervisor(): void {
+		for (const run of this.supervisor.runs.values()) {
+			const details = this.detailsFromRun(run);
+			this.emitUpdate(details);
+			this.persistRun(run);
+			for (const task of run.tasks) {
+				if (isTerminalStatus(task.status)) {
+					this.wedgedTasks.delete(task.taskId);
+					const meta = this.taskMeta.get(task.taskId);
+					if (meta?.promptDir) {
+						void fs.promises.rm(meta.promptDir, { recursive: true, force: true });
+						meta.promptDir = undefined;
+					}
+					if (!task.child && meta?.worktree) {
+						const unusedWorktree = meta.worktree;
+						meta.worktree = undefined;
+						void rollbackWorktreeInternal(unusedWorktree).then(() => this.persistRun(run));
+					}
+				}
+			}
+		}
+	}
+
+	allDashboardRuns(): SubagentDetails[] {
+		const merged = new Map<string, SubagentDetails>(this.historical);
+		for (const run of this.supervisor.runs.values()) {
+			merged.set(run.runId, this.detailsFromRun(run));
+		}
+		return [...merged.values()];
+	}
+
+	statusWithHistory(ctx: ExtensionContext, runId?: string): RunSnapshot | RunSnapshot[] {
+		if (runId && this.supervisor.runs.has(runId)) return this.supervisor.status(runId);
+		const snapshots = new Map<string, RunSnapshot>();
+		for (const run of loadPersistedRuns(ctx, true).values())
+			snapshots.set(run.runId, this.snapshotFromPersisted(run));
+		for (const run of this.supervisor.runs.values())
+			snapshots.set(run.runId, this.supervisor.status(run.runId) as RunSnapshot);
+		if (runId) {
+			const snapshot = snapshots.get(runId);
+			if (!snapshot) throw new Error(`unknown run ${runId}`);
+			return snapshot;
+		}
+		return [...snapshots.values()];
+	}
+
+	resultWithHistory(ctx: ExtensionContext, runId: string, taskId: string): TaskResult {
+		if (this.supervisor.runs.has(runId)) return this.supervisor.result(runId, taskId);
+		const task = loadPersistedRuns(ctx, true)
+			.get(runId)
+			?.tasks.find((candidate) => candidate.taskId === taskId);
+		if (!task) throw new Error(`unknown task ${taskId} in run ${runId}`);
+		return {
+			output: task.output ?? "",
+			usage: task.usage ?? emptyUsage(),
+			error: task.error,
+			manualKill: task.manualKill,
+		};
+	}
+
+	resolveHandoffs(refs: ResultRef[] | undefined, ctx: ExtensionContext): Handoff[] {
+		if (!refs?.length) return [];
+		const activeRuns = new Map<string, SubagentDetails>();
+		for (const run of loadPersistedRuns(ctx, true).values()) {
+			activeRuns.set(run.runId, {
+				runId: run.runId,
+				startedAt: run.startedAt,
+				results: run.tasks.map((task) => ({
+					index: task.index,
+					taskId: task.taskId,
+					task: task.task,
+					model: task.model,
+					thinking: task.thinking,
+					workspace: task.workspace,
+					cwd: task.cwd,
+					done: isTerminalStatus(task.status),
+					error: task.error,
+					output: task.output ?? "",
+					usage: task.usage ?? emptyUsage(),
+					status: task.status,
+				})),
+			});
+		}
+		for (const run of this.supervisor.runs.values())
+			activeRuns.set(run.runId, this.detailsFromRun(run));
+		return refs.map((ref) => {
+			const result = activeRuns.get(ref.runId)?.results.find((item) => item.taskId === ref.taskId);
+			if (!result)
+				throw new Error(`Unknown prerequisite subagent task ${ref.taskId} in run ${ref.runId}`);
+			if (!result.done) throw new Error(`Prerequisite subagent task ${ref.taskId} is not complete`);
+			if (result.error)
+				throw new Error(`Prerequisite subagent task ${ref.taskId} failed: ${result.error}`);
+			return { source: `${ref.runId}/${ref.taskId}`, output: result.output };
+		});
+	}
+
+	getBlockedManualRetryKeys(
+		specs: ReadonlyArray<{ task: string; teamRunId?: string; teamTaskId?: string }>,
+	): string[] {
+		const killedKeys = new Set(
+			this.allDashboardRuns().flatMap((run) =>
+				run.results
+					.filter((result) => result.manualKill)
+					.map((result) => manualRetryKey(result.task, result.teamRunId, result.teamTaskId)),
+			),
+		);
+		return specs
+			.map((spec) => manualRetryKey(spec.task, spec.teamRunId, spec.teamTaskId))
+			.filter((key) => killedKeys.has(key) && !this.approvedManualRetries.has(key));
+	}
+
+	approveManualRetries(keys: readonly string[]): void {
+		for (const key of keys) this.approvedManualRetries.add(key);
+	}
+
+	isSteerable(task: TaskState): boolean {
+		if (task.pendingSoft && task.pendingSoft.steerable === false) return false;
+		if (this.wedgedTasks.has(task.taskId)) return false;
+		return true;
+	}
+
+	ack(
+		runId: string,
+		taskId: string,
+		options?: { extendBudgetUsd?: number; snoozeMs?: number },
+	): void {
+		this.supervisor.ack(runId, taskId, options);
+		this.wedgedTasks.delete(taskId);
+	}
+
+	subscribeDashboard(listener: () => void): () => void {
+		this.dashboardListeners.add(listener);
+		return () => this.dashboardListeners.delete(listener);
+	}
+
+	setActivityContext(ctx: ExtensionContext | undefined): void {
+		this.activityContext = ctx;
+	}
+
+	clearActivityWidget(): void {
+		this.stopActivityAnimation();
+		this.clearActivityCompletionTimer();
+		this.activityContext?.ui.setWidget(ACTIVITY_WIDGET_KEY, undefined);
+	}
+
+	openThreadView = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.mode !== "tui") {
+			ctx.ui.notify("Subagent threads require interactive mode.", "warning");
+			return;
+		}
+		this.hydrateHistorical(ctx);
+		const groups = buildThreadGroups(this.allDashboardRuns());
+		if (groups.length === 0) {
+			ctx.ui.notify("No subagents in this session.", "info");
+			return;
+		}
+		const activeTeamKey = this.activeTeamRunId ? `team:${this.activeTeamRunId}` : undefined;
+		if (activeTeamKey && !groups.some((group) => group.key === activeTeamKey)) {
+			ctx.ui.notify(
+				`${this.teamNames.get(this.activeTeamRunId!) ?? "Active team"} has not delegated any subagents yet.`,
+				"info",
+			);
+			return;
+		}
+		const newestRunning = [...groups]
+			.reverse()
+			.find((group) => group.items.some((item) => !item.result.done));
+		const preferredGroup =
+			groups.find((group) => group.key === activeTeamKey) ??
+			newestRunning ??
+			groups.find((group) => group.key === this.lastViewedGroupKey) ??
+			groups.at(-1)!;
+		this.lastViewedGroupKey = preferredGroup.key;
+		let initialTaskId = this.lastViewedTaskByGroup.get(preferredGroup.key);
+		if (
+			!initialTaskId ||
+			!preferredGroup.items.some((item) => item.result.taskId === initialTaskId)
+		) {
+			initialTaskId =
+				preferredGroup.items.find((item) => !item.result.done)?.result.taskId ??
+				preferredGroup.items[0].result.taskId;
+			this.lastViewedTaskByGroup.set(preferredGroup.key, initialTaskId);
+		}
+		await ctx.ui.custom<void>(
+			(tui, theme, _keybindings, done) =>
+				new SubagentThreadView(
+					tui,
+					theme,
+					() => this.allDashboardRuns(),
+					(listener) => this.subscribeDashboard(listener),
+					done,
+					initialTaskId,
+					(taskId, groupKey) => {
+						this.lastViewedTaskByGroup.set(groupKey, taskId);
+					},
+					preferredGroup.key,
+					(teamRunId) => this.teamNames.get(teamRunId),
+					(groupKey) => {
+						this.lastViewedGroupKey = groupKey;
+					},
+					(runId, taskId) => {
+						this.killTaskManually(runId, taskId);
+					},
+					() => {
+						killSubagentRuns(undefined, true);
+					},
+				),
+			fullscreenOverlayOptions(),
+		);
+	};
+
+	killParentChildren(defer = false): void {
+		// Escape already expresses the user's intent to stop. Child cleanup must
+		// not wake the parent into a replacement turn after the abort settles.
+		const hasDefaultKillAll = this.supervisor.killAll === Supervisor.prototype.killAll;
+		if (defer && hasDefaultKillAll && this.supervisor.deferKillAll) {
+			this.supervisor.deferKillAll({ notifyParent: false });
+		} else {
+			this.supervisor.killAll({ notifyParent: false });
+		}
+		if (!defer) this.syncFromSupervisor();
+	}
+
+	cancelParentAbort(): void {
+		this.supervisor.cancelDeferredKill?.();
+	}
+
+	recordManualKill(runId: string, taskId: string): void {
+		const task = this.supervisor.runs.get(runId)?.tasks.find((item) => item.taskId === taskId);
+		if (!task) return;
+		const meta = this.taskMeta.get(taskId);
+		this.approvedManualRetries.delete(manualRetryKey(task.task, meta?.teamRunId, meta?.teamTaskId));
+	}
+
+	killTaskManually(runId: string, taskId: string): void {
+		this.recordManualKill(runId, taskId);
+		this.supervisor.killTask(runId, taskId, true);
+		this.syncFromSupervisor();
+	}
+
+	hydrateHistorical(ctx: ExtensionContext): void {
+		for (const run of loadPersistedRuns(ctx).values()) {
+			if (this.historical.has(run.runId) || this.supervisor.runs.has(run.runId)) continue;
+			this.historical.set(run.runId, this.historicalDetails(run));
+		}
+	}
+
+	restoreSession(ctx: ExtensionContext): boolean {
+		this.setActivityContext(ctx.mode === "tui" ? ctx : undefined);
+		const persisted = loadPersistedRuns(ctx);
+		for (const run of persisted.values()) {
+			let changed = false;
+			for (const task of run.tasks) {
+				if (
+					typeof task.pid === "number" &&
+					(!isTerminalStatus(task.status) || task.reaped === false)
+				) {
+					const sweep = sweepOrphanPid(task.pid, this.proc, task.ownerToken);
+					task.reaped = sweep.killed || sweep.reason === "not-alive";
+					if (!task.reaped)
+						task.error = `${task.error ? `${task.error}; ` : ""}orphan cleanup pending (${sweep.reason})`;
+					changed = true;
+				}
+				if (isTerminalStatus(task.status)) continue;
+				task.status = "failed";
+				task.error = task.error ?? "Interrupted by session reload or process exit";
+				changed = true;
+			}
+			if (changed) this.pi.appendEntry(PERSIST_TYPE, { run });
+			this.historical.set(run.runId, {
+				runId: run.runId,
+				startedAt: run.startedAt,
+				results: run.tasks.map((task) => ({
+					index: task.index,
+					taskId: task.taskId,
+					task: task.task,
+					teamRunId: task.teamRunId,
+					teamTaskId: task.teamTaskId,
+					role: task.role,
+					model: task.model,
+					thinking: task.thinking,
+					workspace: task.workspace,
+					cwd: task.cwd,
+					worktree: task.worktree,
+					done: true,
+					error: task.error,
+					manualKill: task.manualKill,
+					output: task.output ?? "",
+					usage: task.usage ?? emptyUsage(),
+					status: isTerminalStatus(task.status) ? task.status : "failed",
+					pid: task.pid,
+				})),
+			});
+		}
+		this.updateActivityWidget();
+		return persisted.size > 0;
+	}
+
+	private viewFromTask(_run: RunState, task: TaskState): SubagentResultView {
+		const meta = this.taskMeta.get(task.taskId);
+		const messages = task.child?.transcript?.();
+		const uiState = task.child?.uiSnapshot?.();
+		return {
+			index: task.index,
+			taskId: task.taskId,
+			task: task.task,
+			teamRunId: meta?.teamRunId,
+			teamTaskId: meta?.teamTaskId,
+			role: meta?.role,
+			model: task.model,
+			thinking: task.thinking,
+			workspace: task.workspace,
+			cwd: task.cwd,
+			worktree: meta?.worktree,
+			done: isTerminalStatus(task.status),
+			error: task.error,
+			manualKill: task.manualKill,
+			output: task.output,
+			usage: { ...task.usage },
+			status: task.status,
+			messages: messages ? [...messages] : undefined,
+			uiState,
+			pid: childPid(task.child),
+		};
+	}
+
+	emitUpdate(details: SubagentDetails): void {
+		this.historical.set(details.runId, details);
+		this.notifyDashboards();
+		this.updateActivityWidget();
+		this.pi.events.emit("subagent:update", details);
+	}
+
+	private snapshotFromPersisted(run: PersistedRun): RunSnapshot {
+		return {
+			runId: run.runId,
+			startedAt: run.startedAt,
+			maxConcurrency: run.maxConcurrency ?? Math.max(1, run.tasks.length),
+			tasks: run.tasks.map((task) => ({
+				taskId: task.taskId,
+				index: task.index,
+				status: task.status,
+				model: task.model,
+				thinking: task.thinking,
+				workspace: task.workspace,
+				cwd: task.cwd,
+				error: task.error,
+				manualKill: task.manualKill,
+				reaped: task.reaped ?? isTerminalStatus(task.status),
+				lastEventAt: task.finishedAt ?? task.startedAt ?? run.startedAt,
+				startedAt: task.startedAt ?? run.startedAt,
+				finishedAt: isTerminalStatus(task.status) ? run.startedAt : undefined,
+			})),
+		};
+	}
+
+	private historicalDetails(run: PersistedRun): SubagentDetails {
+		return {
+			runId: run.runId,
+			startedAt: run.startedAt,
+			results: run.tasks.map((task) => ({
+				index: task.index,
+				taskId: task.taskId,
+				task: task.task,
+				teamRunId: task.teamRunId,
+				teamTaskId: task.teamTaskId,
+				role: task.role,
+				model: task.model,
+				thinking: task.thinking,
+				workspace: task.workspace,
+				cwd: task.cwd,
+				worktree: task.worktree,
+				done: isTerminalStatus(task.status),
+				error: task.error,
+				manualKill: task.manualKill,
+				output: task.output ?? "",
+				usage: task.usage ?? emptyUsage(),
+				status: task.status,
+				pid: task.pid,
+			})),
+		};
+	}
+
+	private trackWedgedFromWake(content: string): void {
+		for (const run of this.supervisor.runs.values()) {
+			for (const task of run.tasks) {
+				const label = `Subagent task ${task.index + 1}`;
+				const stuckFalse = new RegExp(`${label} stuck:.*\\(steerable=false\\)`);
+				const stuckTrue = new RegExp(`${label} stuck:.*\\(steerable=true\\)`);
+				const terminal = content.includes(`${label} done:`) || content.includes(`${label} failed:`);
+				if (stuckFalse.test(content)) this.wedgedTasks.add(task.taskId);
+				if (stuckTrue.test(content) || terminal) this.wedgedTasks.delete(task.taskId);
+			}
+		}
+	}
+
+	private notifyDashboards(): void {
+		for (const listener of this.dashboardListeners) listener();
+	}
+
+	private updateTeamState(data: unknown): void {
+		const state = data as { runId?: string; teamName?: string; active?: boolean };
+		if (!state.runId) return;
+		if (state.teamName) this.teamNames.set(state.runId, state.teamName);
+		if (state.active) this.activeTeamRunId = state.runId;
+		else if (this.activeTeamRunId === state.runId) this.activeTeamRunId = undefined;
+		this.notifyDashboards();
+		this.updateActivityWidget();
+	}
+
+	private stopActivityAnimation(): void {
+		if (!this.activityTimer) return;
+		clearInterval(this.activityTimer);
+		this.activityTimer = undefined;
+	}
+
+	private clearActivityCompletionTimer(): void {
+		if (!this.activityCompletionTimer) return;
+		clearTimeout(this.activityCompletionTimer);
+		this.activityCompletionTimer = undefined;
+	}
+
+	private renderActivityWidget(group: SubagentThreadGroup, running: number): void {
+		const ctx = this.activityContext;
+		if (!ctx || ctx.mode !== "tui") return;
+		const theme = ctx.ui.theme;
+		const completed = group.items.filter((item) => item.result.done && !item.result.error).length;
+		const failed = group.items.filter((item) => item.result.done && item.result.error).length;
+		const done = running === 0;
+		const label = group.teamRunId
+			? `${this.teamNames.get(group.teamRunId) ?? "Team"} team`
+			: "Subagents";
+
+		const spinner = done
+			? theme.fg(failed > 0 ? "warning" : "success", "✓")
+			: theme.fg("accent", ACTIVITY_FRAMES[this.activityFrame]);
+		const title = theme.bold(theme.fg(done ? "muted" : "accent", label));
+		const counts = [
+			running > 0 ? theme.fg("warning", `${running} active`) : undefined,
+			completed > 0 ? theme.fg("success", `${completed} done`) : undefined,
+			failed > 0 ? theme.fg("error", `${failed} failed`) : undefined,
+		].filter((part): part is string => Boolean(part));
+		const separator = theme.fg("dim", " · ");
+		const hint = theme.fg("dim", "F6") + theme.fg("muted", " view");
+
+		const line = `${spinner}  ${title}   ${counts.join(separator)}   ${hint}`;
+		ctx.ui.setWidget(ACTIVITY_WIDGET_KEY, [line], { placement: "aboveEditor" });
+	}
+
+	private updateActivityWidget(): void {
+		const ctx = this.activityContext;
+		if (!ctx || ctx.mode !== "tui") return;
+		const groups = buildThreadGroups(this.allDashboardRuns());
+		const activeTeamKey = this.activeTeamRunId ? `team:${this.activeTeamRunId}` : undefined;
+		const activeTeamGroup = groups.find((group) => group.key === activeTeamKey);
+		const newestRunning = [...groups]
+			.reverse()
+			.find((group) => group.items.some((item) => !item.result.done));
+		const remembered = groups.find((group) => group.key === this.activityGroupKey);
+		const group = activeTeamGroup?.items.some((item) => !item.result.done)
+			? activeTeamGroup
+			: (newestRunning ?? remembered);
+		const running = group?.items.filter((item) => !item.result.done).length ?? 0;
+
+		if (group && running > 0) {
+			this.activityGroupKey = group.key;
+			this.activityCompletionUntil = 0;
+			this.clearActivityCompletionTimer();
+			if (!this.activityTimer) {
+				this.activityTimer = setInterval(() => {
+					this.activityFrame = (this.activityFrame + 1) % ACTIVITY_FRAMES.length;
+					const current = buildThreadGroups(this.allDashboardRuns()).find(
+						(candidate) => candidate.key === this.activityGroupKey,
+					);
+					if (current)
+						this.renderActivityWidget(
+							current,
+							current.items.filter((item) => !item.result.done).length,
+						);
+				}, ACTIVITY_FRAME_INTERVAL_MS);
+				this.activityTimer.unref?.();
+			}
+			this.renderActivityWidget(group, running);
+			this.previousActivityRunning = running;
+			return;
+		}
+
+		this.stopActivityAnimation();
+		if (group && this.previousActivityRunning > 0) {
+			this.activityCompletionUntil = Date.now() + ACTIVITY_COMPLETION_MS;
+			this.clearActivityCompletionTimer();
+			this.activityCompletionTimer = setTimeout(() => {
+				this.activityCompletionTimer = undefined;
+				this.activityCompletionUntil = 0;
+				this.previousActivityRunning = 0;
+				this.activityContext?.ui.setWidget(ACTIVITY_WIDGET_KEY, undefined);
+			}, ACTIVITY_COMPLETION_MS);
+			this.activityCompletionTimer.unref?.();
+		}
+		this.previousActivityRunning = 0;
+		if (group && this.activityCompletionUntil > Date.now()) this.renderActivityWidget(group, 0);
+		else ctx.ui.setWidget(ACTIVITY_WIDGET_KEY, undefined);
+	}
+}
+
+export { isPiSubagentCmdline, defaultReadProcCmdline, defaultReadProcEnviron, defaultIsAlive };

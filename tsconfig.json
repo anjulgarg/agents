@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2024"],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "types": ["node", "react", "vitest/globals"]
+  },
+  "include": [
+    "cli.ts",
+    "src/**/*.ts",
+    "harnesses/**/*.ts",
+    "scripts/**/*.ts",
+    "skills/**/*.ts",
+    "test/**/*.ts"
+  ],
+  "exclude": ["dist", "node_modules", "pi/extensions"]
+}

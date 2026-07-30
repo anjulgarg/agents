@@ -1,0 +1,4 @@
+# Personal Pi configuration stays local and is never part of the public repository.
+settings.json
+models.json
+mcp.json

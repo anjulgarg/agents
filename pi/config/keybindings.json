@@ -1,0 +1,5 @@
+{
+  "tui.editor.cursorLineEnd": ["end", "ctrl+e"],
+  "tui.input.newLine": ["shift+enter", "ctrl+enter", "ctrl+j"],
+  "app.thinking.cycle": ["alt+t"]
+}
