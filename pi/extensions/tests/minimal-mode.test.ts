@@ -129,6 +129,38 @@ assert(
 
 const grepTool = registered.find((candidate) => candidate.name === "grep")!;
 const findTool = registered.find((candidate) => candidate.name === "find")!;
+const lsTool = registered.find((candidate) => candidate.name === "ls")!;
+
+emit("session_start");
+const interleavedReadOne = { path: "src/one.ts" };
+const interleavedLs = { path: "src" };
+const interleavedReadTwo = { path: "src/two.ts" };
+const interleavedReadThree = { path: "src/three.ts" };
+readTool
+	.renderCall?.(interleavedReadOne, theme, renderContext("read-interleaved-1", interleavedReadOne))
+	.render(80);
+lsTool
+	.renderCall?.(interleavedLs, theme, renderContext("ls-interleaved", interleavedLs))
+	.render(80);
+readTool
+	.renderCall?.(interleavedReadTwo, theme, renderContext("read-interleaved-2", interleavedReadTwo))
+	.render(80);
+const interleavedReads =
+	readTool
+		.renderCall?.(
+			interleavedReadThree,
+			theme,
+			renderContext("read-interleaved-3", interleavedReadThree),
+		)
+		.render(80) ?? [];
+assert(
+	"reads group across interleaved inspection tools and sequential batches",
+	interleavedReads.join("").includes("├─ src/one.ts") &&
+		interleavedReads.join("").includes("├─ src/two.ts") &&
+		interleavedReads.join("").includes("└─ src/three.ts") &&
+		!interleavedReads.join("").includes("ls"),
+	JSON.stringify(interleavedReads),
+);
 
 emit("session_start");
 const expandedReadArgs = { path: "src/expanded.ts" };

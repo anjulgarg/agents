@@ -312,7 +312,7 @@ async function ensureRipgrep(warmUp: () => Promise<unknown>): Promise<string> {
 export default function (pi: ExtensionAPI) {
 	const bashDurations = new Map<string, number>();
 	const isolatedEditFailures = new Set<string>();
-	const toolGroupTracker = new SoftGroupTracker();
+	const toolGroupTracker = new SoftGroupTracker({ allowInterleavedGroups: true });
 	bindSoftGroupTracker(pi as any, toolGroupTracker, ["read", "find", "grep", "ls", "edit"], {
 		nonBreakingToolNames: ["announce_step"],
 	});

@@ -634,6 +634,8 @@ export class SoftGroupTracker {
 	private events: SoftGroupEvent[] = [];
 	private items = new Map<string, TrackedItem>();
 
+	constructor(private readonly options: { allowInterleavedGroups?: boolean } = {}) {}
+
 	reset(): void {
 		this.events = [];
 		this.items.clear();
@@ -758,6 +760,7 @@ export class SoftGroupTracker {
 		const streaks: SoftGroupItem[][] = [];
 		let current: SoftGroupItem[] = [];
 		let currentGroup: string | null = null;
+		const targetGroup = this.items.get(toolCallId)?.groupId;
 
 		for (const event of this.events) {
 			if (event.kind === "break") {
@@ -771,6 +774,13 @@ export class SoftGroupTracker {
 
 			const item = this.items.get(event.toolCallId);
 			if (!item) {
+				continue;
+			}
+			if (
+				this.options.allowInterleavedGroups === true &&
+				targetGroup !== undefined &&
+				event.groupId !== targetGroup
+			) {
 				continue;
 			}
 			if (currentGroup !== null && event.groupId !== currentGroup) {
