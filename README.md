@@ -102,8 +102,10 @@ npm run pack:check
 ```
 
 `npm run check` audits the repository, checks formatting and lint, type-checks, runs tests, tests
-extensions, and builds the CLI. The end-to-end suite runs offline with unique temporary homes and
-never mutates a real home directory.
+extensions, and builds the CLI. Extension test files use up to four isolated workers by default;
+set `EXTENSION_TEST_CONCURRENCY=1` for serial execution or `EXTENSION_TEST_VERBOSE=1` to show full
+passing-test output. The end-to-end suite runs offline with unique temporary homes and never mutates
+a real home directory.
 
 ## Principles
 
