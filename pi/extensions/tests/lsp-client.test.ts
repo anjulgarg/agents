@@ -311,6 +311,84 @@ assert(
 	);
 	assert("exports LSP_GUIDANCE", LSP_GUIDANCE.includes("Prefer the lsp tool"));
 
+	const emit = (event: string, payload: any = {}) => {
+		handlers.get(event)?.(payload, {});
+	};
+	const renderText = (args: any, context: any, width = 120): string =>
+		tool.renderCall(args, lspTheme, context).render(width).join("\n");
+	const callContext = (toolCallId: string, extra: Record<string, unknown> = {}) => ({
+		toolCallId,
+		invalidate: () => undefined,
+		executionStarted: true,
+		expanded: false,
+		isError: false,
+		...extra,
+	});
+
+	emit("session_start");
+	emit("tool_execution_start", { toolName: "lsp" });
+	const groupedFirst = renderText(
+		{ action: "definition", path: "src/first.ts", line: 4, column: 2 },
+		callContext("lsp-1"),
+	);
+	emit("tool_execution_start", { toolName: "lsp" });
+	const groupedSecond = renderText(
+		{ action: "references", path: "src/second.ts", line: 8, column: 3, query: "needle" },
+		callContext("lsp-2"),
+	);
+	assert(
+		"consecutive lsp calls form one exact-name tree",
+		groupedFirst.includes("lsp definition") &&
+			groupedSecond.split("\n")[0]?.trim() === "lsp" &&
+			groupedSecond.includes("├─ definition src/first.ts:4:2") &&
+			groupedSecond.includes("└─ references · needle src/second.ts:8:3"),
+		JSON.stringify({ groupedFirst, groupedSecond }),
+	);
+
+	emit("tool_execution_start", { toolName: "not-lsp" });
+	const afterOtherTool = renderText(
+		{ action: "hover", path: "src/third.ts", line: 2, column: 1 },
+		callContext("lsp-3"),
+	);
+	assert(
+		"a different tool breaks the lsp group",
+		afterOtherTool.includes("lsp hover") && !afterOtherTool.includes(" · 3 ·"),
+		afterOtherTool,
+	);
+
+	const errorArgs = { action: "definition", path: "src/error.ts", line: 1, column: 1 };
+	const errorContext = callContext("lsp-error", { isError: true });
+	const errorCall = renderText(errorArgs, errorContext);
+	const errorResult = tool.renderResult(
+		{ content: [{ type: "text", text: "definition failed" }] },
+		{ expanded: false, isPartial: false },
+		lspTheme,
+		errorContext,
+	);
+	assert(
+		"failed lsp calls keep an error subject",
+		errorCall.includes("lsp definition") &&
+			errorCall.includes("src/error.ts:1:1") &&
+			errorResult.render(120).join("\n").includes("× definition failed"),
+		JSON.stringify({ errorCall, error: errorResult.render(120) }),
+	);
+
+	const expandedCall = renderText(
+		{
+			action: "workspace_symbols",
+			path: "packages/example/src/very-long-symbol-file.ts",
+			query: "Widget",
+		},
+		callContext("lsp-expanded", { expanded: true }),
+	);
+	assert(
+		"expanded lsp calls keep action path and query chrome",
+		expandedCall.includes("lsp workspace_symbols") &&
+			expandedCall.includes("packages/example/src/very-long-symbol-file.ts") &&
+			expandedCall.includes("Widget"),
+		expandedCall,
+	);
+
 	const lookup = findTypescriptLanguageServer({ PATH: "/nonexistent" });
 	assert("missing server detected", lookup.available === false && Boolean(lookup.error));
 

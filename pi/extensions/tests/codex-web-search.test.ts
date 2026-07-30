@@ -111,13 +111,13 @@ const firstCallAfter = codexTool
 	.render(80);
 
 assert(
-	"each Codex/Ollama search renders its own collapsed row with the last query",
+	"different web tool names keep separate collapsed rows with identifying summaries",
 	firstCall.length === 1 &&
 		secondCall.length === 1 &&
 		firstCallAfter.length === 1 &&
 		firstCall[0].includes("web search") &&
 		firstCall[0].includes("current TypeScript release") &&
-		secondCall[0].includes("web search") &&
+		secondCall[0].includes("web search 2 queries") &&
 		!secondCall[0].includes("· 3 ·") &&
 		secondCall[0].includes("tsconfig moduleResolution bundler") &&
 		visibleWidth(secondCall[0]) <= 80,
@@ -253,7 +253,9 @@ assert(
 	JSON.stringify({ liveAfterTurn, historicalAfterTurn, liveAfterHistoricalPaint }),
 );
 
-emit("turn_start");
+emit("message_start", {
+	message: { role: "assistant", content: [{ type: "text", text: "new prose boundary" }] },
+});
 const batchCollapsed = codexTool
 	.renderCall({ queries: ["alpha", "beta", "gamma"] }, theme, {
 		toolCallId: "search-batch",
@@ -264,8 +266,9 @@ const batchCollapsed = codexTool
 	})
 	.render(80);
 assert(
-	"a batched collapsed call shows the last query without a streak count",
+	"a batched collapsed call identifies its query count without counting queries as calls",
 	batchCollapsed.length === 1 &&
+		batchCollapsed[0].includes("3 queries") &&
 		!batchCollapsed[0].includes("· 3 ·") &&
 		batchCollapsed[0].includes("gamma"),
 	JSON.stringify({ batchCollapsed }),
@@ -329,16 +332,116 @@ const collapseB = ollamaSearch
 	})
 	.render(80);
 assert(
-	"Ctrl+O expand/collapse keeps each call on its own row",
+	"same-name search calls form one collapsed tree group while expanded rows stay local",
 	multiA.length === 1 &&
-		multiB.length === 1 &&
-		!multiA[0].includes("· 2 ·") &&
-		!multiB[0].includes("· 3 ·") &&
+		multiA[0].includes("web search 2 queries two") &&
+		multiB.length === 3 &&
+		multiB[0].includes("web search") &&
+		multiB[1].includes("2 queries two") &&
+		multiB[2].includes("three") &&
 		expandA.includes("web search · 2 queries") &&
+		expandA.includes("1. one") &&
+		expandA.includes("2. two") &&
 		expandB.includes("three") &&
-		collapseA.length === 1 &&
-		collapseA[0].includes("two") &&
-		collapseB.length === 1 &&
-		collapseB[0].includes("three"),
+		collapseA.length === 0 &&
+		collapseB.length === 3 &&
+		collapseB[1].includes("2 queries two") &&
+		collapseB[2].includes("three"),
 	JSON.stringify({ multiA, multiB, expandA, expandB, collapseA, collapseB }),
 );
+
+emit("turn_start");
+const codexBoundaryA = codexTool
+	.renderCall({ query: "codex boundary one" }, theme, {
+		toolCallId: "boundary-codex-a",
+		expanded: false,
+		isError: false,
+		executionStarted: true,
+		invalidate: () => undefined,
+	})
+	.render(80);
+const codexBoundaryB = codexTool
+	.renderCall({ query: "codex boundary two" }, theme, {
+		toolCallId: "boundary-codex-b",
+		expanded: false,
+		isError: false,
+		executionStarted: true,
+		invalidate: () => undefined,
+	})
+	.render(80);
+const ollamaBoundary = ollamaSearch
+	.renderCall({ query: "ollama boundary" }, theme, {
+		toolCallId: "boundary-ollama",
+		expanded: false,
+		isError: false,
+		executionStarted: true,
+		invalidate: () => undefined,
+	})
+	.render(80);
+const fetchBoundaryA = ollamaFetch
+	.renderCall({ url: "https://example.com/one" }, theme, {
+		toolCallId: "boundary-fetch-a",
+		expanded: false,
+		isError: false,
+		executionStarted: true,
+		invalidate: () => undefined,
+	})
+	.render(80);
+const fetchBoundaryB = ollamaFetch
+	.renderCall({ url: "https://example.com/two" }, theme, {
+		toolCallId: "boundary-fetch-b",
+		expanded: false,
+		isError: false,
+		executionStarted: true,
+		invalidate: () => undefined,
+	})
+	.render(80);
+assert(
+	"exact tool names group consecutively without crossing providers or search and fetch",
+	codexBoundaryA.length === 1 &&
+		codexBoundaryA[0].includes("codex boundary one") &&
+		codexBoundaryB.length === 3 &&
+		codexBoundaryB[0].includes("web search") &&
+		codexBoundaryB[1].includes("codex boundary one") &&
+		codexBoundaryB[2].includes("codex boundary two") &&
+		ollamaBoundary.length === 1 &&
+		ollamaBoundary[0].includes("web search ollama boundary") &&
+		fetchBoundaryA.length === 1 &&
+		fetchBoundaryA[0].includes("web fetch https://example.com/one") &&
+		fetchBoundaryB.length === 3 &&
+		fetchBoundaryB[0].includes("web fetch") &&
+		fetchBoundaryB[1].includes("https://example.com/one") &&
+		fetchBoundaryB[2].includes("https://example.com/two"),
+	JSON.stringify({
+		codexBoundaryA,
+		codexBoundaryB,
+		ollamaBoundary,
+		fetchBoundaryA,
+		fetchBoundaryB,
+	}),
+);
+
+emit("turn_start");
+const runningCall = codexTool
+	.renderCall({ query: "running boundary query" }, theme, {
+		toolCallId: "running-boundary",
+		expanded: false,
+		isError: false,
+		executionStarted: true,
+		isPartial: true,
+		invalidate: () => undefined,
+	})
+	.render(80);
+assert(
+	"grouped rows retain the running marker",
+	runningCall.length === 1 && runningCall[0].includes("running"),
+	JSON.stringify({ runningCall }),
+);
+codexTool.renderCall({ query: "running boundary query" }, theme, {
+	toolCallId: "running-boundary",
+	expanded: false,
+	isError: false,
+	executionStarted: true,
+	isPartial: false,
+	invalidate: () => undefined,
+});

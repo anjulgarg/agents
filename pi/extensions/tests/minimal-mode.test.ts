@@ -1,4 +1,5 @@
 import { createGrepTool, initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -101,18 +102,45 @@ const readAFirst = readTool.renderCall?.(readAArgs, theme, readA).render(80) ?? 
 const readBFirst = readTool.renderCall?.(readBArgs, theme, readB).render(80) ?? [];
 const readAAfter = readTool.renderCall?.(readAArgs, theme, readA).render(80) ?? [];
 assert(
-	"inspection calls each keep their own live row",
+	"same-name inspection calls form one consecutive group",
 	readAFirst.join("").includes("read src/a.ts · running") &&
-		readBFirst.join("").includes("read src/b.ts · running") &&
-		readAAfter.join("").includes("read src/a.ts · running") &&
-		!readBFirst.join("").includes("· 2 ·") &&
-		!readAAfter.join("").includes("inspect"),
+		readBFirst.join("").includes("read · running") &&
+		readBFirst.join("").includes("├─ src/a.ts") &&
+		readBFirst.join("").includes("└─ src/b.ts") &&
+		readAAfter.length === 0,
 	JSON.stringify({ readAFirst, readBFirst, readAAfter }),
 );
 
 const grepTool = registered.find((candidate) => candidate.name === "grep")!;
 const findTool = registered.find((candidate) => candidate.name === "find")!;
 
+emit("session_start");
+const expandedReadArgs = { path: "src/expanded.ts" };
+const expandedReadContext = renderContext("read-expanded", expandedReadArgs, {
+	expanded: true,
+	isPartial: false,
+});
+const expandedReadCall =
+	readTool.renderCall?.(expandedReadArgs, theme, expandedReadContext).render(80).join("\n") ?? "";
+const expandedReadOutput =
+	readTool
+		.renderResult?.(
+			{ content: [{ type: "text", text: "expanded output" }] },
+			{ expanded: true, isPartial: false },
+			theme,
+			expandedReadContext,
+		)
+		.render(80)
+		.join("\n") ?? "";
+assert(
+	"expanded inspection calls keep local chrome and full output",
+	expandedReadCall.includes("read src/expanded.ts") &&
+		!expandedReadCall.includes("· 2 ·") &&
+		expandedReadOutput.includes("expanded output"),
+	JSON.stringify({ expandedReadCall, expandedReadOutput }),
+);
+
+emit("session_start");
 const mixedRead = { path: "src/a.ts" };
 const mixedGrep = { pattern: "needle", path: "src" };
 const mixedFind = { pattern: "*.ts", path: "src" };
@@ -125,7 +153,7 @@ const mixedThird =
 const mixedSecondAgain =
 	grepTool.renderCall?.(mixedGrep, theme, renderContext("mix-2", mixedGrep)).render(80) ?? [];
 assert(
-	"mixed inspection tools keep per-call titles with no grouping chrome",
+	"mixed inspection tools form separate exact-name boundaries",
 	mixedFirst.join("").includes("read src/a.ts") &&
 		mixedSecond.join("").includes("grep /needle/ in src") &&
 		mixedThird.join("").includes("find *.ts in src") &&
@@ -136,15 +164,17 @@ assert(
 	JSON.stringify({ mixedFirst, mixedSecond, mixedThird, mixedSecondAgain }),
 );
 
+emit("session_start");
 const grepOne = { pattern: "alpha", path: "src" };
 const grepTwo = { pattern: "beta", path: "lib" };
 grepTool.renderCall?.(grepOne, theme, renderContext("grep-1", grepOne)).render(80);
 const pureGrep =
 	grepTool.renderCall?.(grepTwo, theme, renderContext("grep-2", grepTwo)).render(80) ?? [];
 assert(
-	"consecutive calls of one tool stay ungrouped",
-	pureGrep.join("").includes("grep /beta/ in lib") &&
-		!pureGrep.join("").includes("· 2 ·") &&
+	"consecutive calls of one inspection tool group by exact name",
+	pureGrep.join("").includes("grep · running") &&
+		pureGrep.join("").includes("├─ /alpha/ in src") &&
+		pureGrep.join("").includes("└─ /beta/ in lib") &&
 		!pureGrep.join("").includes("inspect"),
 	JSON.stringify(pureGrep),
 );
@@ -159,7 +189,7 @@ const deepLeader = (
 		.render(60) ?? []
 ).join("");
 assert(
-	"a narrow row keeps its tool name when the path has to elide",
+	"a narrow grouped row keeps its tool name when the path has to elide",
 	deepLeader.includes("grep") && deepLeader.includes("in src") && !deepLeader.includes("inspect"),
 	JSON.stringify(deepLeader),
 );
@@ -202,11 +232,40 @@ const renderAtWidth = (width: number): string =>
 const atFull = renderAtWidth(120);
 const atNarrow = renderAtWidth(40);
 assert(
-	"ungrouped grep rows keep the tool name and path at full and narrow widths",
+	"grouped grep rows keep the tool name and path at full and narrow widths",
 	atFull.includes(`/${wideArgs.pattern}/ in ${wideArgs.path}`) &&
 		atNarrow.includes("grep") &&
 		atNarrow.includes("packages"),
 	JSON.stringify({ atFull, atNarrow }),
+);
+
+emit("session_start");
+const wrappedGrepOne = {
+	pattern: "renderSoftGroupedCall|SoftGroupTracker",
+	path: "pi/extensions/lib/pi-tui-soft-group/index.ts",
+};
+const wrappedGrepTwo = {
+	pattern: "bindSoftGroupTracker|seedSessionTopology",
+	path: "pi/extensions/tests/tui-kit.test.ts",
+};
+grepTool
+	.renderCall?.(wrappedGrepOne, theme, renderContext("grep-wrap-1", wrappedGrepOne))
+	.render(42);
+const wrappedGrep =
+	grepTool
+		.renderCall?.(wrappedGrepTwo, theme, renderContext("grep-wrap-2", wrappedGrepTwo))
+		.render(42) ?? [];
+assert(
+	"grouped grep leaves wrap to two aligned lines",
+	wrappedGrep.length === 5 &&
+		wrappedGrep.every((line) => visibleWidth(line) <= 42) &&
+		wrappedGrep[1]?.includes("├─ /renderSoftGroupedCall") &&
+		wrappedGrep[2]?.trim().startsWith("│") &&
+		wrappedGrep[2]?.endsWith("index.ts") &&
+		wrappedGrep[3]?.includes("└─ /bindSoftGroupTracker") &&
+		!wrappedGrep[4]?.includes("│") &&
+		wrappedGrep[4]?.endsWith("tui-kit.test.ts"),
+	JSON.stringify(wrappedGrep),
 );
 
 const bashTool = registered.find((candidate) => candidate.name === "bash")!;

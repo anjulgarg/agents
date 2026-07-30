@@ -1,14 +1,15 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { codexComplete } from "./lib/codex-backend.ts";
 import {
-	SynchronizedShimmerRender,
+	SoftGroupTracker,
 	TOOL_CHAT_PADDING,
+	bindSoftGroupTracker,
 	emptyCollapsedToolRender,
-	formatToolDuration,
+	renderSoftGroupedCall,
 	shouldRevealToolDetails,
-	syncToolActivity,
+	type SoftGroupRenderContext,
 } from "./lib/tui/index.ts";
 
 // Provider web tools for pi:
@@ -108,38 +109,35 @@ async function runOllamaSearchQuery(
 	}
 }
 
-function renderSearchCall(args: { query?: string; queries?: string[] }, theme: any, context: any) {
+function renderSearchCall(
+	toolName: string,
+	tracker: SoftGroupTracker,
+	args: { query?: string; queries?: string[] },
+	theme: Theme,
+	context: SoftGroupRenderContext,
+) {
 	const queries = normalizeSearchQueries(args);
-	const summary = queries.at(-1) || "...";
-	const activity = syncToolActivity(context);
-	const running = activity.active
-		? ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`
-		: "";
 	const expandedLines =
 		queries.length > 1
 			? [
 					`web search · ${queries.length} queries`,
 					...queries.map((query, index) => `${index + 1}. ${query}`),
 				]
-			: [`web search ${summary}`];
-	const [head = "web search", ...rest] = expandedLines;
-	const styled = [
-		theme.fg("toolTitle", theme.bold(head)),
-		...rest.map((line: string) => theme.fg("muted", line)),
-	];
-	if (context.expanded) {
-		const content = new Text(styled.join("\n"), TOOL_CHAT_PADDING, 0);
-		return activity.active
-			? new SynchronizedShimmerRender(content, theme, activity, true)
-			: content;
-	}
-	const content = new Text(
-		`${theme.fg("toolTitle", theme.bold("web search"))} ${theme.fg("muted", summary)}` +
-			theme.fg("muted", running),
-		TOOL_CHAT_PADDING,
-		0,
-	);
-	return activity.active ? new SynchronizedShimmerRender(content, theme, activity) : content;
+			: [`web search ${queries.at(-1) || "..."}`];
+	return renderSoftGroupedCall({
+		tracker,
+		groupId: toolName,
+		label: "web search",
+		summary: queries.length > 1 ? `${queries.length} queries` : queries.at(-1) || "...",
+		summaryTail: queries.length > 1 ? queries.at(-1) : undefined,
+		unitCount: 1,
+		theme: {
+			fg: (name, text) => theme.fg(name as Parameters<Theme["fg"]>[0], text),
+			bold: (text) => theme.bold(text),
+		},
+		context,
+		expandedLines,
+	});
 }
 
 function renderSearchResult(result: any, expanded: boolean, theme: any, context: any) {
@@ -157,6 +155,12 @@ function renderSearchResult(result: any, expanded: boolean, theme: any, context:
 }
 
 export default function (pi: ExtensionAPI) {
+	const webToolGroupTracker = new SoftGroupTracker();
+	bindSoftGroupTracker(pi as any, webToolGroupTracker, [
+		"codex_web_search",
+		"ollama_web_search",
+		"ollama_web_fetch",
+	]);
 	const webToolNames = new Set([
 		"codex_web_search",
 		"ollama_web_search",
@@ -217,7 +221,8 @@ export default function (pi: ExtensionAPI) {
 				details: { queries },
 			};
 		},
-		renderCall: (args, theme, context) => renderSearchCall(args, theme, context),
+		renderCall: (args, theme, context) =>
+			renderSearchCall("codex_web_search", webToolGroupTracker, args, theme, context),
 		renderResult: (result, { expanded }, theme, context) =>
 			renderSearchResult(result, expanded, theme, context),
 	});
@@ -274,7 +279,8 @@ export default function (pi: ExtensionAPI) {
 				details: { queries, results: allResults },
 			};
 		},
-		renderCall: (args, theme, context) => renderSearchCall(args, theme, context),
+		renderCall: (args, theme, context) =>
+			renderSearchCall("ollama_web_search", webToolGroupTracker, args, theme, context),
 		renderResult: (result, { expanded }, theme, context) =>
 			renderSearchResult(result, expanded, theme, context),
 	});
@@ -334,18 +340,17 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, context) {
 			const url = typeof args.url === "string" ? args.url.replace(/\s+/g, " ").trim() : "...";
-			const activity = syncToolActivity(context);
-			const running = activity.active
-				? ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`
-				: "";
-			const content = new Text(
-				`${theme.fg("toolTitle", theme.bold("web fetch"))} ${theme.fg("muted", url)}` +
-					theme.fg("muted", running),
-				TOOL_CHAT_PADDING,
-				0,
-			);
-			if (context.expanded) return content;
-			return activity.active ? new SynchronizedShimmerRender(content, theme, activity) : content;
+			return renderSoftGroupedCall({
+				tracker: webToolGroupTracker,
+				groupId: "ollama_web_fetch",
+				label: "web fetch",
+				summary: url,
+				theme: {
+					fg: (name, text) => theme.fg(name as Parameters<typeof theme.fg>[0], text),
+					bold: (text) => theme.bold(text),
+				},
+				context,
+			});
 		},
 		renderResult: (result, { expanded }, theme, context) =>
 			renderSearchResult(result, expanded, theme, context),

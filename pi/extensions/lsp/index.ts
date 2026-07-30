@@ -19,10 +19,10 @@ import {
 import { Type } from "typebox";
 
 import {
-	SynchronizedShimmerRender,
+	SoftGroupTracker,
+	bindSoftGroupTracker,
 	emptyCollapsedToolRender,
-	formatToolDuration,
-	syncToolActivity,
+	renderSoftGroupedCall,
 } from "../lib/tui/index.ts";
 import {
 	diagnosticsToRows,
@@ -124,7 +124,7 @@ type LspParamsType = {
 	limit?: number;
 };
 
-function textResult(text: string, details: Record<string, unknown> = {}): AgentToolResult {
+function textResult(text: string, details: Record<string, unknown> = {}): AgentToolResult<unknown> {
 	return {
 		content: [{ type: "text", text: boundToolOutput(text) }],
 		details,
@@ -261,6 +261,8 @@ export class LspStatusView implements Component {
 
 export default function lspExtension(pi: ExtensionAPI) {
 	const manager = new LspManager();
+	const groupTracker = new SoftGroupTracker();
+	bindSoftGroupTracker(pi as any, groupTracker, ["lsp"]);
 	pi.on("session_shutdown", async () => {
 		await manager.disposeAll();
 	});
@@ -327,30 +329,22 @@ export default function lspExtension(pi: ExtensionAPI) {
 					? `:${args.line}${args.column !== undefined ? `:${args.column}` : ""}`
 					: "";
 			const query = args.query ? ` · ${args.query}` : "";
-			const summary = `${action}${path ? ` ${path}${pos}` : ""}${query}`;
-			const activity = syncToolActivity(context);
-			const running = activity.active
-				? ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`
-				: "";
+			const summary = `${action}${query}`;
+			const summaryTail = path ? `${path}${pos}` : pos;
 			const expandedLines = [`lsp ${action}`, `${path}${pos}${query}`.trim()].filter(Boolean);
-			const [head = "lsp", ...rest] = expandedLines;
-			const styled = [
-				theme.fg("toolTitle", theme.bold(head)),
-				...rest.map((line) => theme.fg("muted", line)),
-			];
-			if (context.expanded) {
-				const content = new Text(styled.join("\n"), 1, 0);
-				return activity.active
-					? new SynchronizedShimmerRender(content, theme, activity, true)
-					: content;
-			}
-			const content = new Text(
-				`${theme.fg("toolTitle", theme.bold("lsp"))} ${theme.fg("muted", summary)}` +
-					theme.fg("muted", running),
-				1,
-				0,
-			);
-			return activity.active ? new SynchronizedShimmerRender(content, theme, activity) : content;
+			return renderSoftGroupedCall({
+				tracker: groupTracker,
+				groupId: "lsp",
+				label: "lsp",
+				summary,
+				summaryTail,
+				theme: {
+					fg: (name, text) => theme.fg(name as Parameters<Theme["fg"]>[0], text),
+					bold: (text) => theme.bold(text),
+				},
+				context,
+				expandedLines,
+			});
 		},
 		renderResult(result, { expanded, isPartial }, theme, context) {
 			const raw = result.content.find((part) => part.type === "text")?.text ?? "";
@@ -369,7 +363,7 @@ async function runAction(
 	params: LspParamsType,
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
-): Promise<AgentToolResult> {
+): Promise<AgentToolResult<unknown>> {
 	const cwd = ctx.cwd;
 
 	if (params.action === "status") {

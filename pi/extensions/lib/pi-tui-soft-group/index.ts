@@ -1,4 +1,10 @@
-import { Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import {
+	Text,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+	type Component,
+} from "@earendil-works/pi-tui";
 
 /** Matches host TOOL_CHAT_PADDING / MCP CHAT_PADDING. */
 const CHAT_PADDING = 1;
@@ -539,13 +545,18 @@ export class SynchronizedShimmerRender implements Component {
 			// would tack "· running" onto the final detail line of expanded chrome.
 			const firstContentLine = lines.findIndex((line) => stripAnsi(line).trim() !== "");
 			const index = firstContentLine === -1 ? lines.length - 1 : firstContentLine;
-			const available = Math.max(1, width - visibleWidth(RUNNING_SUFFIX));
+			const suffixWidth = visibleWidth(RUNNING_SUFFIX);
 			const content = trimRenderedLineEnd(lines[index] ?? "");
-			// Ellipsis, not a bare cut, so a clipped row still reads as clipped.
-			const fitted =
-				visibleWidth(content) <= available ? content : truncateToWidth(content, available, "…");
 			lines = [...lines];
-			lines[index] = `${fitted}${this.theme.fg("muted", RUNNING_SUFFIX)}`;
+			if (width <= suffixWidth) {
+				lines[index] = this.theme.fg("muted", truncateToWidth(RUNNING_SUFFIX.trim(), width, "…"));
+			} else {
+				const available = width - suffixWidth;
+				// Ellipsis, not a bare cut, so a clipped row still reads as clipped.
+				const fitted =
+					visibleWidth(content) <= available ? content : truncateToWidth(content, available, "…");
+				lines[index] = `${fitted}${this.theme.fg("muted", RUNNING_SUFFIX)}`;
+			}
 		}
 		const elapsedMs = this.activity.elapsedMs ?? 0;
 		if (!this.activity.active || elapsedMs < SHIMMER_DELAY_MS) return lines;
@@ -604,9 +615,9 @@ export type SoftGroupRenderContext = ToolActivityRenderContext & {
 	isError?: boolean;
 	/**
 	 * Host `ToolRenderContext.executionStarted`.
-	 * - `true` / omitted: may join soft-group state (live tools + unit tests)
-	 * - `false`: historical/session-restore rows; render standalone and do not
-	 *   mutate streak topology (prevents Ctrl+O / repaint from merging history)
+	 * - `true` / omitted: may append live soft-group state
+	 * - `false`: may hydrate session topology pre-seeded by bindSoftGroupTracker,
+	 *   but cannot append or reorder it during repaint
 	 */
 	executionStarted?: boolean;
 };
@@ -615,9 +626,9 @@ export type SoftGroupRenderContext = ToolActivityRenderContext & {
  * Tracks consecutive tool calls so collapsed TUI rows can soft-group.
  * Use one tracker per extension (or shared across tools that share a groupId).
  *
- * Example for read later:
+ * Example for read:
  *   tracker.noteItem({ groupId: "read", toolCallId, summary: path, unitCount: 1, invalidate })
- *   collapsed leader -> `read · 3 · src/foo.ts`
+ *   collapsed leader -> `read` with one `├─` / `└─` child row per call
  */
 export class SoftGroupTracker {
 	private events: SoftGroupEvent[] = [];
@@ -639,15 +650,34 @@ export class SoftGroupTracker {
 	 */
 	drop(toolCallId: string): void {
 		if (!this.items.delete(toolCallId)) return;
-		this.events = this.events.filter(
-			(event) => event.kind === "break" || event.toolCallId !== toolCallId,
-		);
+		const events: SoftGroupEvent[] = [];
+		for (const event of this.events) {
+			const next: SoftGroupEvent =
+				event.kind === "item" && event.toolCallId === toolCallId ? { kind: "break" } : event;
+			if (next.kind === "break" && events.at(-1)?.kind === "break") continue;
+			events.push(next);
+		}
+		this.events = events;
 		for (const item of this.items.values()) {
 			item.invalidate?.();
 		}
 	}
 
-	/** Insert a streak boundary (e.g. a different tool ran, or a new turn). */
+	/** Seed immutable call order before historical rows repaint in arbitrary order. */
+	seedItem(input: { groupId: string; toolCallId: string; label?: string }): void {
+		const toolCallId = input.toolCallId.trim();
+		if (!toolCallId || this.items.has(toolCallId)) return;
+		this.items.set(toolCallId, {
+			groupId: input.groupId,
+			toolCallId,
+			summary: "",
+			label: input.label,
+			unitCount: 1,
+		});
+		this.events.push({ kind: "item", groupId: input.groupId, toolCallId });
+	}
+
+	/** Insert a streak boundary, for example visible prose or an ungrouped tool. */
 	noteBreak(): void {
 		const last = this.events.at(-1);
 		if (last?.kind === "break") {
@@ -901,6 +931,100 @@ function collapsedChrome(
 	return new SynchronizedShimmerRender(content, theme, activity, true);
 }
 
+function clipStart(text: string, width: number): string {
+	if (width <= 1) return "…";
+	let end = "";
+	for (const char of [...stripAnsi(text)].reverse()) {
+		const next = char + end;
+		if (visibleWidth(next) > width - 1) break;
+		end = next;
+	}
+	return `…${end}`;
+}
+
+/** Wrap a tree leaf to at most two lines while retaining its identifying end. */
+function treeSummaryLines(
+	theme: SoftGroupedCallTheme,
+	item: SoftGroupItem,
+	width: number,
+): string[] {
+	const summary = item.summary.replace(/\s+/g, " ").trim();
+	const tail = item.summaryTail?.replace(/\s+/g, " ").trim();
+	const full = [summary, tail].filter(Boolean).join(" ") || "...";
+	if (visibleWidth(full) <= width) return [theme.fg("muted", full)];
+	if (width <= 1) return [theme.fg("muted", "…")];
+
+	// A separate tail usually names a path. Give the query and path one line
+	// each rather than allowing either to consume both available rows.
+	if (summary && tail) {
+		return [summaryText(theme, summary, undefined, width), summaryText(theme, "", tail, width)];
+	}
+
+	const wrapped = wrapTextWithAnsi(full, width);
+	if (wrapped.length <= 2) return wrapped.map((line) => theme.fg("muted", line));
+	return [theme.fg("muted", wrapped[0] ?? ""), theme.fg("muted", clipStart(full, width))];
+}
+
+function treeChrome(
+	theme: SoftGroupedCallTheme,
+	label: string,
+	items: SoftGroupItem[],
+	mixed: boolean,
+	activity: ToolActivitySnapshot,
+): Component {
+	const content: Component = {
+		render(width: number): string[] {
+			if (width <= 0) return [];
+			const reserved = activity.active ? visibleWidth(RUNNING_SUFFIX) : 0;
+			const parentWidth = Math.max(1, width - reserved);
+			const parent = ` ${titleText(theme, label)}`;
+			const lines = [
+				visibleWidth(parent) <= parentWidth ? parent : truncateToWidth(parent, parentWidth, "…"),
+			];
+
+			for (const [index, item] of items.entries()) {
+				const glyph = index === items.length - 1 ? "└─" : "├─";
+				const branch = ` ${glyph} `;
+				const branchWidth = visibleWidth(branch);
+				if (width <= branchWidth) {
+					lines.push(theme.fg("muted", truncateToWidth(branch, width, "")));
+					continue;
+				}
+
+				const available = width - branchWidth;
+				let childLabel = "";
+				let summaryWidth = available;
+				if (mixed && item.label) {
+					const fullLabel = `${item.label} `;
+					const minimumSummary = Math.min(12, Math.max(1, available - 1));
+					const labelBudget = Math.min(
+						visibleWidth(fullLabel),
+						Math.max(0, available - minimumSummary),
+					);
+					if (labelBudget > 0) {
+						childLabel =
+							visibleWidth(fullLabel) <= labelBudget
+								? fullLabel
+								: `${clipEnd(item.label, labelBudget).trimEnd()} `;
+						summaryWidth = Math.max(1, available - visibleWidth(childLabel));
+					}
+				}
+				const summaryLines = treeSummaryLines(theme, item, summaryWidth);
+				for (const [lineIndex, summaryLine] of summaryLines.entries()) {
+					const rail = lineIndex === 0 ? branch : index === items.length - 1 ? "    " : " │  ";
+					const label = lineIndex === 0 ? childLabel : " ".repeat(visibleWidth(childLabel));
+					lines.push(`${theme.fg("muted", `${rail}${label}`)}${summaryLine}`);
+				}
+			}
+			return lines.map((line) =>
+				visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…"),
+			);
+		},
+		invalidate() {},
+	};
+	return new SynchronizedShimmerRender(content, theme, activity, true);
+}
+
 function expandedChrome(
 	theme: SoftGroupedCallTheme,
 	label: string,
@@ -919,11 +1043,10 @@ function expandedChrome(
 }
 
 /**
- * Option B collapsed chrome: `label · N · lastSummary`
+ * Consecutive calls collapse into a parent plus one branch row per call.
  * Non-leaders render nothing while collapsed. Expanded rows show only local content.
- *
- * Rows with `executionStarted: false` (session history) render standalone and never
- * join tracker state, so repaints/Ctrl+O cannot rewrite older streaks.
+ * Session-history rows join only topology pre-seeded by bindSoftGroupTracker, so
+ * repaint order cannot duplicate or reorder restored streaks.
  */
 export function renderSoftGroupedCall(options: {
 	tracker: SoftGroupTracker;
@@ -948,25 +1071,19 @@ export function renderSoftGroupedCall(options: {
 	const toolCallId =
 		typeof options.context.toolCallId === "string" ? options.context.toolCallId.trim() : "";
 
-	// Session-history rows keep executionStarted=false forever. Never let them
-	// create or rewrite streak topology on Ctrl+O / resize / invalidate paints.
-	if (options.context.executionStarted === false) {
-		if (options.context.expanded) {
-			return expandedChrome(
-				options.theme,
-				options.label,
-				expandedSummary,
-				unitCount,
-				options.expandedLines,
-			);
-		}
-		return collapsedChrome(options.theme, options.label, unitCount, summary, summaryTail);
+	const historical = options.context.executionStarted === false;
+	const seededHistorical = historical && Boolean(toolCallId) && options.tracker.has(toolCallId);
+
+	// A failed call keeps its own row, so the error beneath it has a subject.
+	// Dropping it also leaves a boundary between otherwise matching neighbors.
+	if (options.context.isError && toolCallId) {
+		options.tracker.drop(toolCallId);
 	}
 
 	if (options.context.expanded) {
-		// Expanded chrome is per-row. Refresh tracked live rows so summaries stay
-		// current when the leader line is hidden.
-		if (toolCallId) {
+		// Expanded chrome is always per-row. Historical rows may hydrate existing
+		// seeded items, but never append topology during repaint.
+		if (toolCallId && !options.context.isError && (!historical || seededHistorical)) {
 			options.tracker.noteItem({
 				groupId: options.groupId,
 				toolCallId,
@@ -993,12 +1110,16 @@ export function renderSoftGroupedCall(options: {
 	}
 
 	if (!toolCallId) {
-		return emptyCollapsed();
+		return historical
+			? collapsedChrome(options.theme, options.label, unitCount, summary, summaryTail)
+			: emptyCollapsed();
 	}
 
-	// A failed call keeps its own row, so the error beneath it has a subject.
 	if (options.context.isError) {
-		options.tracker.drop(toolCallId);
+		return collapsedChrome(options.theme, options.label, unitCount, summary, summaryTail);
+	}
+
+	if (historical && !seededHistorical) {
 		return collapsedChrome(options.theme, options.label, unitCount, summary, summaryTail);
 	}
 
@@ -1017,22 +1138,84 @@ export function renderSoftGroupedCall(options: {
 		return emptyCollapsed();
 	}
 
-	// A streak of one tool keeps that tool's title; once tools mix, the row is
-	// titled generically and the trailing call names its own tool instead.
+	// A single call keeps the established compact chrome. Real streaks render a
+	// dense tree, with child labels only when a generic group mixes tools.
 	const mixed = streak.uniformLabel === undefined;
 	const leaderLabel = mixed ? (options.groupLabel ?? options.label) : streak.uniformLabel!;
-	const leaderSummary =
-		streak.lastSummary.replace(/\s+/g, " ").trim() || (streak.lastSummaryTail ? "" : summary);
-	return collapsedChrome(
-		options.theme,
-		leaderLabel,
-		streak.totalUnits,
-		leaderSummary,
-		streak.lastSummaryTail,
-		// Only worth naming when the row is titled by something else.
-		streak.lastLabel === leaderLabel ? undefined : streak.lastLabel,
-		streak.activity,
+	if (streak.items.length === 1) {
+		const leaderSummary =
+			streak.lastSummary.replace(/\s+/g, " ").trim() || (streak.lastSummaryTail ? "" : summary);
+		return collapsedChrome(
+			options.theme,
+			leaderLabel,
+			streak.totalUnits,
+			leaderSummary,
+			streak.lastSummaryTail,
+			streak.lastLabel === leaderLabel ? undefined : streak.lastLabel,
+			streak.activity,
+		);
+	}
+	return treeChrome(options.theme, leaderLabel, streak.items, mixed, streak.activity);
+}
+
+function hasVisibleContent(content: any): boolean {
+	if (typeof content === "string") return content.trim().length > 0;
+	if (!Array.isArray(content)) return false;
+	return content.some(
+		(part) =>
+			part?.type === "image" ||
+			(part?.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) ||
+			(part?.type === "thinking" &&
+				typeof part.thinking === "string" &&
+				part.thinking.trim().length > 0),
 	);
+}
+
+function hasVisibleMessageProse(message: any): boolean {
+	if (!message || message.role === "toolResult") return false;
+	if (message.role === "assistant" || message.role === "user") {
+		return hasVisibleContent(message.content);
+	}
+	if (message.role === "custom") {
+		return message.display !== false && hasVisibleContent(message.content);
+	}
+	return false;
+}
+
+function seedSessionTopology(ctx: any, tracker: SoftGroupTracker, grouped: Set<string>): void {
+	const manager = ctx?.sessionManager;
+	const entries = manager?.getBranch?.() ?? manager?.getEntries?.() ?? [];
+	if (!Array.isArray(entries)) return;
+
+	for (const entry of entries) {
+		if (entry?.type !== "message") {
+			// Custom prose and structural records both interrupt what the user sees
+			// as consecutive tool rows. Invisible records are conservative breaks.
+			tracker.noteBreak();
+			continue;
+		}
+		const message = entry.message;
+		if (!message || message.role === "toolResult") continue;
+		if (message.role !== "assistant") {
+			if (hasVisibleMessageProse(message)) tracker.noteBreak();
+			continue;
+		}
+
+		const content = Array.isArray(message.content) ? message.content : [];
+		// Pi renders assistant prose before its separate tool rows regardless of
+		// provider content-part order, so the prose boundary precedes every call.
+		if (hasVisibleContent(content)) tracker.noteBreak();
+		for (const part of content) {
+			if (part?.type !== "toolCall") continue;
+			const toolName = typeof part.name === "string" ? part.name : "";
+			const toolCallId = typeof part.id === "string" ? part.id : "";
+			if (!grouped.has(toolName) || !toolCallId) {
+				tracker.noteBreak();
+				continue;
+			}
+			tracker.seedItem({ groupId: toolName, toolCallId, label: toolName });
+		}
+	}
 }
 
 /** Bind tracker lifecycle to common Pi extension events. */
@@ -1044,23 +1227,46 @@ export function bindSoftGroupTracker(
 	groupToolNames: Iterable<string>,
 ): void {
 	const grouped = new Set(groupToolNames);
-	pi.on("session_start", () => {
+	let assistantProseBroken = false;
+	pi.on("session_start", (_event, ctx) => {
 		tracker.reset();
 		resetToolActivity();
+		assistantProseBroken = false;
+		seedSessionTopology(ctx, tracker, grouped);
 	});
 	pi.on("session_shutdown", () => {
 		resetToolActivity();
 	});
-	// Turn boundaries separate streaks. Resetting here used to wipe topology so
-	// the next Ctrl+O / repaint re-registered history in paint order and merged
-	// every web-search/MCP row in the session into one streak.
+	// Tool-only assistant turns remain consecutive. A turn only resets the
+	// streaming-message guard; visible prose creates the actual boundary.
 	pi.on("turn_start", () => {
+		assistantProseBroken = false;
+	});
+	pi.on("message_start", (event) => {
+		const message = event?.message;
+		if (message?.role === "assistant") assistantProseBroken = false;
+		if (!hasVisibleMessageProse(message)) return;
 		tracker.noteBreak();
+		if (message.role === "assistant") assistantProseBroken = true;
+	});
+	pi.on("message_update", (event) => {
+		const message = event?.message;
+		if (message?.role !== "assistant" || assistantProseBroken) return;
+		if (!hasVisibleMessageProse(message)) return;
+		tracker.noteBreak();
+		assistantProseBroken = true;
+	});
+	pi.on("message_end", (event) => {
+		const message = event?.message;
+		if (message?.role === "assistant") {
+			if (!assistantProseBroken && hasVisibleMessageProse(message)) tracker.noteBreak();
+			assistantProseBroken = assistantProseBroken || hasVisibleMessageProse(message);
+			return;
+		}
+		if (hasVisibleMessageProse(message)) tracker.noteBreak();
 	});
 	pi.on("tool_execution_start", (event) => {
 		const toolName = typeof event?.toolName === "string" ? event.toolName : "";
-		if (!grouped.has(toolName)) {
-			tracker.noteBreak();
-		}
+		if (!grouped.has(toolName)) tracker.noteBreak();
 	});
 }

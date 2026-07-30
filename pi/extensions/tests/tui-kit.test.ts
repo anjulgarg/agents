@@ -615,101 +615,142 @@ testModelUsageFormatting();
 testScrollingViewport();
 testSelectableViewport();
 testResponsiveSplitPane();
-function testSoftGroupOptionB(): void {
+function testSoftGroupTrees(): void {
 	const tracker = new SoftGroupTracker();
-	const mutedParts: string[] = [];
+	const styled: Array<{ color: string; text: string }> = [];
 	const theme = {
 		fg: (color: string, text: string) => {
-			if (color === "muted") mutedParts.push(text);
+			styled.push({ color, text });
 			return text;
 		},
 		bold: (text: string) => text,
 	};
 	const invalidations: string[] = [];
-	const first = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "src/a.ts",
-		theme,
-		context: {
-			toolCallId: "r1",
-			expanded: false,
-			invalidate: () => invalidations.push("r1"),
-		},
-	}).render(40);
-	const second = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "src/b.ts",
-		unitCount: 2,
-		theme,
-		context: {
-			toolCallId: "r2",
-			expanded: false,
-			invalidate: () => invalidations.push("r2"),
-		},
-	}).render(40);
-	const firstAgain = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "src/a.ts",
-		theme,
-		context: {
-			toolCallId: "r1",
-			expanded: false,
-			invalidate: () => invalidations.push("r1"),
-		},
-	}).render(40);
-	const expanded = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "src/a.ts",
-		theme,
-		context: {
-			toolCallId: "r1",
-			expanded: true,
-			invalidate: () => undefined,
-		},
-	})
-		.render(40)
-		.join("\n");
-	const truncated = renderSoftGroupedCall({
-		tracker: new SoftGroupTracker(),
-		groupId: "grep",
-		label: "grep",
-		summary: "/✓ \\$|✓ edit|✓ write|✓.*checkpoint/ in coding/.pi/agent/extensions/tests · *.ts",
-		theme,
-		context: {
-			toolCallId: "historical-grep",
-			expanded: false,
-			executionStarted: false,
-		},
-	}).render(81);
+	const call = (
+		id: string,
+		summary: string,
+		expanded = false,
+		options: { tracker?: InstanceType<typeof SoftGroupTracker>; tail?: string } = {},
+	) =>
+		renderSoftGroupedCall({
+			tracker: options.tracker ?? tracker,
+			groupId: "read",
+			label: "read",
+			summary,
+			summaryTail: options.tail,
+			theme,
+			context: {
+				toolCallId: id,
+				expanded,
+				invalidate: () => invalidations.push(id),
+			},
+		}).render(40);
+
+	const single = call("r1", "src/a.ts");
+	const two = call("r2", "src/b.ts");
+	const hidden = call("r1", "src/a.ts");
+	const three = call("r3", "src/c.ts");
+	const expanded = call("r1", "src/a.ts", true).join("\n");
 
 	assert(
-		"soft-group option B keeps one leader line and expands rows independently",
-		first.length === 1 &&
-			second.length === 1 &&
-			second[0]?.includes("read · 3 ·") &&
-			second[0]?.includes("src/b.ts") &&
-			firstAgain.length === 0 &&
+		"two- and three-call streaks render exact tree branches while one call stays compact",
+		single.length === 1 &&
+			single[0]?.includes("read src/a.ts") &&
+			two.length === 3 &&
+			two[0]?.trim() === "read" &&
+			two[1]?.trim() === "├─ src/a.ts" &&
+			two[2]?.trim() === "└─ src/b.ts" &&
+			hidden.length === 0 &&
+			three.length === 4 &&
+			three[1]?.trim() === "├─ src/a.ts" &&
+			three[2]?.trim() === "├─ src/b.ts" &&
+			three[3]?.trim() === "└─ src/c.ts" &&
 			expanded.includes("read src/a.ts") &&
 			invalidations.includes("r1") &&
-			!invalidations.includes("r2") &&
-			visibleWidth(second[0] ?? "") <= 40 &&
-			truncated[0]?.endsWith("tests…") &&
-			!truncated[0]?.includes(" ·…") &&
-			visibleWidth(truncated[0] ?? "") <= 81,
-		JSON.stringify({ first, second, firstAgain, expanded, truncated, invalidations }),
+			styled.some((part) => part.color === "toolTitle" && part.text === "read") &&
+			styled.some((part) => part.color === "muted" && part.text.includes("├─")),
+		JSON.stringify({ single, two, hidden, three, expanded, invalidations }),
 	);
+
+	const narrowTracker = new SoftGroupTracker();
+	const narrowCall = (id: string, name: string) =>
+		renderSoftGroupedCall({
+			tracker: narrowTracker,
+			groupId: "read",
+			label: "read",
+			summary: "opening",
+			summaryTail: `/very/long/identifying/${name}`,
+			theme,
+			context: { toolCallId: id, expanded: false },
+		}).render(24);
+	narrowCall("n1", "alpha.ts");
+	const narrow = narrowCall("n2", "omega.ts");
 	assert(
-		"collapsed group count and separators use muted styling like the path",
-		mutedParts.includes("3") && mutedParts.includes(" · "),
-		JSON.stringify(mutedParts),
+		"tree leaves wrap to two aligned lines while preserving identifying tails",
+		narrow.length === 5 &&
+			narrow.every((line) => visibleWidth(line) <= 24) &&
+			narrow[1]?.trim() === "├─ opening" &&
+			narrow[2]?.trim().startsWith("│") &&
+			narrow[2]?.endsWith("alpha.ts") &&
+			narrow[3]?.trim() === "└─ opening" &&
+			!narrow[4]?.includes("│") &&
+			narrow[4]?.endsWith("omega.ts"),
+		JSON.stringify(narrow),
+	);
+
+	const mixedTracker = new SoftGroupTracker();
+	const mixedCall = (id: string, label: string, summary: string) =>
+		renderSoftGroupedCall({
+			tracker: mixedTracker,
+			groupId: "files",
+			groupLabel: "files",
+			label,
+			summary,
+			theme,
+			context: { toolCallId: id, expanded: false },
+		}).render(50);
+	mixedCall("m1", "read", "src/input.ts");
+	const mixed = mixedCall("m2", "write", "src/output.ts");
+	assert(
+		"generic mixed groups retain attributable child tool labels",
+		mixed[0]?.trim() === "files" &&
+			mixed[1]?.trim() === "├─ read src/input.ts" &&
+			mixed[2]?.trim() === "└─ write src/output.ts",
+		JSON.stringify(mixed),
+	);
+
+	const failedTracker = new SoftGroupTracker();
+	const failedCall = (id: string, isError = false) =>
+		renderSoftGroupedCall({
+			tracker: failedTracker,
+			groupId: "read",
+			label: "read",
+			summary: `${id}.ts`,
+			theme,
+			context: {
+				toolCallId: id,
+				expanded: false,
+				isError,
+				invalidate: () => invalidations.push(`failed:${id}`),
+			},
+		}).render(40);
+	failedCall("f1");
+	failedCall("f2");
+	failedCall("f3");
+	const failed = failedCall("f2", true);
+	const before = failedCall("f1");
+	const after = failedCall("f3");
+	assert(
+		"failed calls render standalone and split neighboring tree topology",
+		failed.length === 1 &&
+			failed[0]?.includes("f2.ts") &&
+			before.length === 1 &&
+			after.length === 1 &&
+			failedTracker.getStreak("f1")?.items.length === 1 &&
+			failedTracker.getStreak("f3")?.items.length === 1 &&
+			invalidations.includes("failed:f1") &&
+			invalidations.includes("failed:f3"),
+		JSON.stringify({ failed, before, after, invalidations }),
 	);
 }
 
@@ -759,7 +800,7 @@ function testRunningLabelPlacement(): void {
 	resetToolActivity();
 }
 
-function testSoftGroupTurnBreakAndHistory(): void {
+function testSoftGroupLifecycleAndHistory(): void {
 	const tracker = new SoftGroupTracker();
 	const theme = {
 		fg: (_color: string, text: string) => text,
@@ -777,91 +818,117 @@ function testSoftGroupTurnBreakAndHistory(): void {
 		tracker,
 		["read"],
 	);
-	const emit = (event: string, payload: any = {}) => {
-		for (const handler of handlers.get(event) ?? []) {
-			handler(payload, {});
-		}
+	const emit = (event: string, payload: any = {}, ctx: any = {}) => {
+		for (const handler of handlers.get(event) ?? []) handler(payload, ctx);
 	};
+	const toolCall = (id: string, name = "read") => ({
+		type: "toolCall",
+		id,
+		name,
+		arguments: {},
+	});
+	const entry = (message: any) => ({ type: "message", message });
+	const branch = [
+		entry({ role: "user", content: "begin" }),
+		entry({ role: "assistant", content: [toolCall("hist-1")] }),
+		entry({ role: "toolResult", toolCallId: "hist-1", toolName: "read", content: [] }),
+		entry({ role: "assistant", content: [toolCall("hist-2")] }),
+		entry({
+			role: "assistant",
+			content: [toolCall("hist-3"), { type: "thinking", thinking: "visible reasoning" }],
+		}),
+		{ type: "compaction", summary: "boundary" },
+		entry({ role: "assistant", content: [toolCall("hist-4")] }),
+		entry({ role: "assistant", content: [toolCall("other-1", "bash")] }),
+		entry({ role: "assistant", content: [toolCall("hist-5")] }),
+	];
+	emit("session_start", {}, { sessionManager: { getBranch: () => branch } });
 
-	emit("session_start");
-	renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "old-a",
-		theme,
-		context: { toolCallId: "old-a", expanded: false, executionStarted: true },
-	});
-	renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "old-b",
-		theme,
-		context: { toolCallId: "old-b", expanded: false, executionStarted: true },
-	});
+	const historical = (id: string, expanded = false) =>
+		renderSoftGroupedCall({
+			tracker,
+			groupId: "read",
+			label: "read",
+			summary: id,
+			theme,
+			context: { toolCallId: id, expanded, executionStarted: false },
+		}).render(50);
+	const hist1 = historical("hist-1");
+	const hist2 = historical("hist-2");
+	const hist3 = historical("hist-3");
+	const hist4 = historical("hist-4");
+	const hist5 = historical("hist-5");
+	const expanded = historical("hist-1", true).join("\n");
+	const repaint = historical("hist-2");
+	const missingHistorical = historical("not-seeded");
+
+	assert(
+		"session history seeds same-name tool-only turns and preserves prose, structural, and tool boundaries",
+		hist1.length === 0 &&
+			hist2.length === 3 &&
+			hist2[1]?.trim() === "├─ hist-1" &&
+			hist2[2]?.trim() === "└─ hist-2" &&
+			hist3.length === 1 &&
+			hist4.length === 1 &&
+			hist5.length === 1 &&
+			expanded.includes("read hist-1") &&
+			repaint.length === 3 &&
+			repaint[1]?.trim() === "├─ hist-1" &&
+			repaint[2]?.trim() === "└─ hist-2" &&
+			tracker
+				.getStreak("hist-2")
+				?.items.map((item) => item.toolCallId)
+				.join(",") === "hist-1,hist-2" &&
+			missingHistorical.length === 1,
+		JSON.stringify({ hist1, hist2, hist3, hist4, hist5, expanded, repaint }),
+	);
+
+	emit("message_start", { message: { role: "user", content: "continue" } });
+	emit("message_start", { message: { role: "assistant", content: [] } });
+	const live = (id: string) =>
+		renderSoftGroupedCall({
+			tracker,
+			groupId: "read",
+			label: "read",
+			summary: id,
+			theme,
+			context: { toolCallId: id, expanded: false, executionStarted: true },
+		}).render(50);
+	live("live-1");
+	emit("turn_start");
+	const liveTree = live("live-2");
 
 	emit("turn_start");
-	const live = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "live",
-		theme,
-		context: { toolCallId: "live-1", expanded: false, executionStarted: true },
-	}).render(40);
-
-	// Out-of-order historical repaint must not steal leadership from the live row.
-	const histB = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "old-b",
-		theme,
-		context: { toolCallId: "hist-b", expanded: false, executionStarted: false },
-	}).render(40);
-	const histA = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "old-a",
-		theme,
-		context: { toolCallId: "hist-a", expanded: false, executionStarted: false },
-	}).render(40);
-	const liveAgain = renderSoftGroupedCall({
-		tracker,
-		groupId: "read",
-		label: "read",
-		summary: "live",
-		theme,
-		context: { toolCallId: "live-1", expanded: false, executionStarted: true },
-	}).render(40);
-	const missingId = renderSoftGroupedCall({
+	emit("message_update", {
+		message: { role: "assistant", content: [{ type: "text", text: "Now inspect" }] },
+	});
+	live("live-3");
+	emit("message_update", {
+		message: { role: "assistant", content: [{ type: "text", text: "Now inspect more" }] },
+	});
+	const updateTree = live("live-4");
+	emit("tool_execution_start", { toolName: "bash", toolCallId: "bash-live" });
+	const afterDifferentTool = live("live-5");
+	const missingLive = renderSoftGroupedCall({
 		tracker,
 		groupId: "read",
 		label: "read",
 		summary: "ghost",
 		theme,
 		context: { toolCallId: "", expanded: false, executionStarted: true },
-	}).render(40);
+	}).render(50);
 
 	assert(
-		"turn_start breaks streaks; historical and missing ids cannot rewrite live chrome",
-		live[0]?.includes("read live") &&
-			histA[0]?.includes("old-a") &&
-			histB[0]?.includes("old-b") &&
-			liveAgain[0]?.includes("read live") &&
-			missingId.length === 0 &&
-			tracker.getStreak("live-1")?.totalUnits === 1 &&
-			tracker.getStreak("old-b")?.totalUnits === 2,
-		JSON.stringify({
-			live,
-			histA,
-			histB,
-			liveAgain,
-			missingId,
-			streak: tracker.getStreak("live-1"),
-		}),
+		"live tool-only turns group; prose updates break once and different tools break",
+		liveTree.length === 3 &&
+			liveTree[1]?.includes("live-1") &&
+			liveTree[2]?.includes("live-2") &&
+			updateTree.length === 3 &&
+			updateTree[1]?.includes("live-3") &&
+			updateTree[2]?.includes("live-4") &&
+			afterDifferentTool.length === 1 &&
+			missingLive.length === 0,
+		JSON.stringify({ liveTree, updateTree, afterDifferentTool, missingLive }),
 	);
 }
 
@@ -869,7 +936,7 @@ testSynchronizedToolActivity();
 testShimmerGradientQuality();
 testToolRevealPolicy();
 testBodyPaddingX();
-testSoftGroupOptionB();
+testSoftGroupTrees();
 testRunningLabelPlacement();
-testSoftGroupTurnBreakAndHistory();
+testSoftGroupLifecycleAndHistory();
 console.log("All tui-kit tests passed.");

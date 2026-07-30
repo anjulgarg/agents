@@ -1,9 +1,9 @@
 /**
  * Compact built-in tool rendering for the default Pi transcript.
  *
- * Each tool call keeps its own row (no soft-grouping). Active rows shimmer,
- * Bash/mutation receipts stay individually visible, and full output remains
- * behind Ctrl+O. Failures remain visible without expansion.
+ * Stable inspection calls soft-group by consecutive exact tool name. Active
+ * rows shimmer, Bash/mutation receipts stay individually visible, and full
+ * output remains behind Ctrl+O. Failures remain visible without expansion.
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -37,11 +37,15 @@ import {
 	runGrepSummary,
 } from "./lib/grep-summary.ts";
 import {
+	SoftGroupTracker,
 	SynchronizedShimmerRender,
 	TOOL_CHAT_PADDING,
+	bindSoftGroupTracker,
 	emptyCollapsedToolRender,
 	formatToolDuration,
+	renderSoftGroupedCall,
 	syncToolActivity,
+	type SoftGroupRenderContext,
 	type ToolActivitySnapshot,
 } from "./lib/tui/index.ts";
 
@@ -92,6 +96,13 @@ function compactFailure(theme: Theme, message: string): Component {
 		CHAT_PADDING,
 		0,
 	);
+}
+
+function shimmerTheme(theme: Theme) {
+	return {
+		fg: (name: string, text: string) => theme.fg(name as Parameters<Theme["fg"]>[0], text),
+		bold: (text: string) => theme.bold(text),
+	};
 }
 
 function bashFailureSuffix(text: string): string {
@@ -192,23 +203,27 @@ export class MinimalCommand implements Component {
 	invalidate(): void {}
 }
 
-/** One standalone tool title row (no soft-grouping). */
+/** Render one stable inspection call through the shared consecutive grouper. */
 function renderToolCallLine(
+	tracker: SoftGroupTracker,
 	theme: Theme,
 	label: string,
 	summary: string,
-	activity: ToolActivitySnapshot,
+	context: SoftGroupRenderContext,
+	summaryTail?: string,
 ): Component {
-	const running = activity.active
-		? ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`
-		: "";
-	const content = new Text(
-		`${theme.fg("toolTitle", theme.bold(label))} ${theme.fg("muted", summary)}` +
-			theme.fg("muted", running),
-		CHAT_PADDING,
-		0,
-	);
-	return activity.active ? new SynchronizedShimmerRender(content, theme, activity) : content;
+	return renderSoftGroupedCall({
+		tracker,
+		groupId: label,
+		label,
+		summary,
+		summaryTail,
+		theme: {
+			fg: (name, text) => theme.fg(name as Parameters<Theme["fg"]>[0], text),
+			bold: (text) => theme.bold(text),
+		},
+		context,
+	});
 }
 
 // Cache for built-in tools by cwd
@@ -296,6 +311,8 @@ async function ensureRipgrep(warmUp: () => Promise<unknown>): Promise<string> {
 
 export default function (pi: ExtensionAPI) {
 	const bashDurations = new Map<string, number>();
+	const inspectionGroupTracker = new SoftGroupTracker();
+	bindSoftGroupTracker(pi as any, inspectionGroupTracker, ["read", "find", "grep", "ls"]);
 
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "bash") return;
@@ -328,13 +345,13 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme, context) {
 			const path = shortenPath(args.path || "") || "...";
-			let summary = path;
+			let pathSummary = path;
 			if (args.offset !== undefined || args.limit !== undefined) {
 				const startLine = args.offset ?? 1;
 				const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
-				summary += `:${startLine}${endLine ? `-${endLine}` : ""}`;
+				pathSummary += `:${startLine}${endLine ? `-${endLine}` : ""}`;
 			}
-			return renderToolCallLine(theme, "read", summary, syncToolActivity(context));
+			return renderToolCallLine(inspectionGroupTracker, theme, "read", "", context, pathSummary);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
@@ -402,7 +419,7 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("muted", ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`),
 				),
 			);
-			return new SynchronizedShimmerRender(container, theme, activity);
+			return new SynchronizedShimmerRender(container, shimmerTheme(theme), activity);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
@@ -476,7 +493,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			if (context.expanded) return content;
 			return activity.active
-				? new SynchronizedShimmerRender(content, theme, activity)
+				? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity)
 				: emptyCollapsedToolRender();
 		},
 
@@ -547,7 +564,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			if (context.expanded) return content;
 			return activity.active
-				? new SynchronizedShimmerRender(content, theme, activity)
+				? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity)
 				: emptyCollapsedToolRender();
 		},
 
@@ -602,10 +619,12 @@ export default function (pi: ExtensionAPI) {
 			const path = shortenPath(args.path || ".");
 			const limit = args.limit !== undefined ? ` · limit ${args.limit}` : "";
 			return renderToolCallLine(
+				inspectionGroupTracker,
 				theme,
 				"find",
-				`${pattern}${limit} in ${path}`,
-				syncToolActivity(context),
+				`${pattern}${limit}`,
+				context,
+				`in ${path}`,
 			);
 		},
 
@@ -661,7 +680,7 @@ export default function (pi: ExtensionAPI) {
 			const rgPath = await ensureRipgrep(() =>
 				tools.grep.execute(toolCallId, { ...builtInParams, limit: 1 }, signal, onUpdate),
 			);
-			return runGrepSummary(
+			const summary = await runGrepSummary(
 				rgPath,
 				{
 					mode: outputMode,
@@ -673,6 +692,7 @@ export default function (pi: ExtensionAPI) {
 				},
 				{ isDirectory, limit: builtInParams.limit ?? DEFAULT_SUMMARY_LIMIT, signal },
 			);
+			return { ...summary, details: summary.details ?? {} };
 		},
 
 		renderCall(args, theme, context) {
@@ -687,8 +707,15 @@ export default function (pi: ExtensionAPI) {
 			]
 				.filter(Boolean)
 				.join(" · ");
-			const summary = `/${pattern}/${details ? ` · ${details}` : ""} in ${path}`;
-			return renderToolCallLine(theme, "grep", summary, syncToolActivity(context));
+			const summary = `/${pattern}/${details ? ` · ${details}` : ""}`;
+			return renderToolCallLine(
+				inspectionGroupTracker,
+				theme,
+				"grep",
+				summary,
+				context,
+				`in ${path}`,
+			);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
@@ -733,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args, theme, context) {
 			const path = shortenPath(args.path || ".");
 			const summary = `${path}${args.limit !== undefined ? ` · limit ${args.limit}` : ""}`;
-			return renderToolCallLine(theme, "ls", summary, syncToolActivity(context));
+			return renderToolCallLine(inspectionGroupTracker, theme, "ls", "", context, summary);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
