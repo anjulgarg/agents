@@ -111,6 +111,22 @@ assert(
 	JSON.stringify({ readAFirst, readBFirst, readAAfter }),
 );
 
+emit("session_start");
+const batchReadArgs = { path: "src/batch.ts" };
+const followupReadArgs = { path: "src/followup.ts" };
+readTool.renderCall?.(batchReadArgs, theme, renderContext("read-batch", batchReadArgs)).render(80);
+emit("tool_execution_start", { toolName: "announce_step", toolCallId: "announce-between" });
+const crossBatchReads =
+	readTool
+		.renderCall?.(followupReadArgs, theme, renderContext("read-followup", followupReadArgs))
+		.render(80) ?? [];
+assert(
+	"read batches stay grouped across hidden progress announcements",
+	crossBatchReads.join("").includes("├─ src/batch.ts") &&
+		crossBatchReads.join("").includes("└─ src/followup.ts"),
+	JSON.stringify(crossBatchReads),
+);
+
 const grepTool = registered.find((candidate) => candidate.name === "grep")!;
 const findTool = registered.find((candidate) => candidate.name === "find")!;
 

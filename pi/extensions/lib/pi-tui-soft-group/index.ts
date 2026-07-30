@@ -1230,10 +1230,10 @@ export function bindSoftGroupTracker(
 	},
 	tracker: SoftGroupTracker,
 	groupToolNames: Iterable<string>,
-	options: { ignoreAssistantProse?: boolean } = {},
+	options: { nonBreakingToolNames?: Iterable<string> } = {},
 ): void {
 	const grouped = new Set(groupToolNames);
-	const ignoreAssistantProse = options.ignoreAssistantProse === true;
+	const nonBreaking = new Set(options.nonBreakingToolNames ?? []);
 	let assistantProseBroken = false;
 	pi.on("session_start", (_event, ctx) => {
 		tracker.reset();
@@ -1253,7 +1253,7 @@ export function bindSoftGroupTracker(
 		const message = event?.message;
 		if (message?.role === "assistant") assistantProseBroken = false;
 		if (!hasVisibleMessageProse(message)) return;
-		if (!ignoreAssistantProse) tracker.noteBreak();
+		tracker.noteBreak();
 		if (message.role === "assistant") assistantProseBroken = true;
 	});
 	pi.on("message_update", (event) => {
@@ -1266,9 +1266,7 @@ export function bindSoftGroupTracker(
 	pi.on("message_end", (event) => {
 		const message = event?.message;
 		if (message?.role === "assistant") {
-			if (!ignoreAssistantProse && !assistantProseBroken && hasVisibleMessageProse(message)) {
-				tracker.noteBreak();
-			}
+			if (!assistantProseBroken && hasVisibleMessageProse(message)) tracker.noteBreak();
 			assistantProseBroken = assistantProseBroken || hasVisibleMessageProse(message);
 			return;
 		}
@@ -1276,6 +1274,6 @@ export function bindSoftGroupTracker(
 	});
 	pi.on("tool_execution_start", (event) => {
 		const toolName = typeof event?.toolName === "string" ? event.toolName : "";
-		if (!grouped.has(toolName)) tracker.noteBreak();
+		if (!grouped.has(toolName) && !nonBreaking.has(toolName)) tracker.noteBreak();
 	});
 }

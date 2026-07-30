@@ -314,7 +314,7 @@ export default function (pi: ExtensionAPI) {
 	const isolatedEditFailures = new Set<string>();
 	const toolGroupTracker = new SoftGroupTracker();
 	bindSoftGroupTracker(pi as any, toolGroupTracker, ["read", "find", "grep", "ls", "edit"], {
-		ignoreAssistantProse: true,
+		nonBreakingToolNames: ["announce_step"],
 	});
 	pi.on("session_start", () => isolatedEditFailures.clear());
 
