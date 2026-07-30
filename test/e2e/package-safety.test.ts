@@ -54,11 +54,10 @@ describe("package and repository safety", () => {
 			"pi/config/keybindings.json",
 			"pi/extensions/question.ts",
 			"pi/extensions/team/index.ts",
-			"harnesses/cursor/inject-agents.ts",
-			"instructions/AGENTS.md",
-			"prompts/orchestrate.md",
+			"pi/AGENTS.md",
+			"pi/prompts/orchestrate.md",
 			"skills/pr/SKILL.md",
-			"teams/product.json",
+			"pi/teams/product.json",
 			"pi/themes/claude-code.json",
 		]) {
 			expect(files, `missing packed runtime file ${required}`).toContain(required);
@@ -82,8 +81,7 @@ describe("package and repository safety", () => {
 		expect(packed.unpackedSize).toBeLessThanOrEqual(2.5 * 1024 * 1024);
 	});
 
-	it("T7 remains private, local-only, unpublished, and excludes live model calls", async () => {
-		const { root } = await fixtureHome();
+	it("T7 remains npm-private, unpublished, and excludes live model calls", async () => {
 		const packageJson = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8")) as {
 			private?: boolean;
 			scripts: Record<string, string>;
@@ -95,11 +93,5 @@ describe("package and repository safety", () => {
 		expect(runner).toContain("rpc-client.smoke.ts");
 		expect(runner).toContain("supervisor.e2e.ts");
 		expect(runner).toContain("!LIVE_TESTS.has(display)");
-
-		const { stdout } = await execFileAsync("git", ["remote"], {
-			cwd: sourceRoot,
-			env: { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1" },
-		});
-		expect(stdout.trim()).toBe("");
 	});
 });

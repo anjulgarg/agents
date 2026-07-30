@@ -83,6 +83,17 @@ export interface SelectorRenderState {
 	readonly installedOnly: boolean;
 }
 
+const categoryLabels: Record<ComponentDefinition["category"], string> = {
+	skill: "Skills",
+	"pi-extension": "Pi Extensions",
+	"pi-config": "Pi Configuration",
+	"pi-package": "Pi Packages",
+	"pi-prompt": "Prompts",
+	"pi-theme": "Themes",
+	"pi-team": "Teams",
+	instructions: "Instructions",
+};
+
 function requirementLabel(definition: ComponentDefinition): string {
 	if (!definition.requirements.length) return "none";
 	return definition.requirements
@@ -108,7 +119,15 @@ export function renderSelector(state: SelectorRenderState, total: number, width:
 		"Profiles: [1] Default  [2] Pi  [3] Skills",
 		"",
 	];
+	let renderedCategory: ComponentDefinition["category"] | undefined;
 	for (const [index, definition] of state.visible.entries()) {
+		if (definition.category !== renderedCategory) {
+			if (renderedCategory) lines.push("");
+			lines.push(
+				`${categoryLabels[definition.category]} (${state.visible.filter(({ category }) => category === definition.category).length})`,
+			);
+			renderedCategory = definition.category;
+		}
 		const inspection = state.inspections.get(definition.id);
 		lines.push(
 			`${index === state.focus ? ">" : " "} ${state.selected.has(definition.id) ? "[x]" : "[ ]"} ${definition.label} | ${inspection?.status ?? "available"} | ${inspection ? ownershipLabel(inspection) : "unmanaged"}`,

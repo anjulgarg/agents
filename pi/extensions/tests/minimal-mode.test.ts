@@ -268,6 +268,22 @@ assert(
 	JSON.stringify(wrappedGrep),
 );
 
+const limitedGrepArgs = {
+	pattern: "handcrafted harness|coding harness|Foreman Stack|enterprise",
+	path: ".",
+	limit: 50,
+};
+const limitedGrep = (
+	grepTool
+		.renderCall?.(limitedGrepArgs, theme, renderContext("grep-limit", limitedGrepArgs))
+		.render(80) ?? []
+).join("\n");
+assert(
+	"grouped grep preserves a trailing limit when the summary wraps",
+	limitedGrep.includes("limit 50") && !limitedGrep.includes("limit…"),
+	limitedGrep,
+);
+
 const bashTool = registered.find((candidate) => candidate.name === "bash")!;
 const bashArgs = { command: "bun test", timeout: undefined };
 const bashContext = renderContext("bash-running", bashArgs);

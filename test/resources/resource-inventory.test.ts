@@ -4,21 +4,13 @@ import { describe, expect, it } from "vitest";
 import { auditRepository } from "../../scripts/audit-repository.ts";
 
 const root = process.cwd();
-const retainedSkills = [
-	"foreman-plan",
-	"foreman-review",
-	"foreman-worker",
-	"github-pr-review",
-	"poker-planning",
-	"pr",
-	"seaworthy",
-];
+const retainedSkills = ["foreman-plan", "foreman-review", "foreman-worker", "pr"];
 
 describe("approved first-party inventory", () => {
 	it("passes the repository audit with exact category counts", async () => {
 		const result = await auditRepository(root);
 		expect(result.failures).toEqual([]);
-		expect(result.summary).toMatchObject({ skills: 7, extensions: 28, prompts: 1, themes: 1 });
+		expect(result.summary).toMatchObject({ skills: 4, extensions: 28, prompts: 1, themes: 1 });
 		expect(result.summary.sourceBytes).toBeLessThanOrEqual(2.5 * 1024 * 1024);
 	});
 

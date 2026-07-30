@@ -9,11 +9,7 @@ import type {
 } from "../../src/domain/contracts.ts";
 import { components, localPiConfigFiles } from "../../src/registry/catalog.ts";
 import { resolveContainedPath, resolveSource } from "../../src/registry/destinations.ts";
-import {
-	cursorHookCommand,
-	inspectSystem,
-	inspectionPathIsProtected,
-} from "../../src/status/inspect.ts";
+import { inspectSystem, inspectionPathIsProtected } from "../../src/status/inspect.ts";
 import { readReceipt } from "../../src/status/receipt.ts";
 
 const sourceRoot = process.cwd();
@@ -89,7 +85,7 @@ async function materializeAll(home: string): Promise<void> {
 					await readFile(resolveSource(sourceRoot, resource!.path), "utf8")
 				).trim();
 				const content =
-					output.content === "{{resource:instructions/AGENTS.md}}" ? instructions : output.content;
+					output.content === "{{resource:pi/AGENTS.md}}" ? instructions : output.content;
 				await writeFile(destination, `${output.beginMarker}\n${content}\n${output.endMarker}\n`);
 			}
 		}
@@ -110,28 +106,11 @@ async function materializeAll(home: string): Promise<void> {
 				)
 				.map(({ filter }) => filter),
 			skills: [],
-			prompts: ["+prompts/orchestrate.md"],
+			prompts: ["+pi/prompts/orchestrate.md"],
 			themes: ["+pi/themes/claude-code.json"],
 		},
 	];
 	await writeJson(settingsPath, settings);
-
-	const hook = components
-		.find(({ id }) => id === "harness:cursor")!
-		.outputs.find(
-			(output): output is Extract<OutputDefinition, { strategy: "cursor-hook" }> =>
-				output.strategy === "cursor-hook",
-		)!;
-	await writeJson(resolveContainedPath(home, hook.destination), {
-		version: 1,
-		hooks: {
-			[hook.event]: [
-				{
-					command: cursorHookCommand(resolveContainedPath(home, hook.scriptDestination)),
-				},
-			],
-		},
-	});
 }
 
 async function snapshot(path: string): Promise<string[]> {
@@ -186,7 +165,7 @@ describe("read-only system status", () => {
 		}
 
 		await mkdir(join(home, ".claude"), { recursive: true });
-		await cp(join(sourceRoot, "instructions/AGENTS.md"), join(home, ".claude/AGENTS.md"), {
+		await cp(join(sourceRoot, "pi/AGENTS.md"), join(home, ".claude/AGENTS.md"), {
 			recursive: true,
 		});
 		expect(find(await inspectSystem({ home, sourceRoot }), "instructions:shared").status).toBe(
@@ -219,27 +198,6 @@ describe("read-only system status", () => {
 		);
 		expect(find(await inspectSystem({ home, sourceRoot }), "pi-extension:branch").status).toBe(
 			"available",
-		);
-	});
-
-	it("reports stale Cursor hook registrations as drift", async () => {
-		const home = await fixtureHome();
-		const component = components.find(({ id }) => id === "harness:cursor")!;
-		await installCopy(home, component);
-		const currentScript = join(home, ".cursor/hooks/inject-agents.ts");
-		const legacyScript = join(home, ".cursor/hooks/inject-agents.py");
-		await writeJson(join(home, ".cursor/hooks.json"), {
-			hooks: {
-				beforeSubmitPrompt: [
-					{ command: cursorHookCommand(currentScript) },
-					{ command: `/usr/bin/python3 ${legacyScript}` },
-				],
-			},
-		});
-		const inspected = find(await inspectSystem({ home, sourceRoot }), component.id);
-		expect(inspected.status).toBe("partial");
-		expect(inspected.outputs).toContainEqual(
-			expect.objectContaining({ strategy: "cursor-hook", state: "drifted" }),
 		);
 	});
 

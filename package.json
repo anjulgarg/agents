@@ -88,13 +88,10 @@
       "skills/foreman-plan",
       "skills/foreman-review",
       "skills/foreman-worker",
-      "skills/github-pr-review",
-      "skills/poker-planning",
-      "skills/pr",
-      "skills/seaworthy"
+      "skills/pr"
     ],
     "prompts": [
-      "prompts/orchestrate.md"
+      "pi/prompts/orchestrate.md"
     ],
     "themes": [
       "pi/themes/claude-code.json"

@@ -1,12 +1,13 @@
 # Foreman Stack Guidance
 
-This repository is the public source of truth for the **Foreman Stack**, a handcrafted coding
-harness for deliberate, high-quality engineering work. It contains the reusable skills, prompts,
-Pi resources, teams, themes, instructions, and installer that support the workflow.
+This repository is the public source of truth for the **Foreman Stack**, a collection of tools for
+building an enterprise-grade coding harness focused on maximum productivity and quality. It contains
+reusable skills, prompts, Pi resources and extensions, teams, themes, instructions, and an installer
+that support the workflow.
 
 The stack is designed for real enterprise engineering environments, but it is not a prescriptive
-company standard. Treat it as an inspectable starting point: understand the local repository,
-adapt the workflow to its constraints, and keep the quality and safety guarantees intact.
+company standard. Treat it as an inspectable toolkit: understand the local repository, adapt the
+resources and workflow to its constraints, and keep the quality and safety guarantees intact.
 
 ## Working agreement
 
@@ -41,9 +42,8 @@ adapt the workflow to its constraints, and keep the quality and safety guarantee
 - `src/install/`: planning, safety checks, transactions, backup, and rollback.
 - `src/doctor/`: runtime and integrity diagnostics.
 - `pi/`: Pi-specific extensions, configuration boundaries, themes, and keybindings.
-- `skills/`, `prompts/`, `teams/`, `harnesses/`, and `instructions/`: installable resources.
+- `skills/`, `pi/prompts/`, `pi/teams/`, and `pi/AGENTS.md`: installable resources.
 - `docs/`: architecture, migration, and recovery documentation.
-- `assets/`: public project artwork and branding.
 
 ## Development
 

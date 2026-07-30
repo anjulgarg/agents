@@ -12,7 +12,6 @@
     "cli.ts",
     "src/**/*.ts",
     "pi/extensions/**/*.ts",
-    "harnesses/**/*.ts",
     "scripts/**/*.ts",
     "skills/**/*.ts"
   ],

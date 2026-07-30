@@ -3,12 +3,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
 	{
-		ignores: [
-			"dist/**",
-			"node_modules/**",
-			"pi/extensions/**",
-			"skills/github-pr-review/scripts/**/*.js",
-		],
+		ignores: ["dist/**", "node_modules/**", "pi/extensions/**"],
 	},
 	eslint.configs.recommended,
 	...tseslint.configs.recommended,

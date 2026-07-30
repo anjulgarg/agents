@@ -58,7 +58,7 @@ describe("temporary-home CLI parity", () => {
 		const { home } = await fixtureHome();
 		const result = await install(home, ["--profile", "skills"]);
 		expect(result.plan.resolved).toEqual(resolveProfile("skills"));
-		expect(result.plan.resolved).toHaveLength(8);
+		expect(result.plan.resolved).toHaveLength(4);
 	});
 
 	it("T3 resolves the product team subagent dependency", async () => {
@@ -77,7 +77,7 @@ describe("temporary-home CLI parity", () => {
 
 	it("T1 reports drift, removes selectively, and reinstalls", async () => {
 		const { home } = await fixtureHome();
-		await install(home, ["--component", "skill:pr", "--component", "skill:seaworthy"]);
+		await install(home, ["--component", "skill:pr"]);
 		await writeFile(join(home, ".agents/skills/pr/SKILL.md"), "local drift\n");
 		let listed = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
 		expect(listed.components.find(({ id }: any) => id === "skill:pr").status).toBe("drifted");
@@ -86,10 +86,6 @@ describe("temporary-home CLI parity", () => {
 		expect(removed.code).toBe(0);
 		listed = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
 		expect(listed.components.find(({ id }: any) => id === "skill:pr").status).toBe("available");
-		expect(listed.components.find(({ id }: any) => id === "skill:seaworthy").status).toBe(
-			"installed",
-		);
-
 		await install(home, ["--component", "skill:pr"]);
 		listed = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
 		expect(listed.components.find(({ id }: any) => id === "skill:pr")).toMatchObject({
@@ -143,7 +139,7 @@ describe("temporary-home CLI parity", () => {
 		const { home } = await fixtureHome();
 		const legacyResources = [
 			["pi/extensions/question.ts", ".pi/agent/extensions/question.ts"],
-			["prompts/orchestrate.md", ".pi/agent/prompts/orchestrate.md"],
+			["pi/prompts/orchestrate.md", ".pi/agent/prompts/orchestrate.md"],
 			["pi/themes/claude-code.json", ".pi/agent/themes/claude-code.json"],
 		] as const;
 		for (const [source, destination] of legacyResources) {
@@ -155,20 +151,6 @@ describe("temporary-home CLI parity", () => {
 			join(home, ".pi/agent/settings.json"),
 			JSON.stringify({ packages: ["./packages/pi-mcp-adapter", "npm:other@1"] }),
 		);
-		const legacyCursor = join(home, ".cursor/hooks/inject-agents.py");
-		await mkdir(dirname(legacyCursor), { recursive: true });
-		await writeFile(legacyCursor, "print('legacy')\n");
-		await writeFile(
-			join(home, ".cursor/hooks.json"),
-			JSON.stringify({
-				hooks: {
-					beforeSubmitPrompt: [
-						{ command: `/usr/bin/python3 ${legacyCursor}` },
-						{ command: `/custom/python ${legacyCursor}` },
-					],
-				},
-			}),
-		);
 		await mkdir(join(home, ".agents/skills/find-skills"), { recursive: true });
 		await writeFile(join(home, ".agents/skills/find-skills/SKILL.md"), "unmanaged\n");
 
@@ -178,18 +160,9 @@ describe("temporary-home CLI parity", () => {
 			managed: false,
 		});
 		await install(home);
-		for (const destination of [
-			...legacyResources.map(([, path]) => path),
-			".cursor/hooks/inject-agents.py",
-		]) {
+		for (const destination of legacyResources.map(([, path]) => path)) {
 			await expect(readFile(join(home, destination))).rejects.toMatchObject({ code: "ENOENT" });
 		}
-		const hooks = JSON.parse(await readFile(join(home, ".cursor/hooks.json"), "utf8"));
-		expect(
-			hooks.hooks.beforeSubmitPrompt.filter((entry: { command?: string }) =>
-				entry.command?.includes("inject-agents"),
-			),
-		).toHaveLength(1);
 		const settings = JSON.parse(await readFile(join(home, ".pi/agent/settings.json"), "utf8"));
 		expect(settings.packages).toContain("npm:other@1");
 		if (localPiConfigFiles.mcp) {

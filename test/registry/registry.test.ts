@@ -44,15 +44,7 @@ const extensionIds = [
 	"pi-extension:token-speed",
 	"pi-extension:worktree",
 ];
-const skillIds = [
-	"skill:foreman-plan",
-	"skill:foreman-review",
-	"skill:foreman-worker",
-	"skill:github-pr-review",
-	"skill:poker-planning",
-	"skill:pr",
-	"skill:seaworthy",
-];
+const skillIds = ["skill:foreman-plan", "skill:foreman-review", "skill:foreman-worker", "skill:pr"];
 
 function definition(
 	id: ComponentId,
@@ -86,7 +78,7 @@ describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
 		expect(components.length).toBe(
-			35 +
+			31 +
 				(localPiConfigFiles.settings ? 1 : 0) +
 				(localPiConfigFiles.models ? 1 : 0) +
 				1 +
@@ -99,7 +91,7 @@ describe("component registry", () => {
 		expect(
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
-		expect(components.slice(35).map(({ id }) => id)).toEqual([
+		expect(components.slice(32).map(({ id }) => id)).toEqual([
 			...(localPiConfigFiles.settings ? ["pi-config:settings"] : []),
 			...(localPiConfigFiles.models ? ["pi-config:models"] : []),
 			"pi-config:keybindings",
@@ -108,7 +100,6 @@ describe("component registry", () => {
 			"pi-prompt:orchestrate",
 			"pi-team:product",
 			"instructions:shared",
-			"harness:cursor",
 		]);
 	});
 
@@ -127,7 +118,6 @@ describe("component registry", () => {
 		expect(new Set(defaultIds)).toEqual(new Set(components.map(({ id }) => id)));
 		expect(piIds).toContain("instructions:shared");
 		expect(piIds.some((id) => id.startsWith("skill:"))).toBe(false);
-		expect(piIds).not.toContain("harness:cursor");
 		expect(profiles.map(({ id }) => id)).toEqual(["default", "pi", "skills"]);
 		expect(resolveProfile("default")).toEqual(defaultIds);
 	});
@@ -154,7 +144,6 @@ describe("component registry", () => {
 				"pi-theme:claude-code",
 			]);
 		}
-		expect(resolveSelection(["harness:cursor"])).toEqual(["harness:cursor", "instructions:shared"]);
 	});
 
 	it("rejects duplicate and malformed IDs", async () => {

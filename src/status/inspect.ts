@@ -256,7 +256,7 @@ function managedContent(
 	instructions: string,
 ): string {
 	const body =
-		output.content === "{{resource:instructions/AGENTS.md}}" ? instructions.trim() : output.content;
+		output.content === "{{resource:pi/AGENTS.md}}" ? instructions.trim() : output.content;
 	return `${output.beginMarker}\n${body}\n${output.endMarker}`;
 }
 

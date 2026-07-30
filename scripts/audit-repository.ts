@@ -3,15 +3,7 @@ import { basename, extname, join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
 
 const MAX_SOURCE_BYTES = 2.5 * 1024 * 1024;
-const EXPECTED_SKILLS = [
-	"foreman-plan",
-	"foreman-review",
-	"foreman-worker",
-	"github-pr-review",
-	"poker-planning",
-	"pr",
-	"seaworthy",
-] as const;
+const EXPECTED_SKILLS = ["foreman-plan", "foreman-review", "foreman-worker", "pr"] as const;
 const EXPECTED_EXTENSIONS = [
 	"pi/extensions/announce-step.ts",
 	"pi/extensions/branch.ts",
@@ -215,8 +207,8 @@ async function validateManifest(root: string, files: readonly string[]): Promise
 			EXPECTED_SKILLS.map((name) => `skills/${name}`),
 		)
 	)
-		invalid("Pi skills must be the exact eight approved resources", "package.json#pi.skills");
-	if (!prompts || !equalSorted(prompts, ["prompts/orchestrate.md"]))
+		invalid("Pi skills must be the exact four approved resources", "package.json#pi.skills");
+	if (!prompts || !equalSorted(prompts, ["pi/prompts/orchestrate.md"]))
 		invalid("Pi prompt manifest differs", "package.json#pi.prompts");
 	if (!themes || !equalSorted(themes, ["pi/themes/claude-code.json"]))
 		invalid("Pi theme manifest differs", "package.json#pi.themes");
@@ -256,7 +248,7 @@ export async function auditRepository(
 		summary: {
 			skills: countFiles("skills/", "SKILL.md"),
 			extensions: EXPECTED_EXTENSIONS.length,
-			prompts: countFiles("prompts/", ".md"),
+			prompts: countFiles("pi/prompts/", ".md"),
 			themes: countFiles("pi/themes/", ".json"),
 			excludedPathChecks: EXCLUDED_NAMES.size,
 			sourceBytes: walked.sourceBytes,

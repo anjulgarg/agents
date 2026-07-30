@@ -5,6 +5,7 @@ for brevity. Remove waste; do not remove necessary work.
 
 ## Work Efficiently
 
+- When refactoring or relocating existing code, prefer copying or moving it directly instead of rewriting equivalent content. Preserve behavior while minimizing unnecessary output and token use.
 - Identify the requested outcome, constraints, and risk before acting.
 - Establish and share the definition of done before starting work.
 - Start with targeted searches, diffs, and file ranges. Expand context only when evidence,

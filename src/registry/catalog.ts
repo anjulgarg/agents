@@ -21,15 +21,7 @@ export const localPiConfigFiles = {
 	mcp: existsSync(resolve(localPiConfigRoot, "mcp.json")),
 } as const;
 
-const skills = [
-	"foreman-plan",
-	"foreman-review",
-	"foreman-worker",
-	"github-pr-review",
-	"poker-planning",
-	"pr",
-	"seaworthy",
-] as const;
+const skills = ["foreman-plan", "foreman-review", "foreman-worker", "pr"] as const;
 
 const extensions = [
 	["announce-step", "announce-step.ts"],
@@ -116,7 +108,7 @@ const settingsPointers = [
 
 const instructionBegin = "<!-- agents:instructions:begin -->";
 const instructionEnd = "<!-- agents:instructions:end -->";
-const block = (destination: string, content = "{{resource:instructions/AGENTS.md}}") => ({
+const block = (destination: string, content = "{{resource:pi/AGENTS.md}}") => ({
 	strategy: "managed-block" as const,
 	destination,
 	beginMarker: instructionBegin,
@@ -246,8 +238,8 @@ const otherComponents: ComponentDefinition[] = [
 		category: "pi-prompt",
 		label: "Orchestrate Prompt",
 		description: "Reusable orchestration prompt.",
-		resources: [{ path: "prompts/orchestrate.md", kind: "file" }],
-		outputs: [piFilter("prompts", "prompts/orchestrate.md")],
+		resources: [{ path: "pi/prompts/orchestrate.md", kind: "file" }],
+		outputs: [piFilter("prompts", "pi/prompts/orchestrate.md")],
 		dependsOn: [],
 		legacyPaths: [".pi/agent/prompts/orchestrate.md"],
 		requirements: [NODE, PI],
@@ -257,7 +249,7 @@ const otherComponents: ComponentDefinition[] = [
 		category: "pi-team",
 		label: "Product Team",
 		description: "Cross-functional product engineering team.",
-		resources: [{ path: "teams/product.json", kind: "file" }],
+		resources: [{ path: "pi/teams/product.json", kind: "file" }],
 		outputs: [{ strategy: "copy", destination: ".pi/agent/teams/product.json" }],
 		dependsOn: ["pi-extension:team"],
 		requirements: [NODE, PI],
@@ -267,7 +259,7 @@ const otherComponents: ComponentDefinition[] = [
 		category: "instructions",
 		label: "Shared Instructions",
 		description: "Always-on guidance shared across supported harnesses.",
-		resources: [{ path: "instructions/AGENTS.md", kind: "file" }],
+		resources: [{ path: "pi/AGENTS.md", kind: "file" }],
 		outputs: [
 			block(".codex/AGENTS.md"),
 			block(".config/opencode/AGENTS.md"),
@@ -278,26 +270,6 @@ const otherComponents: ComponentDefinition[] = [
 		],
 		dependsOn: [],
 		requirements: [],
-	},
-	{
-		id: "harness:cursor",
-		category: "harness",
-		label: "Cursor Integration",
-		description: "Injects shared instructions into Cursor conversations.",
-		resources: [{ path: "harnesses/cursor/inject-agents.ts", kind: "file" }],
-		outputs: [
-			{ strategy: "copy", destination: ".cursor/hooks/inject-agents.ts" },
-			{
-				strategy: "cursor-hook",
-				destination: ".cursor/hooks.json",
-				event: "beforeSubmitPrompt",
-				scriptDestination: ".cursor/hooks/inject-agents.ts",
-				legacyScriptDestinations: [".cursor/hooks/inject-agents.py"],
-			},
-		],
-		dependsOn: ["instructions:shared"],
-		legacyPaths: [".cursor/hooks/inject-agents.py"],
-		requirements: [NODE],
 	},
 ];
 

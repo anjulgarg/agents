@@ -957,7 +957,12 @@ function treeSummaryLines(
 	// A separate tail usually names a path. Give the query and path one line
 	// each rather than allowing either to consume both available rows.
 	if (summary && tail) {
-		return [summaryText(theme, summary, undefined, width), summaryText(theme, "", tail, width)];
+		// Keep both the query's leading token and trailing limit qualifier;
+		// clipping that summary from the end hides a useful control.
+		const summaryLine = /\s·\s+limit\s+\d+\s*$/u.test(summary)
+			? summaryText(theme, "", summary, width)
+			: summaryText(theme, summary, undefined, width);
+		return [summaryLine, summaryText(theme, "", tail, width)];
 	}
 
 	const wrapped = wrapTextWithAnsi(full, width);
@@ -1225,8 +1230,10 @@ export function bindSoftGroupTracker(
 	},
 	tracker: SoftGroupTracker,
 	groupToolNames: Iterable<string>,
+	options: { ignoreAssistantProse?: boolean } = {},
 ): void {
 	const grouped = new Set(groupToolNames);
+	const ignoreAssistantProse = options.ignoreAssistantProse === true;
 	let assistantProseBroken = false;
 	pi.on("session_start", (_event, ctx) => {
 		tracker.reset();
@@ -1246,7 +1253,7 @@ export function bindSoftGroupTracker(
 		const message = event?.message;
 		if (message?.role === "assistant") assistantProseBroken = false;
 		if (!hasVisibleMessageProse(message)) return;
-		tracker.noteBreak();
+		if (!ignoreAssistantProse) tracker.noteBreak();
 		if (message.role === "assistant") assistantProseBroken = true;
 	});
 	pi.on("message_update", (event) => {
@@ -1259,7 +1266,9 @@ export function bindSoftGroupTracker(
 	pi.on("message_end", (event) => {
 		const message = event?.message;
 		if (message?.role === "assistant") {
-			if (!assistantProseBroken && hasVisibleMessageProse(message)) tracker.noteBreak();
+			if (!ignoreAssistantProse && !assistantProseBroken && hasVisibleMessageProse(message)) {
+				tracker.noteBreak();
+			}
 			assistantProseBroken = assistantProseBroken || hasVisibleMessageProse(message);
 			return;
 		}

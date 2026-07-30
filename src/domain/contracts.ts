@@ -7,7 +7,6 @@ export const COMPONENT_CATEGORIES = [
 	"pi-theme",
 	"pi-team",
 	"instructions",
-	"harness",
 ] as const;
 
 export type ComponentCategory = (typeof COMPONENT_CATEGORIES)[number];

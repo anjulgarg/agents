@@ -1,25 +1,19 @@
-<p align="center">
-  <img src="assets/foreman-stack.png" alt="Foreman Stack project artwork" width="900">
-</p>
-
 <h1 align="center">Foreman Stack</h1>
 
 <p align="center">
-  <strong>A handcrafted, open-source stack of agentic coding tools for high-quality engineering work.</strong>
+  <strong>An open-source toolkit for building an enterprise-grade coding harness focused on productivity and quality.</strong>
 </p>
 
 <p align="center">
   Skills · prompts · Pi extensions · teams · themes · instructions · safe installation
 </p>
 
-The **Foreman Stack** is the reusable coding-agent setup behind a productive, quality-first
-engineering workflow. It packages the small tools, habits, and guardrails that make agent work
-more deliberate: plan before changing, delegate with context, keep durable memory, review deeply,
-and make every mutation reversible.
+The **Foreman Stack** is a collection of tools for building a powerful, enterprise-grade coding
+harness. It brings together reusable skills, prompts, teams, instructions, and a custom Pi setup
+with extensions that improve productivity, quality, and operational safety across engineering work.
 
-It has been handcrafted and battle-tested through real enterprise engineering work. The goal is
-not to hide a magic prompt. The goal is to share a complete, inspectable foundation that you can
-adapt to your own team, repositories, and standards.
+The stack is designed to be inspectable and adaptable. Use the pieces that fit your team, repositories,
+and standards, then extend the workflow with your own tools and integrations.
 
 ## What is included
 
@@ -32,9 +26,9 @@ adapt to your own team, repositories, and standards.
 - **The `agents` CLI**, which installs selected components transactionally into an alternate home,
   preserves unrelated files, and supports status, diagnostics, removal, backup, and rollback.
 
-The public repository contains the reusable harness. Personal model choices, MCP endpoints,
-keybindings, and other private Pi settings stay local and are intentionally excluded from the
-public package. That boundary lets you reproduce the workflow without publishing credentials,
+The public repository contains the reusable tools and public Pi setup. Personal model choices, MCP
+endpoints, keybindings, and other private Pi settings stay local and are intentionally excluded from
+the public package. That boundary lets you build the workflow without publishing credentials,
 sessions, or personal runtime state.
 
 ## Quick start
@@ -62,9 +56,11 @@ agents install --profile pi --home /absolute/fixture-home --yes
 agents doctor --home /absolute/fixture-home
 ```
 
-Use `agents list` to inspect availability and drift. Use `agents doctor` when something looks
-unexpected. Every mutation presents a plan, requires confirmation unless `--yes` is supplied, and
-can roll back a failed transaction.
+Use `agents list` to inspect availability and drift, or add `--json` for machine-readable output.
+Use `agents doctor` when something looks unexpected. To remove a selected component, run
+`agents remove --component <id> --yes`. After updating an active Pi session, run `/reload`. Every
+mutation presents a plan, requires confirmation unless `--yes` is supplied, and can roll back a
+failed transaction.
 
 ## Profiles and components
 
@@ -85,7 +81,7 @@ agents doctor
 ```
 
 The catalog covers `skill`, `pi-extension`, `pi-config`, `pi-package`, `pi-prompt`, `pi-theme`,
-`pi-team`, `instructions`, and `harness` resources. Dependencies are resolved automatically.
+`pi-team`, and `instructions` resources. Dependencies are resolved automatically.
 
 ## Explore the stack
 
@@ -93,9 +89,8 @@ The catalog covers `skill`, `pi-extension`, `pi-config`, `pi-package`, `pi-promp
 - [Migration and recovery](docs/migration-and-recovery.md)
 - [Pi resources](pi/)
 - [Skills](skills/)
-- [Prompts](prompts/)
-- [Teams](teams/)
-- [Harness integrations](harnesses/)
+- [Prompts](pi/prompts/)
+- [Teams](pi/teams/)
 
 ## Development
 

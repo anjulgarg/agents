@@ -17,7 +17,7 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 
 | Category       | Installed role                                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `skill`        | Eight shared skill directories under `~/.agents/skills`; each can be selected independently.                      |
+| `skill`        | Four shared skill directories under `~/.agents/skills`; each can be selected independently.                       |
 | `pi-extension` | Local-package filters for 28 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
 | `pi-config`    | Pi keybindings plus optional local-only settings, model, and MCP JSON pointers. Unowned keys remain local.        |
 | `pi-package`   | The optional removable `npm:pi-mcp-adapter@2.15.0` Pi setting. It is referenced, not vendored.                    |
@@ -25,7 +25,6 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | `pi-theme`     | The `claude-code` theme through the local Pi package.                                                             |
 | `pi-team`      | The product team definition; selecting it adds the subagent extension dependency.                                 |
 | `instructions` | Managed instruction blocks or copies for Pi, Codex, OpenCode, Claude Code, and Cursor.                            |
-| `harness`      | Cursor prompt-injection hook and its shared-instruction dependency.                                               |
 
 Profiles combine these components: `default` selects the available catalog, `pi` selects Pi resources and shared instructions, and `skills` selects all shared skills. Local-only Pi configuration components appear only when their ignored files exist in the local checkout. Registry ordering is deterministic, so repeated installs are no-ops when outputs remain exact.
 
@@ -36,7 +35,7 @@ Profiles combine these components: `default` selects the available catalog, `pi`
 - `src/status/`: read-only inspection and receipt interpretation.
 - `src/install/`: plans, safety checks, transactions, backup, and rollback.
 - `src/doctor/`: local runtime and integrity diagnostics.
-- `pi/`: resources coupled directly to the Pi coding harness. Personal configuration under `pi/config/` remains local-only.
+- `pi/`: the custom Pi setup, including extensions, themes, prompts, and configuration boundaries. Personal configuration under `pi/config/` remains local-only.
 - Other runtime resource directories: package payload loaded or copied by selected components.
 
 The repository is open source, while npm publication remains disabled by `private: true`. Packaging includes the built CLI and public runtime resources, excludes development tests, plans, and local-only Pi configuration, and is constrained to a 2.5 MiB unpacked payload.

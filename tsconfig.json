@@ -12,13 +12,6 @@
     "skipLibCheck": true,
     "types": ["node", "react", "vitest/globals"]
   },
-  "include": [
-    "cli.ts",
-    "src/**/*.ts",
-    "harnesses/**/*.ts",
-    "scripts/**/*.ts",
-    "skills/**/*.ts",
-    "test/**/*.ts"
-  ],
+  "include": ["cli.ts", "src/**/*.ts", "scripts/**/*.ts", "skills/**/*.ts", "test/**/*.ts"],
   "exclude": ["dist", "node_modules", "pi/extensions"]
 }

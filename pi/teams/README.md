@@ -58,7 +58,7 @@ running when a session reloads are marked failed rather than silently resumed.
 
 ## Add a Team
 
-1. Copy `product.json` or create `teams/<name>.json`.
+1. Copy `product.json` or create `pi/teams/<name>.json`.
 2. Give it a unique lowercase `name` using letters, numbers, and hyphens.
 3. Choose manager and role models that are available in `settings.json`.
 4. Include at least one role marked `review` and one marked `verification`.
@@ -267,7 +267,7 @@ A matching plan must make the `gate` task depend on the `builder` task.
 Validate syntax and extension behavior:
 
 ```bash
-node -e 'JSON.parse(require("node:fs").readFileSync("teams/product.json", "utf8"))'
+node -e 'JSON.parse(require("node:fs").readFileSync("pi/teams/product.json", "utf8"))'
 npm run test:extensions
 ```
 

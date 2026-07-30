@@ -81,7 +81,7 @@ describe("transactional install", () => {
 				(path: string) => path.startsWith("+pi/extensions/") && !path.includes("test"),
 			),
 		).toBe(true);
-		expect(local.prompts).toEqual(["+prompts/orchestrate.md"]);
+		expect(local.prompts).toEqual(["+pi/prompts/orchestrate.md"]);
 		expect(local.themes).toEqual(["+pi/themes/claude-code.json"]);
 		if (localPiConfigFiles.mcp) {
 			expect(
@@ -109,7 +109,7 @@ describe("transactional install", () => {
 		);
 		await applyPlan(
 			{ home: target, sourceRoot },
-			await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:seaworthy"]),
+			await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:foreman-plan"]),
 		);
 		const receipt = await object(join(target, ".agents/anjulgarg-agents.json"));
 		expect(receipt.components["skill:pr"].outputs[0].sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -141,7 +141,7 @@ describe("transactional install", () => {
 			await writeFile(join(target, ".agents/skills/private/SKILL.md"), "private");
 			await mkdir(join(target, ".codex"), { recursive: true });
 			await writeFile(join(target, ".codex/AGENTS.md"), "local preface\n");
-			const ids: ComponentId[] = ["pi-config:models", "pi-config:mcp-sentry", "harness:cursor"];
+			const ids: ComponentId[] = ["pi-config:models", "pi-config:mcp-sentry"];
 			await applyPlan(
 				{ home: target, sourceRoot },
 				await planInstall({ home: target, sourceRoot, now: fixed }, ids),
@@ -245,7 +245,7 @@ describe("transactional install", () => {
 		const legacyTheme = join(target, ".pi/agent/themes/claude-code.json");
 		for (const [source, destination] of [
 			["pi/extensions/question.ts", legacyExtension],
-			["prompts/orchestrate.md", legacyPrompt],
+			["pi/prompts/orchestrate.md", legacyPrompt],
 			["pi/themes/claude-code.json", legacyTheme],
 		] as const) {
 			await mkdir(dirname(destination), { recursive: true });
@@ -255,38 +255,15 @@ describe("transactional install", () => {
 			join(target, ".pi/agent/settings.json"),
 			JSON.stringify({ packages: ["./packages/pi-mcp-adapter", "npm:other@1"] }),
 		);
-		const legacyCursor = join(target, ".cursor/hooks/inject-agents.py");
-		await mkdir(dirname(legacyCursor), { recursive: true });
-		await writeFile(legacyCursor, "print('legacy')\n");
-		await writeFile(
-			join(target, ".cursor/hooks.json"),
-			JSON.stringify({
-				version: 1,
-				hooks: {
-					beforeSubmitPrompt: [
-						{ command: `/usr/bin/python3 ${legacyCursor}` },
-						{ command: `/custom/python ${legacyCursor}` },
-						{ command: "keep" },
-					],
-				},
-			}),
-		);
 		await mkdir(join(target, ".agents/skills/local-only"), { recursive: true });
 		await writeFile(join(target, ".agents/skills/local-only/SKILL.md"), "local");
 		await applyPlan(
 			{ home: target, sourceRoot },
 			await planInstall({ home: target, sourceRoot, now: fixed }, resolveProfile("default")),
 		);
-		for (const legacy of [legacyExtension, legacyPrompt, legacyTheme, legacyCursor]) {
+		for (const legacy of [legacyExtension, legacyPrompt, legacyTheme]) {
 			expect(await exists(legacy)).toBe(false);
 		}
-		const hooks = await object(join(target, ".cursor/hooks.json"));
-		expect(hooks.hooks.beforeSubmitPrompt).toContainEqual({ command: "keep" });
-		expect(
-			hooks.hooks.beforeSubmitPrompt.filter((entry: { command?: string }) =>
-				entry.command?.includes("inject-agents"),
-			),
-		).toHaveLength(1);
 		const settings = await object(join(target, ".pi/agent/settings.json"));
 		expect(settings.packages).toContain("npm:other@1");
 		if (localPiConfigFiles.mcp) {

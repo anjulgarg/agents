@@ -179,8 +179,7 @@ function managedBlock(
 		end === -1 ? "" : existing.slice(end + output.endMarker.length).replace(/^\r?\n/, "");
 	const without = start === -1 ? existing : existing.slice(0, start) + suffix;
 	if (remove) return without.replace(/\s+$/, existing.endsWith("\n") ? "\n" : "");
-	const content =
-		output.content === "{{resource:instructions/AGENTS.md}}" ? body.trim() : output.content;
+	const content = output.content === "{{resource:pi/AGENTS.md}}" ? body.trim() : output.content;
 	const block = `${output.beginMarker}\n${content}\n${output.endMarker}\n`;
 	return without.trim() ? `${without.trimEnd()}\n\n${block}` : block;
 }

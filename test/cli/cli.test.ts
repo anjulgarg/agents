@@ -38,8 +38,6 @@ describe("command parsing and execution", () => {
 			"skills",
 			"--component",
 			"skill:pr",
-			"--component",
-			"skill:seaworthy",
 			"--category",
 			"pi-extension",
 			"--all",
@@ -47,7 +45,7 @@ describe("command parsing and execution", () => {
 			"--json",
 		]);
 		expect(parsed.home).toBe("/tmp/home with spaces");
-		expect(parsed.components).toEqual(["skill:pr", "skill:seaworthy"]);
+		expect(parsed.components).toEqual(["skill:pr"]);
 		expect(parsed).toMatchObject({
 			profile: "skills",
 			category: "pi-extension",

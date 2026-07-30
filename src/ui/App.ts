@@ -51,7 +51,6 @@ const categories = [
 	"pi-theme",
 	"pi-team",
 	"instructions",
-	"harness",
 ] as const;
 
 function initialInstallSelection(inspection: SystemInspection): Set<ComponentId> {

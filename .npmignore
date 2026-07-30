@@ -25,7 +25,6 @@ skills/**/*.test.js
 # Build outputs duplicated by packaged resources
 dist/extensions/
 dist/pi/extensions/
-dist/harnesses/
 dist/scripts/
 dist/skills/
 

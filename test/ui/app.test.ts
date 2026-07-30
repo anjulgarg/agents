@@ -32,7 +32,10 @@ describe("interactive dashboard and selector", () => {
 		await pause();
 		view.stdin.write("3");
 		await pause();
-		expect(view.lastFrame()).toContain("Selected 8/");
+		expect(view.lastFrame()).toContain("Selected 4/");
+		expect(view.lastFrame()).toContain("Skills (4)");
+		expect(view.lastFrame()).toContain("Pi Extensions (28)");
+		expect(view.lastFrame()).toContain("Prompts (1)");
 		view.stdin.write(" ");
 		await pause();
 		view.stdin.write("\t");
@@ -82,7 +85,6 @@ describe("interactive dashboard and selector", () => {
 		const legacy = new FakeServices(
 			inspection({
 				"skill:pr": { status: "installed", managed: false, legacy: true },
-				"skill:seaworthy": { status: "drifted", managed: true },
 			}),
 		);
 		const remove = render(
