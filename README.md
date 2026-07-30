@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/foreman-stack.png" alt="Foreman Stack project artwork" width="900">
+</p>
+
 <h1 align="center">Foreman Stack</h1>
 
 <p align="center">
