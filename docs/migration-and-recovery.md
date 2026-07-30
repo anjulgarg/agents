@@ -9,8 +9,8 @@ fixture="$(mktemp -d)"
 agents install --home "$fixture" --yes
 agents list --home "$fixture"
 agents doctor --home "$fixture"
-agents remove --home "$fixture" --component skill:pr --yes
-agents install --home "$fixture" --component skill:pr --yes
+agents remove --home "$fixture" --component skill:foreman-plan --yes
+agents install --home "$fixture" --component skill:foreman-plan --yes
 ```
 
 Legacy direct extension copies are recognized before a receipt. Installing the matching component removes only approved legacy destinations and replaces loading with the filtered local package entry. Unknown skills and unrelated harness files remain untouched. Never invoke the retired Python installer to build a migration fixture; copy current repository resources into the old destination shape.

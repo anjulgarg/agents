@@ -56,7 +56,7 @@ describe("package and repository safety", () => {
 			"pi/extensions/team/index.ts",
 			"pi/AGENTS.md",
 			"pi/prompts/orchestrate.md",
-			"skills/pr/SKILL.md",
+			"skills/foreman-plan/SKILL.md",
 			"pi/teams/product.json",
 			"pi/themes/claude-code.json",
 		]) {

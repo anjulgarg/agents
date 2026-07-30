@@ -57,9 +57,9 @@ it("reports unsupported runtimes, missing commands, drift, stale filters, and le
 	const { home } = await fixture();
 	await applyPlan(
 		{ home, sourceRoot },
-		await planInstall({ home, sourceRoot }, ["skill:pr", "pi-extension:question"]),
+		await planInstall({ home, sourceRoot }, ["skill:foreman-plan", "pi-extension:question"]),
 	);
-	await writeFile(join(home, ".agents/skills/pr/SKILL.md"), "drift");
+	await writeFile(join(home, ".agents/skills/foreman-plan/SKILL.md"), "drift");
 	const settingsPath = join(home, ".pi/agent/settings.json");
 	const settings = JSON.parse(await readFile(settingsPath, "utf8"));
 	settings.packages[0].extensions = ["+pi/extensions/stale.ts"];

@@ -74,8 +74,8 @@ Components can also be selected directly:
 
 ```bash
 agents install --category skill --yes
-agents install --component skill:pr --yes
-agents remove --component skill:pr --yes
+agents install --component skill:foreman-plan --yes
+agents remove --component skill:foreman-plan --yes
 agents list
 agents doctor
 ```

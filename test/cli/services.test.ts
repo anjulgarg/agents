@@ -17,20 +17,22 @@ describe("integrated CLI services", () => {
 		const context = { home, sourceRoot: resolve(".") };
 		const services = createAgentsUiServices();
 
-		const plan = await services.planInstall(context, ["skill:pr"]);
+		const plan = await services.planInstall(context, ["skill:foreman-plan"]);
 		expect(plan).toMatchObject({
 			operation: "install",
-			requested: ["skill:pr"],
-			resolved: ["skill:pr"],
+			requested: ["skill:foreman-plan"],
+			resolved: ["skill:foreman-plan"],
 		});
 		await services.applyPlan(context, plan);
 
 		const inspection = await services.inspect(context);
-		expect(inspection.components.find(({ id }) => id === "skill:pr")).toMatchObject({
+		expect(inspection.components.find(({ id }) => id === "skill:foreman-plan")).toMatchObject({
 			status: "installed",
 			managed: true,
 		});
-		expect(await readFile(join(home, ".agents/skills/pr/SKILL.md"), "utf8")).toContain("name: pr");
+		expect(await readFile(join(home, ".agents/skills/foreman-plan/SKILL.md"), "utf8")).toContain(
+			"name: foreman-plan",
+		);
 
 		const doctor = await services.runDoctor(context);
 		expect(doctor.checks.length).toBeGreaterThan(0);

@@ -136,7 +136,10 @@ describe("read-only system status", () => {
 	it("reports available when outputs do not exist", async () => {
 		const home = await fixtureHome();
 		const result = await inspectSystem({ home, sourceRoot });
-		expect(find(result, "skill:pr")).toMatchObject({ status: "available", managed: false });
+		expect(find(result, "skill:foreman-plan")).toMatchObject({
+			status: "available",
+			managed: false,
+		});
 		expect(result.receipt.schemaState).toBe("absent");
 	});
 
@@ -152,10 +155,12 @@ describe("read-only system status", () => {
 
 	it("distinguishes changed copies, changed owned JSON, partial, and unavailable", async () => {
 		const home = await fixtureHome();
-		const skill = components.find(({ id }) => id === "skill:pr")!;
+		const skill = components.find(({ id }) => id === "skill:foreman-plan")!;
 		await installCopy(home, skill);
-		await writeFile(join(home, ".agents/skills/pr/SKILL.md"), "changed");
-		expect(find(await inspectSystem({ home, sourceRoot }), "skill:pr").status).toBe("drifted");
+		await writeFile(join(home, ".agents/skills/foreman-plan/SKILL.md"), "changed");
+		expect(find(await inspectSystem({ home, sourceRoot }), "skill:foreman-plan").status).toBe(
+			"drifted",
+		);
 
 		if (localPiConfigFiles.settings) {
 			await writeJson(join(home, ".pi/agent/settings.json"), { defaultModel: "changed" });
@@ -220,10 +225,16 @@ describe("read-only system status", () => {
 			schemaVersion: 1,
 			source: { kind: "local", root: sourceRoot, revision: null },
 			components: {
-				"skill:pr": { installedAt: "2026-01-01T00:00:00Z", sourceDigest: "x", outputs: [] },
+				"skill:foreman-plan": {
+					installedAt: "2026-01-01T00:00:00Z",
+					sourceDigest: "x",
+					outputs: [],
+				},
 			},
 		});
-		expect(find(await inspectSystem({ home, sourceRoot }), "skill:pr").managed).toBe(true);
+		expect(find(await inspectSystem({ home, sourceRoot }), "skill:foreman-plan").managed).toBe(
+			true,
+		);
 
 		await writeJson(join(home, ".agents/anjulgarg-agents.json"), {
 			schemaVersion: 2,
@@ -243,7 +254,7 @@ describe("read-only system status", () => {
 	it("reports only unknown skill directories as unmanaged", async () => {
 		const home = await fixtureHome();
 		await mkdir(join(home, ".agents/skills/my-skill"), { recursive: true });
-		await mkdir(join(home, ".agents/skills/pr"), { recursive: true });
+		await mkdir(join(home, ".agents/skills/foreman-plan"), { recursive: true });
 		await writeFile(join(home, ".agents/skills/not-a-directory"), "x");
 		const result = await inspectSystem({ home, sourceRoot });
 		expect(result.unmanagedSkills).toEqual([

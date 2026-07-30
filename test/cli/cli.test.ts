@@ -37,7 +37,7 @@ describe("command parsing and execution", () => {
 			"--profile",
 			"skills",
 			"--component",
-			"skill:pr",
+			"skill:foreman-plan",
 			"--category",
 			"pi-extension",
 			"--all",
@@ -45,7 +45,7 @@ describe("command parsing and execution", () => {
 			"--json",
 		]);
 		expect(parsed.home).toBe("/tmp/home with spaces");
-		expect(parsed.components).toEqual(["skill:pr"]);
+		expect(parsed.components).toEqual(["skill:foreman-plan"]);
 		expect(parsed).toMatchObject({
 			profile: "skills",
 			category: "pi-extension",
@@ -108,7 +108,7 @@ describe("command parsing and execution", () => {
 		const install = output();
 		expect(
 			await runCli(
-				["install", "--component", "skill:pr", "--yes", "--json"],
+				["install", "--component", "skill:foreman-plan", "--yes", "--json"],
 				{ services, sourceRoot: "/source root" },
 				install.io,
 			),
@@ -116,7 +116,7 @@ describe("command parsing and execution", () => {
 		expect(JSON.parse(install.stdout.join(""))).toMatchObject({
 			schemaVersion: 1,
 			status: "success",
-			plan: { operation: "install", requested: ["skill:pr"] },
+			plan: { operation: "install", requested: ["skill:foreman-plan"] },
 		});
 	});
 
@@ -168,7 +168,7 @@ describe("command parsing and execution", () => {
 		const streams = output();
 		expect(
 			await runCli(
-				["install", "--component", "skill:pr", "--yes"],
+				["install", "--component", "skill:foreman-plan", "--yes"],
 				{ services: failing, sourceRoot: "/source root" },
 				streams.io,
 			),
@@ -207,7 +207,7 @@ describe("command parsing and execution", () => {
 				"--category",
 				"skill",
 				"--component",
-				"skill:pr",
+				"skill:foreman-plan",
 				"--all",
 				"--yes",
 			],

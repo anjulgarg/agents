@@ -105,14 +105,14 @@ describe("transactional install", () => {
 		const target = await home();
 		await applyPlan(
 			{ home: target, sourceRoot },
-			await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:pr"]),
+			await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:foreman-plan"]),
 		);
 		await applyPlan(
 			{ home: target, sourceRoot },
-			await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:foreman-plan"]),
+			await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:foreman-review"]),
 		);
 		const receipt = await object(join(target, ".agents/anjulgarg-agents.json"));
-		expect(receipt.components["skill:pr"].outputs[0].sha256).toMatch(/^[a-f0-9]{64}$/);
+		expect(receipt.components["skill:foreman-plan"].outputs[0].sha256).toMatch(/^[a-f0-9]{64}$/);
 	});
 
 	it.skipIf(!localPiConfigFiles.models || !localPiConfigFiles.mcp)(
@@ -137,8 +137,8 @@ describe("transactional install", () => {
 				join(target, ".cursor/hooks.json"),
 				JSON.stringify({ version: 9, hooks: { preToolUse: [{ command: "keep" }] } }),
 			);
-			await mkdir(join(target, ".agents/skills/private"), { recursive: true });
-			await writeFile(join(target, ".agents/skills/private/SKILL.md"), "private");
+			await mkdir(join(target, ".agents/skills/foreman-planivate"), { recursive: true });
+			await writeFile(join(target, ".agents/skills/foreman-planivate/SKILL.md"), "private");
 			await mkdir(join(target, ".codex"), { recursive: true });
 			await writeFile(join(target, ".codex/AGENTS.md"), "local preface\n");
 			const ids: ComponentId[] = ["pi-config:models", "pi-config:mcp-sentry"];
@@ -163,7 +163,7 @@ describe("transactional install", () => {
 			expect(hooks.version).toBe(9);
 			expect(hooks.hooks.preToolUse).toEqual([{ command: "keep" }]);
 			expect(await text(join(target, ".codex/AGENTS.md"))).toBe("local preface\n");
-			expect(await text(join(target, ".agents/skills/private/SKILL.md"))).toBe("private");
+			expect(await text(join(target, ".agents/skills/foreman-planivate/SKILL.md"))).toBe("private");
 		},
 	);
 
@@ -174,7 +174,9 @@ describe("transactional install", () => {
 			const target = await home();
 			await writeFile(join(target, "unrelated"), "keep");
 			const before = await inventory(target);
-			const plan = await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:pr"]);
+			const plan = await planInstall({ home: target, sourceRoot, now: fixed }, [
+				"skill:foreman-plan",
+			]);
 			await expect(
 				applyPlan(
 					{ home: target, sourceRoot, operationId: () => phase, failureInjection: { phase } },
@@ -187,7 +189,7 @@ describe("transactional install", () => {
 
 	it("retains the backup path when rollback itself fails", async () => {
 		const target = await home();
-		const plan = await planInstall({ home: target, sourceRoot }, ["skill:pr"]);
+		const plan = await planInstall({ home: target, sourceRoot }, ["skill:foreman-plan"]);
 		let failure: AgentsError | undefined;
 		try {
 			await applyPlan(
@@ -213,11 +215,13 @@ describe("transactional install", () => {
 		const linked = `${target}-link`;
 		roots.push(linked);
 		await symlink(target, linked, "dir");
-		await expect(planInstall({ home: linked, sourceRoot }, ["skill:pr"])).rejects.toMatchObject({
+		await expect(
+			planInstall({ home: linked, sourceRoot }, ["skill:foreman-plan"]),
+		).rejects.toMatchObject({
 			code: "unsafe-path",
 		});
 		await expect(
-			planInstall({ home: join(sourceRoot, "nested-home"), sourceRoot }, ["skill:pr"]),
+			planInstall({ home: join(sourceRoot, "nested-home"), sourceRoot }, ["skill:foreman-plan"]),
 		).rejects.toMatchObject({ code: "unsafe-path" });
 		await mkdir(join(target, ".pi/agent"), { recursive: true });
 		if (localPiConfigFiles.settings) {
@@ -232,7 +236,9 @@ describe("transactional install", () => {
 			join(target, ".agents/anjulgarg-agents.json"),
 			JSON.stringify({ schemaVersion: 2 }),
 		);
-		await expect(planInstall({ home: target, sourceRoot }, ["skill:pr"])).rejects.toMatchObject({
+		await expect(
+			planInstall({ home: target, sourceRoot }, ["skill:foreman-plan"]),
+		).rejects.toMatchObject({
 			code: "unsupported-state",
 		});
 	});
@@ -281,7 +287,7 @@ describe("transactional install", () => {
 	// T7: exclusive per-home lock rejects a second operation.
 	it("rejects lock contention without changing the plan targets", async () => {
 		const target = await home();
-		const plan = await planInstall({ home: target, sourceRoot }, ["skill:pr"]);
+		const plan = await planInstall({ home: target, sourceRoot }, ["skill:foreman-plan"]);
 		await mkdir(join(target, ".agents/.operation.lock"), { recursive: true });
 		const before = await inventory(target);
 		await expect(applyPlan({ home: target, sourceRoot }, plan)).rejects.toMatchObject({

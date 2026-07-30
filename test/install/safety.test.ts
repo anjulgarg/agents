@@ -20,7 +20,7 @@ describe("source and destination containment", () => {
 
 		await expect(validateSafeRoots(home, sourceRoot)).resolves.toEqual({ home, sourceRoot });
 		await expect(
-			validateDestination(home, join(home, ".agents", "skills", "pr"), sourceRoot),
+			validateDestination(home, join(home, ".agents", "skills", "foreman-plan"), sourceRoot),
 		).resolves.toBeUndefined();
 	});
 

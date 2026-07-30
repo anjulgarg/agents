@@ -87,8 +87,7 @@
     "skills": [
       "skills/foreman-plan",
       "skills/foreman-review",
-      "skills/foreman-worker",
-      "skills/pr"
+      "skills/foreman-worker"
     ],
     "prompts": [
       "pi/prompts/orchestrate.md"

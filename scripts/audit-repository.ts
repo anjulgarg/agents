@@ -3,7 +3,7 @@ import { basename, extname, join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
 
 const MAX_SOURCE_BYTES = 2.5 * 1024 * 1024;
-const EXPECTED_SKILLS = ["foreman-plan", "foreman-review", "foreman-worker", "pr"] as const;
+const EXPECTED_SKILLS = ["foreman-plan", "foreman-review", "foreman-worker"] as const;
 const EXPECTED_EXTENSIONS = [
 	"pi/extensions/announce-step.ts",
 	"pi/extensions/branch.ts",
@@ -207,7 +207,7 @@ async function validateManifest(root: string, files: readonly string[]): Promise
 			EXPECTED_SKILLS.map((name) => `skills/${name}`),
 		)
 	)
-		invalid("Pi skills must be the exact four approved resources", "package.json#pi.skills");
+		invalid("Pi skills must be the exact three approved resources", "package.json#pi.skills");
 	if (!prompts || !equalSorted(prompts, ["pi/prompts/orchestrate.md"]))
 		invalid("Pi prompt manifest differs", "package.json#pi.prompts");
 	if (!themes || !equalSorted(themes, ["pi/themes/claude-code.json"]))

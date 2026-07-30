@@ -58,7 +58,7 @@ describe("temporary-home CLI parity", () => {
 		const { home } = await fixtureHome();
 		const result = await install(home, ["--profile", "skills"]);
 		expect(result.plan.resolved).toEqual(resolveProfile("skills"));
-		expect(result.plan.resolved).toHaveLength(4);
+		expect(result.plan.resolved).toHaveLength(3);
 	});
 
 	it("T3 resolves the product team subagent dependency", async () => {
@@ -77,18 +77,28 @@ describe("temporary-home CLI parity", () => {
 
 	it("T1 reports drift, removes selectively, and reinstalls", async () => {
 		const { home } = await fixtureHome();
-		await install(home, ["--component", "skill:pr"]);
-		await writeFile(join(home, ".agents/skills/pr/SKILL.md"), "local drift\n");
+		await install(home, ["--component", "skill:foreman-plan"]);
+		await writeFile(join(home, ".agents/skills/foreman-plan/SKILL.md"), "local drift\n");
 		let listed = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
-		expect(listed.components.find(({ id }: any) => id === "skill:pr").status).toBe("drifted");
+		expect(listed.components.find(({ id }: any) => id === "skill:foreman-plan").status).toBe(
+			"drifted",
+		);
 
-		const removed = await runAgents(home, ["remove", "--component", "skill:pr", "--yes", "--json"]);
+		const removed = await runAgents(home, [
+			"remove",
+			"--component",
+			"skill:foreman-plan",
+			"--yes",
+			"--json",
+		]);
 		expect(removed.code).toBe(0);
 		listed = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
-		expect(listed.components.find(({ id }: any) => id === "skill:pr").status).toBe("available");
-		await install(home, ["--component", "skill:pr"]);
+		expect(listed.components.find(({ id }: any) => id === "skill:foreman-plan").status).toBe(
+			"available",
+		);
+		await install(home, ["--component", "skill:foreman-plan"]);
 		listed = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
-		expect(listed.components.find(({ id }: any) => id === "skill:pr")).toMatchObject({
+		expect(listed.components.find(({ id }: any) => id === "skill:foreman-plan")).toMatchObject({
 			status: "installed",
 			managed: true,
 		});
@@ -129,7 +139,11 @@ describe("temporary-home CLI parity", () => {
 					plan as OperationPlan,
 				),
 		});
-		const result = await runAgents(home, ["install", "--component", "skill:pr", "--yes"], services);
+		const result = await runAgents(
+			home,
+			["install", "--component", "skill:foreman-plan", "--yes"],
+			services,
+		);
 		expect(result.code).toBe(1);
 		expect(result.stderr).toContain("ERROR [transaction-failed]");
 		expect(await inventory(home)).toEqual(before);

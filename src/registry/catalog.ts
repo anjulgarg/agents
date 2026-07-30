@@ -21,7 +21,7 @@ export const localPiConfigFiles = {
 	mcp: existsSync(resolve(localPiConfigRoot, "mcp.json")),
 } as const;
 
-const skills = ["foreman-plan", "foreman-review", "foreman-worker", "pr"] as const;
+const skills = ["foreman-plan", "foreman-review", "foreman-worker"] as const;
 
 const extensions = [
 	["announce-step", "announce-step.ts"],

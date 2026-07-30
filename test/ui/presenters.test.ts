@@ -18,7 +18,7 @@ const statuses = inspection({
 	"skill:foreman-plan": { status: "installed", managed: true },
 	"skill:foreman-review": { status: "drifted", managed: false, legacy: true },
 	"skill:foreman-worker": { status: "partial", managed: true },
-	"skill:pr": { status: "unavailable", managed: false },
+	"pi-extension:announce-step": { status: "unavailable", managed: false },
 });
 const byInspection = new Map(statuses.components.map((item) => [item.id, item]));
 const plan = {
