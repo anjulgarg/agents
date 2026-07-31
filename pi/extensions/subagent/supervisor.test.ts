@@ -103,6 +103,48 @@ function baseSpec(overrides: Partial<TaskSpawnSpec> = {}): TaskSpawnSpec {
 	};
 }
 
+async function testPersistentMetadata(): Promise<void> {
+	const name = "a. persistent mode and session identity reach child and snapshot";
+	const children: FakeChild[] = [];
+	let received: RpcChildOptions | undefined;
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		sendUserMessage: () => {},
+		createChild: (options) => {
+			received = options;
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+	try {
+		const session = { sessionId: "child-1", sessionDir: "/tmp/child-1" };
+		const { runId, taskIds } = supervisor.spawn([
+			baseSpec({ mode: "persistent", persistentSession: session }),
+		]);
+		const before = supervisor.status(runId);
+		const task = Array.isArray(before) ? undefined : before.tasks[0];
+		assert(name, task?.mode === "persistent" && task.sessionId === "child-1", JSON.stringify(task));
+		assert(
+			`${name} (child options)`,
+			received?.persistentSession?.sessionId === "child-1" &&
+				received.persistentSession.sessionDir === "/tmp/child-1",
+			JSON.stringify(received),
+		);
+		children[0].settle("persistent result");
+		const after = supervisor.status(runId);
+		const completed = Array.isArray(after) ? undefined : after.tasks[0];
+		assert(
+			`${name} (terminal snapshot)`,
+			completed?.mode === "persistent" && completed.sessionId === "child-1" && completed.reaped,
+			JSON.stringify(completed),
+		);
+		void taskIds;
+	} finally {
+		supervisor.dispose();
+	}
+}
+
 let failed = 0;
 
 function pass(name: string): void {
@@ -931,6 +973,7 @@ async function testUnexpectedExitFailsImmediately(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+	await testPersistentMetadata();
 	await testSpawnReturnsBeforeCompletion();
 	await testSteerWhenParentRunning();
 	await testPlainWakeWhenParentWaiting();

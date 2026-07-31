@@ -115,6 +115,22 @@ export function registerSubagentLifecycle(pi: ExtensionAPI, runtime: SubagentRun
 		unbindSubagentControl(supervisor);
 	});
 
+	pi.on("session_tree", (_event, ctx) => {
+		// Branch navigation changes which parent snapshots are visible. Never
+		// retain a registry reconstructed from another branch.
+		const sessions = runtime.refreshPersistentState(ctx);
+		const active = pi
+			.getActiveTools()
+			.filter(
+				(name) =>
+					!SUBAGENT_MANAGEMENT_TOOLS.includes(name as (typeof SUBAGENT_MANAGEMENT_TOOLS)[number]),
+			);
+		const hasManagementState = sessions.length > 0 || runtime.hasActiveBranchRuns(ctx);
+		pi.setActiveTools([
+			...new Set([...active, "subagent", ...(hasManagementState ? SUBAGENT_MANAGEMENT_TOOLS : [])]),
+		]);
+	});
+
 	pi.on("session_start", (_event, ctx) => {
 		compactionInProgress = false;
 		runtime.cancelParentAbort();

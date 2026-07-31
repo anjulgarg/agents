@@ -83,6 +83,7 @@ type RpcEvent = import("./rpc-client.ts").RpcEvent;
 type UsageStats = import("./rpc-client.ts").UsageStats;
 
 const { Supervisor } = await import(supervisorPath);
+type SupervisorInstance = InstanceType<typeof Supervisor>;
 type ChildHandle = import("./supervisor.ts").ChildHandle;
 
 const {
@@ -101,6 +102,11 @@ class FakeChild implements ChildHandle {
 	readonly pid?: number;
 	readonly tools: string[];
 	readonly systemPrompt: string;
+	readonly persistentSession?: { sessionId: string; sessionDir: string };
+	readonly cwd: string;
+	readonly model: string;
+	readonly thinking: string;
+	readonly projectTrusted: boolean;
 	killed = false;
 	steered: string[] = [];
 	prompts: string[] = [];
@@ -112,6 +118,11 @@ class FakeChild implements ChildHandle {
 		this.onEvent = options.onEvent;
 		this.pid = options.pid;
 		this.tools = [...options.tools];
+		this.persistentSession = options.persistentSession;
+		this.cwd = options.cwd;
+		this.model = options.model;
+		this.thinking = options.thinking;
+		this.projectTrusted = options.projectTrusted;
 		this.systemPrompt = fs.existsSync(options.systemPromptFile)
 			? fs.readFileSync(options.systemPromptFile, "utf8")
 			: "";
@@ -153,6 +164,15 @@ class FakeChild implements ChildHandle {
 		if (usage) Object.assign(this.usage, usage);
 		this.usage.turns = Math.max(this.usage.turns, 1);
 		this.onEvent?.({ type: "agent_settled" });
+	}
+}
+
+class RetryCleanupChild extends FakeChild {
+	cleanupAttempts = 0;
+
+	terminate(): Promise<boolean> {
+		this.cleanupAttempts++;
+		return Promise.resolve(this.cleanupAttempts > 1);
 	}
 }
 
@@ -301,11 +321,11 @@ function install(
 	pi: FakePi,
 	children: FakeChild[],
 	extra: SubagentExtensionOptions = {},
-): Supervisor {
+): SupervisorInstance {
 	return registerSubagentExtension(pi as any, {
 		watchdogTickMs: 0,
 		getModels: fakeModels,
-		createChild: (options) => {
+		createChild: (options: RpcChildOptions) => {
 			const child = new FakeChild({ ...options, pid: 40_000 + children.length });
 			children.push(child);
 			return child;
@@ -387,6 +407,9 @@ async function testNonBlockingReturn(): Promise<void> {
 					"subagent_steer",
 					"subagent_abort",
 					"subagent_ack",
+					"subagent_resume",
+					"subagent_sessions",
+					"subagent_close",
 				].some((tool) => pi.activeTools.includes(tool)),
 			`tools=${pi.activeTools.join(",")}`,
 		);
@@ -407,7 +430,13 @@ async function testNonBlockingReturn(): Promise<void> {
 					"subagent_steer",
 					"subagent_abort",
 					"subagent_ack",
-				].every((tool) => pi.activeTools.includes(tool)),
+					"subagent_resume",
+					"subagent_sessions",
+					"subagent_close",
+				].every((tool) => pi.activeTools.includes(tool)) &&
+				task?.mode === "ephemeral" &&
+				task.sessionId === undefined &&
+				!pi.entries.some((entry) => entry.customType === "subagent-session-state"),
 			`runId=${runId} status=${task?.status} tools=${pi.activeTools.join(",")} text=${result?.content?.[0]?.text}`,
 		);
 		// Completing after return must still be possible.
@@ -915,8 +944,13 @@ async function testDefaultToolsInheritParent(): Promise<void> {
 		assert(
 			name,
 			["read", "bash", "write", "web_fetch", "question"].every((tool) => tools.includes(tool)) &&
-				!tools.includes("subagent") &&
-				!tools.includes("subagent_result"),
+				[
+					"subagent",
+					"subagent_result",
+					"subagent_resume",
+					"subagent_sessions",
+					"subagent_close",
+				].every((tool) => !tools.includes(tool)),
 			`tools=${tools.join(",")}`,
 		);
 	} finally {
@@ -1746,6 +1780,7 @@ async function testPersistedManagementAfterReload(): Promise<void> {
 	];
 	const ctx = fakeCtx({ sessionManager: { getEntries: () => entries, getBranch: () => entries } });
 	try {
+		await pi.emit("session_tree", {}, ctx);
 		const status = await callTool(pi, "subagent_status", { runId: "persisted-run" }, ctx);
 		const result = await callTool(
 			pi,
@@ -1755,12 +1790,557 @@ async function testPersistedManagementAfterReload(): Promise<void> {
 		);
 		assert(
 			name,
-			status.details?.tasks?.[0]?.status === "done" &&
+			pi.activeTools.includes("subagent_status") &&
+				pi.activeTools.includes("subagent_result") &&
+				status.details?.tasks?.[0]?.status === "done" &&
 				result.details?.output === "persisted output",
 			`status=${JSON.stringify(status.details)} result=${JSON.stringify(result.details)}`,
 		);
 	} finally {
 		supervisor.dispose();
+	}
+}
+
+function persistentCtx(
+	pi: FakePi,
+	parentId = "parent-1",
+	overrides: { persisted?: boolean; trusted?: boolean; cwd?: string; branch?: unknown[] } = {},
+) {
+	return fakeCtx({
+		cwd: overrides.cwd ?? "/tmp",
+		isProjectTrusted: () => overrides.trusted ?? false,
+		sessionManager: {
+			getEntries: () => pi.entries,
+			getBranch: () => overrides.branch ?? pi.entries,
+			getSessionId: () => parentId,
+			isPersisted: () => overrides.persisted ?? true,
+		},
+	});
+}
+
+async function setupPersistent(trusted = false): Promise<{
+	root: string;
+	cwd: string;
+	pi: FakePi;
+	children: FakeChild[];
+	supervisor: SupervisorInstance;
+	ctx: ReturnType<typeof persistentCtx>;
+	sessionId: string;
+}> {
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-persistent-index-"));
+	const cwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-persistent-cwd-"));
+	const pi = new FakePi();
+	const children: FakeChild[] = [];
+	const supervisor = install(pi, children, { persistentStateRoot: root });
+	const ctx = persistentCtx(pi, "parent-1", { cwd, trusted });
+	const spawned = await callTool(
+		pi,
+		"subagent",
+		{ task: "persistent first", mode: "persistent" },
+		ctx,
+	);
+	const sessionId = spawned.details.results[0].sessionId as string;
+	children[0]!.settle("first output", { input: 3, output: 2 });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	return { root, cwd, pi, children, supervisor, ctx, sessionId };
+}
+
+async function testPersistentPublicControls(): Promise<void> {
+	const name =
+		"persistent public controls retain wrappers, ownership, resume identity, and close safety";
+	const first = await setupPersistent();
+	try {
+		const wrapper = first.pi.entries.find((entry) => entry.customType === "subagent-session-state");
+		const firstDetails = (
+			await callTool(first.pi, "subagent_sessions", { sessionId: first.sessionId }, first.ctx)
+		).details as any;
+		assert(
+			`${name} (wrapper and idle)`,
+			wrapper?.type === "custom" &&
+				Boolean(wrapper.data) &&
+				(wrapper.data as any).sessionId === first.sessionId &&
+				firstDetails.state === "idle",
+			JSON.stringify({ wrapper, firstDetails }),
+		);
+
+		const reloadedPi = new FakePi();
+		reloadedPi.entries = [...first.pi.entries];
+		const reloadedChildren: FakeChild[] = [];
+		const reloadedSupervisor = install(reloadedPi, reloadedChildren, {
+			persistentStateRoot: first.root,
+		});
+		const reloadedCtx = persistentCtx(reloadedPi, "parent-1", { cwd: first.cwd });
+		try {
+			const visible = await callTool(reloadedPi, "subagent_sessions", {}, reloadedCtx);
+			const inactiveCtx = persistentCtx(reloadedPi, "parent-1", {
+				cwd: first.cwd,
+				branch: [],
+			});
+			let inactiveError = "";
+			try {
+				await callTool(
+					reloadedPi,
+					"subagent_sessions",
+					{ sessionId: first.sessionId },
+					inactiveCtx,
+				);
+			} catch (error) {
+				inactiveError = String(error);
+			}
+			assert(
+				`${name} (inactive branch refusal)`,
+				inactiveError.includes("unknown persistent session") && reloadedChildren.length === 0,
+				inactiveError,
+			);
+
+			const resumed = await callTool(
+				reloadedPi,
+				"subagent_resume",
+				{ sessionId: first.sessionId, task: "persistent second" },
+				reloadedCtx,
+			);
+			const resumedTask = resumed.details.results[0];
+			const initialChild = first.children[0]!;
+			const resumedChild = reloadedChildren[0]!;
+			assert(
+				`${name} (same parent exact-contract reload/resume)`,
+				Array.isArray(visible.details) &&
+					visible.details.some((item: any) => item.sessionId === first.sessionId) &&
+					resumedTask.sessionId === first.sessionId &&
+					resumedTask.taskId !== firstDetails.latestTaskId &&
+					resumedChild.persistentSession?.sessionId === first.sessionId &&
+					resumedChild.persistentSession?.sessionDir ===
+						initialChild.persistentSession?.sessionDir &&
+					resumedChild.cwd === initialChild.cwd &&
+					resumedChild.model === initialChild.model &&
+					resumedChild.thinking === initialChild.thinking &&
+					resumedChild.projectTrusted === initialChild.projectTrusted &&
+					JSON.stringify(resumedChild.tools) === JSON.stringify(initialChild.tools) &&
+					resumedChild.systemPrompt === initialChild.systemPrompt,
+				JSON.stringify({
+					visible: visible.details,
+					resumedTask,
+					session: resumedChild.persistentSession,
+				}),
+			);
+
+			let busyResumeError = "";
+			let busyCloseError = "";
+			try {
+				await callTool(
+					reloadedPi,
+					"subagent_resume",
+					{ sessionId: first.sessionId, task: "duplicate writer" },
+					reloadedCtx,
+				);
+			} catch (error) {
+				busyResumeError = String(error);
+			}
+			try {
+				await callTool(reloadedPi, "subagent_close", { sessionId: first.sessionId }, reloadedCtx);
+			} catch (error) {
+				busyCloseError = String(error);
+			}
+			assert(
+				`${name} (running resume and close refusal)`,
+				busyResumeError.includes("not idle") &&
+					busyCloseError.includes("running") &&
+					reloadedChildren.length === 1,
+				JSON.stringify({ busyResumeError, busyCloseError }),
+			);
+
+			resumedChild.settle("second output", { input: 5, output: 4 });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const unknownParentCtx = persistentCtx(reloadedPi, "foreign-parent", { cwd: first.cwd });
+			let foreignError = "";
+			try {
+				await callTool(
+					reloadedPi,
+					"subagent_sessions",
+					{ sessionId: first.sessionId },
+					unknownParentCtx,
+				);
+			} catch (error) {
+				foreignError = String(error);
+			}
+			assert(
+				`${name} (foreign parent refusal)`,
+				foreignError.includes("another parent"),
+				foreignError,
+			);
+
+			const childRecord = reloadedPi.entries.find(
+				(entry) =>
+					entry.customType === "subagent-session-state" &&
+					(entry.data as any)?.sessionId === first.sessionId,
+			);
+			const childDir = (childRecord?.data as any)?.child?.sessionDir as string;
+			const unknownFile = path.join(childDir, "unknown-preserved-file");
+			await fs.promises.writeFile(unknownFile, "keep", "utf8");
+			await callTool(reloadedPi, "subagent_close", { sessionId: first.sessionId }, reloadedCtx);
+			let closedError = "";
+			try {
+				await callTool(
+					reloadedPi,
+					"subagent_resume",
+					{ sessionId: first.sessionId, task: "no" },
+					reloadedCtx,
+				);
+			} catch (error) {
+				closedError = String(error);
+			}
+			assert(
+				`${name} (logical close preserves files)`,
+				closedError.includes("closed") && fs.readFileSync(unknownFile, "utf8") === "keep",
+				closedError,
+			);
+		} finally {
+			reloadedSupervisor.dispose();
+		}
+	} finally {
+		first.supervisor.dispose();
+		await fs.promises.rm(first.root, { recursive: true, force: true });
+		await fs.promises.rm(first.cwd, { recursive: true, force: true });
+	}
+}
+
+async function testPersistentWorktreeRetention(): Promise<void> {
+	const name = "persistent worktree resumes and closes without deleting retained changes";
+	const fixture = await fs.promises.mkdtemp(
+		path.join(os.tmpdir(), "pi-subagent-worktree-persist-"),
+	);
+	const repo = path.join(fixture, "repo");
+	const stateRoot = path.join(fixture, "state");
+	await fs.promises.mkdir(repo);
+	const git = (args: string[]) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+	git(["init", "-q"]);
+	git(["config", "user.email", "test@example.invalid"]);
+	git(["config", "user.name", "Test"]);
+	await fs.promises.writeFile(path.join(repo, "tracked.txt"), "baseline\n", "utf8");
+	git(["add", "tracked.txt"]);
+	git(["commit", "-qm", "baseline"]);
+
+	const pi = new FakePi();
+	const children: FakeChild[] = [];
+	const supervisor = install(pi, children, { persistentStateRoot: stateRoot });
+	const ctx = persistentCtx(pi, "worktree-parent", { cwd: repo });
+	let worktree: { path: string; branch: string } | undefined;
+	try {
+		const spawned = await callTool(
+			pi,
+			"subagent",
+			{ task: "durable worktree", mode: "persistent", workspace: "worktree", cwd: repo },
+			ctx,
+		);
+		const first = spawned.details.results[0];
+		const sessionId = first.sessionId as string;
+		worktree = first.worktree;
+		children[0]!.settle("first worktree turn");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const retainedFile = path.join(worktree!.path, "uncommitted.txt");
+		await fs.promises.writeFile(retainedFile, "retain me\n", "utf8");
+
+		await callTool(
+			pi,
+			"subagent_resume",
+			{ sessionId, task: "continue in retained worktree" },
+			ctx,
+		);
+		const resumedInPlace = children[1]?.cwd === worktree!.path;
+		children[1]!.settle("second worktree turn");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await callTool(pi, "subagent_close", { sessionId }, ctx);
+
+		assert(
+			name,
+			resumedInPlace &&
+				fs.existsSync(worktree!.path) &&
+				fs.readFileSync(retainedFile, "utf8") === "retain me\n" &&
+				git(["branch", "--list", worktree!.branch]).stdout.trim().length > 0,
+			JSON.stringify({ worktree, resumedCwd: children[1]?.cwd }),
+		);
+	} finally {
+		supervisor.dispose();
+		if (worktree?.path && fs.existsSync(worktree.path)) {
+			git(["worktree", "remove", "--force", worktree.path]);
+		}
+		if (worktree?.branch) git(["branch", "-D", worktree.branch]);
+		if (worktree?.path) {
+			try {
+				await fs.promises.rmdir(path.dirname(worktree.path));
+			} catch {
+				// Preserve a shared parent when another fixture still owns an entry.
+			}
+		}
+		await fs.promises.rm(fixture, { recursive: true, force: true });
+	}
+}
+
+async function testPersistentCleanupRetry(): Promise<void> {
+	const name = "persistent cleanup retry returns a blocked session to idle only after reaping";
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-retry-root-"));
+	const cwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-retry-cwd-"));
+	const pi = new FakePi();
+	let child: RetryCleanupChild | undefined;
+	const supervisor = install(pi, [], {
+		persistentStateRoot: root,
+		createChild: (options: RpcChildOptions) => {
+			child = new RetryCleanupChild({ ...options, pid: 41_000 });
+			return child;
+		},
+	});
+	const ctx = persistentCtx(pi, "parent-retry", { cwd });
+	try {
+		const spawned = await callTool(
+			pi,
+			"subagent",
+			{ task: "cleanup retry", mode: "persistent" },
+			ctx,
+		);
+		const sessionId = spawned.details.results[0].sessionId as string;
+		child!.settle("finished before cleanup retry");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const blocked = (await callTool(pi, "subagent_sessions", { sessionId }, ctx)).details as any;
+		supervisor.tickWatchdog();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const recovered = (await callTool(pi, "subagent_sessions", { sessionId }, ctx)).details as any;
+		assert(
+			name,
+			blocked.state === "blocked" && recovered.state === "idle" && child?.cleanupAttempts === 2,
+			JSON.stringify({ blocked, recovered, attempts: child?.cleanupAttempts }),
+		);
+	} finally {
+		supervisor.dispose();
+		await fs.promises.rm(root, { recursive: true, force: true });
+		await fs.promises.rm(cwd, { recursive: true, force: true });
+	}
+}
+
+async function testPersistentRestoreRecovery(): Promise<void> {
+	const name = "persistent restore reaps verifiable work and blocks missing ownership metadata";
+
+	const recoverable = await setupPersistentRestoreFixture("recoverable-parent");
+	try {
+		const reloadedPi = new FakePi();
+		reloadedPi.entries = [...recoverable.pi.entries];
+		const reloadedSupervisor = install(reloadedPi, [], {
+			persistentStateRoot: recoverable.root,
+			proc: { isAlive: () => false },
+		});
+		const reloadedCtx = persistentCtx(reloadedPi, "recoverable-parent", {
+			cwd: recoverable.cwd,
+		});
+		try {
+			await reloadedPi.emit("session_start", {}, reloadedCtx);
+			const recovered = (
+				await callTool(
+					reloadedPi,
+					"subagent_sessions",
+					{ sessionId: recoverable.sessionId },
+					reloadedCtx,
+				)
+			).details as any;
+			assert(
+				`${name} (confirmed dead owner)`,
+				recovered.state === "idle" && recovered.error.includes("reaped during session restore"),
+				JSON.stringify(recovered),
+			);
+		} finally {
+			reloadedSupervisor.dispose();
+		}
+	} finally {
+		await recoverable.cleanup();
+	}
+
+	const unverifiable = await setupPersistentRestoreFixture("unverifiable-parent");
+	try {
+		const ownerFile = path.join(
+			unverifiable.root,
+			"subagents",
+			"unverifiable-parent",
+			"locks",
+			unverifiable.sessionId,
+			"owner.json",
+		);
+		const owner = JSON.parse(await fs.promises.readFile(ownerFile, "utf8"));
+		delete owner.childPid;
+		await fs.promises.writeFile(ownerFile, `${JSON.stringify(owner)}\n`, "utf8");
+
+		const reloadedPi = new FakePi();
+		reloadedPi.entries = [...unverifiable.pi.entries];
+		const reloadedSupervisor = install(reloadedPi, [], {
+			persistentStateRoot: unverifiable.root,
+			proc: { isAlive: () => false },
+		});
+		const reloadedCtx = persistentCtx(reloadedPi, "unverifiable-parent", {
+			cwd: unverifiable.cwd,
+		});
+		try {
+			await reloadedPi.emit("session_start", {}, reloadedCtx);
+			const blocked = (
+				await callTool(
+					reloadedPi,
+					"subagent_sessions",
+					{ sessionId: unverifiable.sessionId },
+					reloadedCtx,
+				)
+			).details as any;
+			assert(
+				`${name} (missing child owner)`,
+				blocked.state === "blocked" && blocked.error.includes("no verifiable child owner"),
+				JSON.stringify(blocked),
+			);
+		} finally {
+			reloadedSupervisor.dispose();
+		}
+	} finally {
+		await unverifiable.cleanup();
+	}
+}
+
+async function setupPersistentRestoreFixture(parentId: string): Promise<{
+	root: string;
+	cwd: string;
+	pi: FakePi;
+	sessionId: string;
+	cleanup: () => Promise<void>;
+}> {
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-restore-root-"));
+	const cwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-restore-cwd-"));
+	const pi = new FakePi();
+	const children: FakeChild[] = [];
+	const supervisor = install(pi, children, { persistentStateRoot: root });
+	const ctx = persistentCtx(pi, parentId, { cwd });
+	const spawned = await callTool(
+		pi,
+		"subagent",
+		{ task: "interrupted persistent work", mode: "persistent" },
+		ctx,
+	);
+	const sessionId = spawned.details.results[0].sessionId as string;
+	supervisor.dispose();
+	return {
+		root,
+		cwd,
+		pi,
+		sessionId,
+		cleanup: async () => {
+			await fs.promises.rm(root, { recursive: true, force: true });
+			await fs.promises.rm(cwd, { recursive: true, force: true });
+		},
+	};
+}
+
+async function testPersistentValidationFailuresAndMixedModes(): Promise<void> {
+	const name = "persistent controls refuse drift before spawn and resolve mixed modes";
+	const unpersistedPi = new FakePi();
+	const unpersistedChildren: FakeChild[] = [];
+	const unpersistedRoot = await fs.promises.mkdtemp(
+		path.join(os.tmpdir(), "pi-subagent-unpersisted-"),
+	);
+	const unpersistedSupervisor = install(unpersistedPi, unpersistedChildren, {
+		persistentStateRoot: unpersistedRoot,
+	});
+	try {
+		let refusal = "";
+		try {
+			await callTool(unpersistedPi, "subagent", { task: "refuse", mode: "persistent" }, fakeCtx());
+		} catch (error) {
+			refusal = String(error);
+		}
+		assert(
+			`${name} (unpersisted parent)`,
+			refusal.includes("persisted parent") && unpersistedChildren.length === 0,
+			refusal,
+		);
+	} finally {
+		unpersistedSupervisor.dispose();
+		await fs.promises.rm(unpersistedRoot, { recursive: true, force: true });
+	}
+
+	const mixedRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-mixed-"));
+	const mixedCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-mixed-cwd-"));
+	const mixedPi = new FakePi();
+	const mixedChildren: FakeChild[] = [];
+	const mixedSupervisor = install(mixedPi, mixedChildren, { persistentStateRoot: mixedRoot });
+	const mixedCtx = persistentCtx(mixedPi, "mixed-parent", { cwd: mixedCwd });
+	try {
+		const mixed = await callTool(
+			mixedPi,
+			"subagent",
+			{ mode: "persistent", tasks: [{ task: "durable" }, { task: "one shot", mode: "ephemeral" }] },
+			mixedCtx,
+		);
+		assert(
+			`${name} (mixed modes)`,
+			mixed.details.results[0].mode === "persistent" &&
+				mixed.details.results[1].mode === "ephemeral" &&
+				!!mixed.details.results[0].sessionId &&
+				!mixed.details.results[1].sessionId &&
+				!!mixedChildren[0]?.persistentSession &&
+				!mixedChildren[1]?.persistentSession,
+			JSON.stringify(mixed.details),
+		);
+	} finally {
+		mixedSupervisor.dispose();
+		await fs.promises.rm(mixedRoot, { recursive: true, force: true });
+		await fs.promises.rm(mixedCwd, { recursive: true, force: true });
+	}
+
+	for (const failure of ["model", "tool", "trust", "cwd"] as const) {
+		const setup = await setupPersistent(failure === "trust");
+		let activeSupervisor = setup.supervisor;
+		try {
+			const ctx =
+				failure === "trust"
+					? persistentCtx(setup.pi, "parent-1", { cwd: setup.cwd, trusted: false })
+					: setup.ctx;
+			if (failure === "tool")
+				setup.pi.activeTools = setup.pi.activeTools.filter((tool) => tool !== "read");
+			if (failure === "cwd") await fs.promises.rm(setup.cwd, { recursive: true, force: true });
+			const options: SubagentExtensionOptions = {
+				persistentStateRoot: setup.root,
+				getModels:
+					failure === "model"
+						? async () =>
+								[{ provider: "other", id: "model", name: "other", reasoning: false }] as any
+						: fakeModels,
+			};
+			if (failure === "model") {
+				// Rebind the tool through a fresh extension so model availability is injected at resume time.
+				activeSupervisor.dispose();
+				activeSupervisor = install(setup.pi, setup.children, options);
+			}
+			let message = "";
+			try {
+				await callTool(
+					setup.pi,
+					"subagent_resume",
+					{ sessionId: setup.sessionId, task: `drift-${failure}` },
+					ctx,
+				);
+			} catch (error) {
+				message = String(error);
+			}
+			const expected =
+				failure === "model"
+					? "unavailable or disabled"
+					: failure === "tool"
+						? "tools are not active"
+						: failure === "trust"
+							? "requires current project trust"
+							: "cwd is missing";
+			assert(
+				`${name} (${failure} drift)`,
+				message.includes(expected) && setup.children.length === 1,
+				message,
+			);
+		} finally {
+			activeSupervisor.dispose();
+			await fs.promises.rm(setup.root, { recursive: true, force: true });
+			await fs.promises.rm(setup.cwd, { recursive: true, force: true });
+		}
 	}
 }
 
@@ -1823,6 +2403,11 @@ async function main(): Promise<void> {
 	await testAbortCallsKillAll();
 	await testPidSweepSkipsInnocent();
 	await testPublicConcurrencyLimit();
+	await testPersistentPublicControls();
+	await testPersistentWorktreeRetention();
+	await testPersistentCleanupRetry();
+	await testPersistentRestoreRecovery();
+	await testPersistentValidationFailuresAndMixedModes();
 	await testPersistedManagementAfterReload();
 	testF6ShortcutRegistered();
 	await testF6PrefersActiveTeam();

@@ -117,7 +117,7 @@ export class SubagentDashboard implements Component {
 				truncateToWidth(
 					this.theme.fg(
 						"dim",
-						`    ${item.result.model}:${item.result.thinking} · ${item.result.workspace}`,
+						`    ${item.result.model}:${item.result.thinking} · ${item.result.workspace} · ${item.result.mode ?? "ephemeral"}${item.result.sessionId ? ` · ${item.result.sessionId}` : ""}`,
 					),
 					width,
 					"…",
@@ -134,7 +134,10 @@ export class SubagentDashboard implements Component {
 		}
 		const lines: string[] = [
 			this.theme.fg("muted", this.theme.bold("Transcript")),
-			this.theme.fg("muted", `status=${item.result.status} · taskId=${item.result.taskId}`),
+			this.theme.fg(
+				"muted",
+				`status=${item.result.status} · mode=${item.result.mode ?? "ephemeral"}${item.result.sessionId ? ` · sessionId=${item.result.sessionId}` : ""} · taskId=${item.result.taskId}`,
+			),
 			this.theme.fg("dim", item.result.task),
 		];
 		if (item.result.worktree) {
@@ -552,6 +555,8 @@ export class SubagentThreadView implements Component {
 			item.result.model,
 			item.result.thinking,
 			item.result.workspace,
+			item.result.mode ?? "ephemeral",
+			item.result.sessionId ? `session ${item.result.sessionId}` : undefined,
 			tokenSpeed,
 		].filter((value): value is string => Boolean(value));
 		const wrappedTask = new Text(item.result.task, 0, 0).render(contentWidth);

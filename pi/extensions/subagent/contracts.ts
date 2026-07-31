@@ -10,6 +10,57 @@ export const WORKSPACE_MODES = ["shared", "worktree"] as const;
 
 export type WorkspaceMode = (typeof WORKSPACE_MODES)[number];
 
+/** Explicit child execution mode. Omitted mode remains ephemeral for compatibility. */
+export const SUBAGENT_MODES = ["ephemeral", "persistent"] as const;
+
+export type SubagentMode = (typeof SUBAGENT_MODES)[number];
+
+export const PERSISTENT_SESSION_STATES = ["idle", "running", "blocked", "closed"] as const;
+
+export type PersistentSessionState = (typeof PERSISTENT_SESSION_STATES)[number];
+
+/** Exact native Pi session identity used by a persistent child invocation. */
+export interface PersistentChildSession {
+	sessionId: string;
+	sessionDir: string;
+}
+
+/** Descriptive alias used by callers that treat the child identity as a contract. */
+export type PersistentSessionDescriptor = PersistentChildSession;
+export type PersistentLifecycleState = PersistentSessionState;
+
+/** Immutable execution inputs retained for a persistent conversation. */
+export interface PersistentExecutionContract {
+	model: string;
+	thinking: ThinkingLevel;
+	tools: string[];
+	workspace: WorkspaceMode;
+	cwd: string;
+	projectTrusted: boolean;
+	/** Exact generated prompt body, intentionally omitted from safe views. */
+	systemPrompt: string;
+	worktree?: WorktreeInfo;
+}
+
+/** Bounded parent-safe projection of a persistent child session. */
+export interface PersistentSessionView {
+	sessionId: string;
+	ownerParentSessionId: string;
+	state: PersistentSessionState;
+	mode: "persistent";
+	model?: string;
+	thinking?: ThinkingLevel;
+	tools?: string[];
+	workspace?: WorkspaceMode;
+	cwd?: string;
+	worktree?: WorktreeInfo;
+	latestRunId?: string;
+	latestTaskId?: string;
+	createdAt: number;
+	updatedAt: number;
+	error?: string;
+}
+
 export interface UsageStats {
 	input: number;
 	output: number;
@@ -32,6 +83,8 @@ export interface Handoff {
 /** Stable cross-extension subset of the subagent:update event payload. */
 export interface SubagentUpdateResult {
 	taskId?: string;
+	mode?: SubagentMode;
+	sessionId?: string;
 	teamRunId?: string;
 	teamTaskId?: string;
 	role?: string;
@@ -58,6 +111,9 @@ export interface SubagentResultView {
 	index: number;
 	taskId: string;
 	task: string;
+	/** Absent in legacy records; omitted mode is the ephemeral default. */
+	mode?: SubagentMode;
+	sessionId?: string;
 	teamRunId?: string;
 	teamTaskId?: string;
 	role?: string;

@@ -1,0 +1,88 @@
+# Subagents
+
+The Pi subagent extension runs delegated work in separate Pi processes. Each invocation has its own run ID and task ID, reports per-invocation output and usage, and is reaped after it settles.
+
+## Ephemeral and persistent modes
+
+Ephemeral mode is the default. It starts a sessionless one-shot child and does not retain a resumable conversation.
+
+```json
+{
+	"task": "Inspect the parser and report likely defects"
+}
+```
+
+Choose persistent mode only when later prompts must continue the exact child conversation.
+
+```json
+{
+	"task": "Investigate the parser and record your evidence",
+	"mode": "persistent"
+}
+```
+
+The spawn result includes a stable `sessionId`. Every invocation still receives a new run ID and task ID.
+
+Persistent mode also works in parallel calls. A task-level `mode` overrides the top-level default, so one call may contain persistent and ephemeral tasks.
+
+## Resume and management
+
+Resume an idle session with its stable ID and a new prompt.
+
+```json
+{
+	"sessionId": "<stable-child-session-id>",
+	"task": "Continue from your earlier evidence and implement the fix"
+}
+```
+
+`subagent_resume` reopens the same native Pi JSONL session. It restores the original model, thinking level, tool allowlist, trust setting, cwd or retained worktree, workspace mode, and generated system prompt. It accepts no execution-contract overrides. Output and usage remain scoped to the new invocation.
+
+Use `subagent_sessions` with no ID to list visible sessions, or pass `sessionId` to inspect one. Its safe view includes lifecycle state, execution summary, latest run and task references, timestamps, and diagnostics. It omits transcripts, system prompts, credentials, lock nonces, and process ownership tokens.
+
+Use `subagent_close` to make an idle session, or a blocked session with no active lock, non-resumable. Close is logical and non-destructive. It does not delete the child transcript, unknown runtime files, worktrees, branches, or repository changes.
+
+## Conversation and compaction semantics
+
+A resumed child receives normal Pi session context from the same append-only JSONL conversation. If Pi compacted that conversation, the child receives the stored compaction summary and retained tail. The complete transcript remains on disk according to Pi's normal session format.
+
+A persistent child cannot invoke subagent or subagent-management tools. Dependency outputs may still be supplied through `inputFrom` when spawning or resuming.
+
+## Ownership and branches
+
+A persistent child belongs to the exact persisted parent session that created it. It survives a parent process restart and `/resume` of that parent. It is not globally discoverable or transferable and cannot be claimed from another parent or project session, `/new`, `/fork`, `/clone`, or a parent branch before the child was created.
+
+The registry is reconstructed only from `subagent-session-state` entries visible on the active parent branch. Switching branches immediately changes which child sessions are visible.
+
+Persistent mode requires the parent session to be saved on disk. An in-memory parent cannot create or resume a persistent child.
+
+## Storage and retention
+
+Child session files and lock state live below Pi's agent directory, partitioned by parent session ID. Tests and integrations can inject a separate state root. Runtime files are not package resources and are never written into this repository.
+
+Persistent sessions have no automatic expiry or garbage collection. Logical close preserves their files. Destructive cleanup is intentionally not provided, so operators must treat retained transcripts as local sensitive data and manage storage through their normal Pi data-retention procedures.
+
+## Process and lock safety
+
+Every prompt starts a fresh RPC subprocess against the retained child session. After `agent_settled`, failure, timeout, or abort, the extension reaps the process group before returning the session to `idle`. No dormant child process remains between prompts.
+
+An atomic per-session lock permits only one writer. A live owner is never replaced. On parent restart, an interrupted child is reaped only when its process and ownership token can be verified. Missing ownership, owner mismatch, unsafe storage paths, or unconfirmed cleanup leaves the session `blocked` with a diagnostic instead of risking concurrent JSONL writers.
+
+A later cleanup retry may return a blocked invocation to idle only after process-group cleanup is confirmed. A blocked session can be inspected, and it can be logically closed only when no invocation lock remains.
+
+## Resume validation
+
+Before spawning a resumed child, the extension refuses the request when:
+
+- the session is unknown, busy, blocked, closed, foreign, or absent from the active branch
+- the stored model is unavailable or disabled
+- a stored tool is no longer active in the parent
+- the stored cwd or retained worktree is missing
+- the original invocation required project trust and the current parent is untrusted
+- the stored child path escapes its parent-partitioned runtime root
+
+Resume never substitutes a different model, changes tools, lowers the frozen trust setting, or creates a replacement conversation.
+
+## Worktrees
+
+A persistent worktree session always resumes in its original retained worktree. Settlement, parent shutdown, and logical close preserve the worktree and branch, including uncommitted changes. If that worktree path is removed externally, resume fails before child creation.

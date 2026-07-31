@@ -5,13 +5,26 @@ import type { Model } from "@earendil-works/pi-ai";
 import { bindSubagentControl } from "./control.ts";
 
 import { SubagentRuntime, type ProcAccess } from "./runtime.ts";
+export {
+	PERSISTENT_SESSION_STATE_TYPE,
+	PersistentSessionError,
+	PersistentSessionStore,
+	derivePersistentSessionPaths,
+	reconstructPersistentSessions,
+	validateContainedRuntimePath,
+} from "./persistent.ts";
 import { Supervisor, type ChildFactory } from "./supervisor.ts";
 import { CHAT_PADDING, registerSubagentTools } from "./tools.ts";
 import { registerSubagentLifecycle } from "./lifecycle.ts";
 export {
+	PERSISTENT_SESSION_STATES,
+	SUBAGENT_MODES,
 	THINKING_LEVELS,
 	WORKSPACE_MODES,
 	type Handoff,
+	type PersistentExecutionContract,
+	type PersistentSessionState,
+	type PersistentSessionView,
 	type ResultRef,
 	type SubagentDetails,
 	type SubagentResultView,
@@ -38,6 +51,8 @@ export { formatStatusReport, formatStatusSummary, formatTaskWithHandoffs } from 
 const WAKE_MESSAGE_TYPE = "subagent-wake";
 
 export interface SubagentExtensionOptions {
+	/** Inject a temporary persistent runtime root in tests. */
+	persistentStateRoot?: string;
 	createSupervisor?: (options: ConstructorParameters<typeof Supervisor>[0]) => Supervisor;
 	createChild?: ChildFactory;
 	proc?: ProcAccess;
@@ -64,6 +79,7 @@ export function registerSubagentExtension(
 
 	const runtime = new SubagentRuntime({
 		pi,
+		persistentStateRoot: options.persistentStateRoot,
 		createSupervisor: options.createSupervisor,
 		createChild: options.createChild,
 		proc: options.proc,

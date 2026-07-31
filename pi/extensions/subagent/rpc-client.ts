@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 
-import type { ThinkingLevel, UsageStats } from "./contracts.ts";
+import type { PersistentChildSession, ThinkingLevel, UsageStats } from "./contracts.ts";
 
 export { THINKING_LEVELS, type ThinkingLevel, type UsageStats } from "./contracts.ts";
 
@@ -109,6 +109,8 @@ export interface RpcChildOptions {
 	tools: string[];
 	systemPromptFile: string;
 	projectTrusted: boolean;
+	/** Optional exact native session identity. Both fields are required together. */
+	persistentSession?: PersistentChildSession;
 	/** Unique persisted identity used to verify orphan ownership before cleanup. */
 	ownerToken?: string;
 	/** Explicit pi executable. Defaults to resolving pi from the running process. */
@@ -121,6 +123,30 @@ export interface RpcChildOptions {
 
 export function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+}
+
+export function validatePersistentChildSession(
+	descriptor: PersistentChildSession | undefined,
+): PersistentChildSession | undefined {
+	if (descriptor === undefined) return undefined;
+	if (!descriptor || typeof descriptor !== "object") {
+		throw new Error("persistent child session descriptor is required");
+	}
+	if (typeof descriptor.sessionId !== "string" || descriptor.sessionId.trim() === "") {
+		throw new Error("persistent child session requires a non-empty sessionId");
+	}
+	if (typeof descriptor.sessionDir !== "string" || descriptor.sessionDir.trim() === "") {
+		throw new Error("persistent child session requires a non-empty sessionDir");
+	}
+	return { sessionId: descriptor.sessionId, sessionDir: descriptor.sessionDir };
+}
+
+/** Construct the mutually exclusive native Pi session arguments. */
+export function getSessionArguments(descriptor: PersistentChildSession | undefined): string[] {
+	const session = validatePersistentChildSession(descriptor);
+	return session
+		? ["--session-id", session.sessionId, "--session-dir", session.sessionDir]
+		: ["--no-session"];
 }
 
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -194,7 +220,7 @@ export class RpcChild {
 			"subagent",
 			"--append-system-prompt",
 			options.systemPromptFile,
-			"--no-session",
+			...getSessionArguments(options.persistentSession),
 			...(options.projectTrusted ? ["--approve"] : []),
 		];
 		const invocation = options.piBin ? { command: options.piBin, args } : getPiInvocation(args);

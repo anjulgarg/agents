@@ -1,13 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	getAgentDir,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 import { killSubagentRuns } from "./control.ts";
+
 import type {
 	Handoff,
+	PersistentExecutionContract,
+	PersistentSessionView,
 	ResultRef,
 	SubagentDetails,
 	SubagentResultView,
@@ -17,6 +25,13 @@ import type {
 	WorktreeInfo,
 } from "./contracts.ts";
 import { emptyUsage, RpcChild, type RpcChildOptions } from "./rpc-client.ts";
+import {
+	PersistentSessionError,
+	PersistentSessionStore as PersistentSessionStoreImpl,
+	type PersistentSessionLock,
+	type PersistentSessionSnapshot,
+	type PersistentSessionStore,
+} from "./persistent.ts";
 import {
 	Supervisor,
 	isTerminalStatus,
@@ -53,6 +68,8 @@ interface PersistedTask {
 	thinking: ThinkingLevel;
 	workspace: WorkspaceMode;
 	cwd: string;
+	mode?: "ephemeral" | "persistent";
+	sessionId?: string;
 	pid?: number;
 	teamRunId?: string;
 	teamTaskId?: string;
@@ -90,8 +107,24 @@ export interface SubagentTaskMeta {
 	promptDir?: string;
 }
 
+export interface PersistentInvocationLease {
+	sessionId: string;
+	lock: PersistentSessionLock;
+	ownerToken?: string;
+	store: PersistentSessionStore;
+}
+
+export interface PersistentInvocationRef {
+	runId?: string;
+	taskId?: string;
+	ownerToken?: string;
+	parentPid?: number;
+}
+
 export interface SubagentRuntimeOptions {
 	pi: ExtensionAPI;
+	/** Injected root for persistent child sessions and locks. */
+	persistentStateRoot?: string;
 	createSupervisor?: (options: ConstructorParameters<typeof Supervisor>[0]) => Supervisor;
 	createChild?: ChildFactory;
 	proc?: ProcAccess;
@@ -187,8 +220,10 @@ function defaultIsAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;
-	} catch {
-		return false;
+	} catch (error) {
+		// Only ESRCH proves absence. Permission and platform errors must remain
+		// fail-closed so a live writer is never mistaken for a stale owner.
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
 	}
 }
 
@@ -251,6 +286,10 @@ export class SubagentRuntime {
 
 	private readonly pi: ExtensionAPI;
 	private readonly proc: ProcAccess;
+	private readonly persistentStateRoot: string;
+	private persistentStore: PersistentSessionStore | undefined;
+	private readonly persistentLeases = new Map<string, PersistentInvocationLease>();
+	private readonly persistentFinalizedTasks = new Set<string>();
 	private readonly taskMeta = new Map<string, SubagentTaskMeta>();
 	private readonly wedgedTasks = new Set<string>();
 	private readonly historical = new Map<string, SubagentDetails>();
@@ -271,13 +310,21 @@ export class SubagentRuntime {
 	constructor(options: SubagentRuntimeOptions) {
 		this.pi = options.pi;
 		this.proc = options.proc ?? {};
+		this.persistentStateRoot = options.persistentStateRoot ?? getAgentDir();
 		const createChild: ChildFactory =
 			options.createChild ?? ((childOptions: RpcChildOptions) => new RpcChild(childOptions));
 		const sendWakeMessage = (
 			content: string,
 			msgOptions?: { deliverAs?: "steer" | "followUp" },
 		) => {
-			this.syncFromSupervisor();
+			// Finalization is diagnostic state, not a reason to suppress the parent wake.
+			// A malformed or already-released persistent lease must leave the task result
+			// visible while preserving a blocked session diagnostic.
+			try {
+				this.syncFromSupervisor();
+			} catch (error) {
+				this.recordPersistentSyncFailure(String(content), error);
+			}
 			this.trackWedgedFromWake(String(content));
 			this.pi.sendMessage(
 				{
@@ -306,6 +353,291 @@ export class SubagentRuntime {
 			this.updateActivityWidget();
 		});
 		this.pi.events.on("team:state", (data: unknown) => this.updateTeamState(data));
+	}
+
+	private parentIsPersisted(ctx: ExtensionContext): boolean {
+		const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & {
+			isPersisted?: () => boolean;
+		};
+		return manager.isPersisted?.() === true;
+	}
+
+	private requirePersistentStore(ctx: ExtensionContext): PersistentSessionStore {
+		if (!this.parentIsPersisted(ctx)) {
+			throw new PersistentSessionError(
+				"INVALID",
+				"persistent subagents require a persisted parent session; save or resume the parent session first",
+			);
+		}
+		const ownerParentSessionId = ctx.sessionManager.getSessionId();
+		if (!ownerParentSessionId) {
+			throw new PersistentSessionError(
+				"INVALID",
+				"persistent subagents require the parent session ID",
+			);
+		}
+		const store = new PersistentSessionStoreImpl({
+			stateRoot: this.persistentStateRoot,
+			ownerParentSessionId,
+			entries: ctx.sessionManager.getBranch(),
+			processHooks: {
+				isProcessAlive: (pid) => this.proc.isAlive?.(pid) ?? defaultIsAlive(pid),
+				confirmCleanup: (owner) => {
+					if (owner.childPid === undefined) return false;
+					return !(this.proc.isAlive?.(owner.childPid) ?? defaultIsAlive(owner.childPid));
+				},
+			},
+			appendSnapshot: (snapshot) => this.pi.appendEntry("subagent-session-state", snapshot),
+		});
+		this.persistentStore = store;
+		return store;
+	}
+
+	/** Rebuild visibility exclusively from the current parent branch. */
+	refreshPersistentState(ctx: ExtensionContext): PersistentSessionView[] {
+		if (!this.parentIsPersisted(ctx)) {
+			this.persistentStore = undefined;
+			return [];
+		}
+		return this.requirePersistentStore(ctx).list();
+	}
+
+	listPersistentSessions(ctx: ExtensionContext): PersistentSessionView[] {
+		return this.refreshPersistentState(ctx);
+	}
+
+	hasActiveBranchRuns(ctx: ExtensionContext): boolean {
+		return loadPersistedRuns(ctx, true).size > 0 || this.supervisor.runs.size > 0;
+	}
+
+	assertPersistentParent(ctx: ExtensionContext): void {
+		this.requirePersistentStore(ctx);
+	}
+
+	getPersistentSession(ctx: ExtensionContext, sessionId: string): PersistentSessionView {
+		return this.requirePersistentStore(ctx).get(sessionId);
+	}
+
+	getPersistentSnapshot(ctx: ExtensionContext, sessionId: string): PersistentSessionSnapshot {
+		return this.requirePersistentStore(ctx).getSnapshot(sessionId);
+	}
+
+	createPersistentSession(
+		ctx: ExtensionContext,
+		execution: PersistentExecutionContract,
+	): PersistentSessionSnapshot {
+		const store = this.requirePersistentStore(ctx);
+		const sessionId = randomUUID();
+		const child = store.prepareChildDirectory(sessionId);
+		const now = Date.now();
+		return store.append({
+			type: "subagent-session-state",
+			version: 1,
+			ownerParentSessionId: store.ownerParentSessionId,
+			sessionId,
+			state: "idle",
+			mode: "persistent",
+			child,
+			execution: structuredClone(execution),
+			createdAt: now,
+			updatedAt: now,
+		});
+	}
+
+	beginPersistentInvocation(
+		ctx: ExtensionContext,
+		sessionId: string,
+		ref: PersistentInvocationRef = {},
+	): PersistentInvocationLease {
+		const store = this.requirePersistentStore(ctx);
+		const lock = store.acquireLock(sessionId, {
+			parentPid: ref.parentPid ?? process.pid,
+			ownerToken: ref.ownerToken,
+		});
+		try {
+			const current = store.getSnapshot(sessionId);
+			store.append({
+				...current,
+				state: "running",
+				latestRunId: ref.runId,
+				latestTaskId: ref.taskId,
+				updatedAt: Date.now(),
+			});
+		} catch (error) {
+			store.releaseLock(lock);
+			throw error;
+		}
+		const lease: PersistentInvocationLease = {
+			sessionId,
+			lock,
+			ownerToken: ref.ownerToken,
+			store,
+		};
+		if (ref.taskId) this.persistentLeases.set(ref.taskId, lease);
+		return lease;
+	}
+
+	/** Record child ownership immediately after supervisor spawn returns a PID. */
+	associatePersistentTask(
+		taskId: string,
+		lease: PersistentInvocationLease,
+		metadata: { runId?: string; childPid?: number; ownerToken?: string; parentPid?: number } = {},
+	): void {
+		// Bind the lease before filesystem updates so a partial association failure
+		// can still be finalized only after the spawned child is reaped.
+		this.persistentLeases.set(taskId, lease);
+		const ownerToken = metadata.ownerToken ?? lease.ownerToken;
+		const current = lease.store.getSnapshot(lease.sessionId);
+		const owner = lease.store.readLockOwner(lease.sessionId);
+		const childPidChanged =
+			metadata.childPid !== undefined && owner?.childPid !== metadata.childPid;
+		const ownerTokenChanged = ownerToken !== undefined && owner?.ownerToken !== ownerToken;
+		if (
+			childPidChanged ||
+			ownerTokenChanged ||
+			owner?.parentPid !== (metadata.parentPid ?? process.pid)
+		) {
+			lease.store.updateLockOwner(lease.lock, {
+				parentPid: metadata.parentPid ?? process.pid,
+				...(metadata.childPid !== undefined ? { childPid: metadata.childPid } : {}),
+				...(ownerToken !== undefined ? { ownerToken } : {}),
+			});
+		}
+		try {
+			if (
+				current.latestRunId !== (metadata.runId ?? current.latestRunId) ||
+				current.latestTaskId !== taskId
+			) {
+				lease.store.append({
+					...current,
+					latestRunId: metadata.runId ?? current.latestRunId,
+					latestTaskId: taskId,
+					updatedAt: Date.now(),
+				});
+			}
+		} catch (error) {
+			// The child is now owned by this lease. Keep the session fail-closed and
+			// surface the original association failure to the caller.
+			try {
+				const current = lease.store.getSnapshot(lease.sessionId);
+				lease.store.append({
+					...current,
+					state: "blocked",
+					error: `persistent invocation association failed: ${error instanceof Error ? error.message : String(error)}`,
+					updatedAt: Date.now(),
+				});
+			} catch {
+				/* Preserve the association error for the caller. */
+			}
+			throw error;
+		}
+		lease.ownerToken = ownerToken;
+		this.persistentLeases.set(taskId, lease);
+	}
+
+	/** Return a session to idle only after process cleanup has been confirmed. */
+	finishPersistentInvocation(
+		lease: PersistentInvocationLease,
+		cleanupConfirmed: boolean,
+		error?: string,
+	): PersistentSessionSnapshot {
+		const current = lease.store.getSnapshot(lease.sessionId);
+		if (!cleanupConfirmed) {
+			const blocked = lease.store.append({
+				...current,
+				state: "blocked",
+				error: error ?? "persistent child cleanup was not confirmed",
+				updatedAt: Date.now(),
+			});
+			return blocked;
+		}
+		if (!lease.store.releaseLock(lease.lock)) {
+			return lease.store.append({
+				...current,
+				state: "blocked",
+				error: error ?? "persistent invocation lease could not be released safely",
+				updatedAt: Date.now(),
+			});
+		}
+		const idle = lease.store.append({
+			...current,
+			state: "idle",
+			error,
+			updatedAt: Date.now(),
+		});
+		for (const [taskId, candidate] of this.persistentLeases) {
+			if (candidate === lease) this.persistentLeases.delete(taskId);
+		}
+		return idle;
+	}
+
+	closePersistentSession(ctx: ExtensionContext, sessionId: string): PersistentSessionSnapshot {
+		return this.requirePersistentStore(ctx).close(sessionId);
+	}
+
+	private reconcilePersistentSessions(ctx: ExtensionContext): void {
+		const store = this.requirePersistentStore(ctx);
+		for (const view of store.list()) {
+			if (view.state !== "running") continue;
+			let snapshot: PersistentSessionSnapshot;
+			try {
+				snapshot = store.getSnapshot(view.sessionId);
+				const owner = store.readLockOwner(view.sessionId);
+				if (!owner || owner.childPid === undefined || !owner.ownerToken) {
+					throw new Error("running persistent session has no verifiable child owner");
+				}
+				const sweep = sweepOrphanPid(owner.childPid, this.proc, owner.ownerToken);
+				const alive = this.proc.isAlive?.(owner.childPid) ?? defaultIsAlive(owner.childPid);
+				if (alive || (sweep.reason !== "not-alive" && !sweep.killed)) {
+					throw new Error(`persistent orphan cleanup is unconfirmed (${sweep.reason})`);
+				}
+				if (
+					!store.releaseLock({
+						sessionId: view.sessionId,
+						nonce: owner.nonce,
+						path: store.pathsFor(view.sessionId).lockDir,
+					})
+				) {
+					throw new Error("persistent orphan lease could not be released safely");
+				}
+				this.failInterruptedPersistentRun(ctx, snapshot);
+				store.append({
+					...snapshot,
+					state: "idle",
+					error: "Interrupted invocation was reaped during session restore",
+					updatedAt: Date.now(),
+				});
+			} catch (error) {
+				try {
+					const current = store.getSnapshot(view.sessionId);
+					store.append({
+						...current,
+						state: "blocked",
+						error: error instanceof Error ? error.message : String(error),
+						updatedAt: Date.now(),
+					});
+				} catch {
+					/* Keep the original diagnostic if even reconstruction is unsafe. */
+				}
+			}
+		}
+	}
+
+	private failInterruptedPersistentRun(
+		ctx: ExtensionContext,
+		snapshot: PersistentSessionSnapshot,
+	): void {
+		if (!snapshot.latestRunId || !snapshot.latestTaskId) return;
+		const run = loadPersistedRuns(ctx, true).get(snapshot.latestRunId);
+		const task = run?.tasks.find((candidate) => candidate.taskId === snapshot.latestTaskId);
+		// Runs created before persistent mode was introduced remain ephemeral.
+		if (!run || !task || task.mode !== "persistent" || task.sessionId !== snapshot.sessionId)
+			return;
+		task.status = "failed";
+		task.reaped = true;
+		task.error =
+			task.error ?? "Interrupted persistent invocation was reaped during session restore";
+		this.pi.appendEntry(PERSIST_TYPE, { run });
 	}
 
 	setTaskMeta(taskId: string, meta: SubagentTaskMeta): void {
@@ -345,6 +677,8 @@ export class SubagentRuntime {
 					thinking: task.thinking,
 					workspace: task.workspace,
 					cwd: task.cwd,
+					mode: task.mode,
+					sessionId: task.sessionId,
 					pid: childPid(task.child),
 					teamRunId: meta?.teamRunId,
 					teamTaskId: meta?.teamTaskId,
@@ -370,6 +704,49 @@ export class SubagentRuntime {
 			this.emitUpdate(details);
 			this.persistRun(run);
 			for (const task of run.tasks) {
+				if (task.mode === "persistent") {
+					const lease = this.persistentLeases.get(task.taskId);
+					if (
+						lease &&
+						childPid(task.child) !== undefined &&
+						!this.persistentFinalizedTasks.has(task.taskId)
+					) {
+						try {
+							this.associatePersistentTask(task.taskId, lease, {
+								runId: run.runId,
+								childPid: childPid(task.child),
+								ownerToken: task.ownerToken,
+							});
+						} catch (error) {
+							task.error = task.error ?? (error instanceof Error ? error.message : String(error));
+						}
+					}
+					if (
+						isTerminalStatus(task.status) &&
+						!this.persistentFinalizedTasks.has(task.taskId) &&
+						lease
+					) {
+						try {
+							this.finishPersistentInvocation(lease, task.reaped, task.error);
+							// Unconfirmed cleanup retains the lease and must be retried when the
+							// supervisor later proves the process group is gone.
+							if (task.reaped) this.persistentFinalizedTasks.add(task.taskId);
+						} catch (error) {
+							task.error = task.error ?? (error instanceof Error ? error.message : String(error));
+							try {
+								const current = lease.store.getSnapshot(lease.sessionId);
+								lease.store.append({
+									...current,
+									state: "blocked",
+									error: `persistent finalization failed: ${task.error}`,
+									updatedAt: Date.now(),
+								});
+							} catch {
+								/* Keep the task error and parent wake even if persistence is unavailable. */
+							}
+						}
+					}
+				}
 				if (isTerminalStatus(task.status)) {
 					this.wedgedTasks.delete(task.taskId);
 					const meta = this.taskMeta.get(task.taskId);
@@ -377,7 +754,7 @@ export class SubagentRuntime {
 						void fs.promises.rm(meta.promptDir, { recursive: true, force: true });
 						meta.promptDir = undefined;
 					}
-					if (!task.child && meta?.worktree) {
+					if (task.mode !== "persistent" && !task.child && meta?.worktree) {
 						const unusedWorktree = meta.worktree;
 						meta.worktree = undefined;
 						void rollbackWorktreeInternal(unusedWorktree).then(() => this.persistRun(run));
@@ -419,6 +796,8 @@ export class SubagentRuntime {
 		return {
 			output: task.output ?? "",
 			usage: task.usage ?? emptyUsage(),
+			mode: task.mode,
+			sessionId: task.sessionId,
 			error: task.error,
 			manualKill: task.manualKill,
 		};
@@ -439,6 +818,8 @@ export class SubagentRuntime {
 					thinking: task.thinking,
 					workspace: task.workspace,
 					cwd: task.cwd,
+					mode: task.mode,
+					sessionId: task.sessionId,
 					done: isTerminalStatus(task.status),
 					error: task.error,
 					output: task.output ?? "",
@@ -622,7 +1003,15 @@ export class SubagentRuntime {
 					(!isTerminalStatus(task.status) || task.reaped === false)
 				) {
 					const sweep = sweepOrphanPid(task.pid, this.proc, task.ownerToken);
-					task.reaped = sweep.killed || sweep.reason === "not-alive";
+					let cleanupConfirmed = sweep.reason === "not-alive";
+					if (sweep.killed) {
+						try {
+							cleanupConfirmed = !(this.proc.isAlive?.(task.pid) ?? defaultIsAlive(task.pid));
+						} catch {
+							cleanupConfirmed = false;
+						}
+					}
+					task.reaped = cleanupConfirmed;
 					if (!task.reaped)
 						task.error = `${task.error ? `${task.error}; ` : ""}orphan cleanup pending (${sweep.reason})`;
 					changed = true;
@@ -647,6 +1036,8 @@ export class SubagentRuntime {
 					thinking: task.thinking,
 					workspace: task.workspace,
 					cwd: task.cwd,
+					mode: task.mode,
+					sessionId: task.sessionId,
 					worktree: task.worktree,
 					done: true,
 					error: task.error,
@@ -658,8 +1049,9 @@ export class SubagentRuntime {
 				})),
 			});
 		}
+		if (this.parentIsPersisted(ctx)) this.reconcilePersistentSessions(ctx);
 		this.updateActivityWidget();
-		return persisted.size > 0;
+		return persisted.size > 0 || (this.persistentStore?.list().length ?? 0) !== 0;
 	}
 
 	private viewFromTask(_run: RunState, task: TaskState): SubagentResultView {
@@ -673,6 +1065,8 @@ export class SubagentRuntime {
 			teamRunId: meta?.teamRunId,
 			teamTaskId: meta?.teamTaskId,
 			role: meta?.role,
+			mode: task.mode,
+			sessionId: task.sessionId,
 			model: task.model,
 			thinking: task.thinking,
 			workspace: task.workspace,
@@ -710,6 +1104,8 @@ export class SubagentRuntime {
 				thinking: task.thinking,
 				workspace: task.workspace,
 				cwd: task.cwd,
+				mode: task.mode,
+				sessionId: task.sessionId,
 				error: task.error,
 				manualKill: task.manualKill,
 				reaped: task.reaped ?? isTerminalStatus(task.status),
@@ -735,6 +1131,8 @@ export class SubagentRuntime {
 				thinking: task.thinking,
 				workspace: task.workspace,
 				cwd: task.cwd,
+				mode: task.mode,
+				sessionId: task.sessionId,
 				worktree: task.worktree,
 				done: isTerminalStatus(task.status),
 				error: task.error,
@@ -745,6 +1143,23 @@ export class SubagentRuntime {
 				pid: task.pid,
 			})),
 		};
+	}
+
+	private recordPersistentSyncFailure(content: string, error: unknown): void {
+		for (const task of [...this.supervisor.runs.values()].flatMap((run: RunState) => run.tasks)) {
+			if (task.mode !== "persistent" || !task.sessionId) continue;
+			const lease = this.persistentLeases.get(task.taskId);
+			if (!lease) continue;
+			const message = `persistent synchronization failed: ${error instanceof Error ? error.message : String(error)}`;
+			task.error = task.error ?? message;
+			try {
+				const current = lease.store.getSnapshot(task.sessionId);
+				lease.store.append({ ...current, state: "blocked", error: message, updatedAt: Date.now() });
+			} catch {
+				/* The wake remains the durable parent-visible signal. */
+			}
+		}
+		void content;
 	}
 
 	private trackWedgedFromWake(content: string): void {

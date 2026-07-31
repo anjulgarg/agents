@@ -9,8 +9,20 @@ import {
 	type RpcChildOptions,
 	type RpcEvent,
 } from "./rpc-client.ts";
-import type { ThinkingLevel, UsageStats, WorkspaceMode } from "./contracts.ts";
-export { WORKSPACE_MODES, type WorkspaceMode } from "./contracts.ts";
+import type {
+	PersistentChildSession,
+	SubagentMode,
+	ThinkingLevel,
+	UsageStats,
+	WorkspaceMode,
+} from "./contracts.ts";
+export {
+	SUBAGENT_MODES,
+	WORKSPACE_MODES,
+	type PersistentChildSession,
+	type SubagentMode,
+	type WorkspaceMode,
+} from "./contracts.ts";
 import {
 	StuckDetector,
 	type RecentToolActivity,
@@ -43,6 +55,9 @@ export interface TaskSpawnSpec {
 	systemPromptFile: string;
 	projectTrusted?: boolean;
 	piBin?: string;
+	mode?: SubagentMode;
+	/** Exact child session identity for persistent invocations. */
+	persistentSession?: PersistentChildSession;
 }
 
 export interface TaskState {
@@ -53,6 +68,8 @@ export interface TaskState {
 	thinking: ThinkingLevel;
 	workspace: WorkspaceMode;
 	cwd: string;
+	mode: SubagentMode;
+	sessionId?: string;
 	status: TaskStatus;
 	output: string;
 	error?: string;
@@ -156,6 +173,8 @@ export interface TaskSnapshot {
 	thinking: ThinkingLevel;
 	workspace: WorkspaceMode;
 	cwd: string;
+	mode?: SubagentMode;
+	sessionId?: string;
 	error?: string;
 	manualKill?: boolean;
 	reaped: boolean;
@@ -176,6 +195,8 @@ export interface RunSnapshot {
 export interface TaskResult {
 	output: string;
 	usage: UsageStats;
+	mode?: SubagentMode;
+	sessionId?: string;
 	error?: string;
 	manualKill?: boolean;
 }
@@ -329,25 +350,36 @@ export class Supervisor {
 
 		const runId = randomUUID();
 		const startedAt = this.now();
-		const tasks = specs.map((spec, index): TaskState => ({
-			index,
-			taskId: `${runId}:${index}`,
-			task: spec.task,
-			model: spec.model,
-			thinking: spec.thinking,
-			workspace: spec.workspace,
-			cwd: spec.cwd,
-			status: "queued",
-			output: "",
-			usage: emptyUsage(),
-			spawnSpec: spec,
-			ownerToken: `${runId}:${index}:${randomUUID()}`,
-			reaped: true,
-			lastEventAt: startedAt,
-			activityVersion: 0,
-			startedAt,
-			unreaped: false,
-		}));
+		const tasks = specs.map((spec, index): TaskState => {
+			const mode = spec.mode ?? (spec.persistentSession ? "persistent" : "ephemeral");
+			if (mode === "ephemeral" && spec.persistentSession) {
+				throw new Error("ephemeral tasks cannot include a persistent child session");
+			}
+			if (mode === "persistent" && !spec.persistentSession) {
+				throw new Error("persistent tasks require a child session descriptor");
+			}
+			return {
+				index,
+				taskId: `${runId}:${index}`,
+				task: spec.task,
+				model: spec.model,
+				thinking: spec.thinking,
+				workspace: spec.workspace,
+				cwd: spec.cwd,
+				mode,
+				sessionId: spec.persistentSession?.sessionId,
+				status: "queued",
+				output: "",
+				usage: emptyUsage(),
+				spawnSpec: spec,
+				ownerToken: `${runId}:${index}:${randomUUID()}`,
+				reaped: true,
+				lastEventAt: startedAt,
+				activityVersion: 0,
+				startedAt,
+				unreaped: false,
+			};
+		});
 		const run: RunState = { runId, tasks, startedAt, maxConcurrency };
 		this.runs.set(runId, run);
 		this.startQueuedTasks(run);
@@ -485,6 +517,8 @@ export class Supervisor {
 		return {
 			output: task.output,
 			usage: { ...task.usage },
+			mode: task.mode,
+			sessionId: task.sessionId,
 			error: task.error,
 			manualKill: task.manualKill,
 		};
@@ -661,6 +695,7 @@ export class Supervisor {
 				tools: spec.tools ?? this.defaultTools,
 				systemPromptFile: spec.systemPromptFile,
 				projectTrusted: spec.projectTrusted ?? false,
+				persistentSession: spec.persistentSession,
 				ownerToken: task.ownerToken,
 				piBin: spec.piBin,
 				onEvent: (event) => this.onChildEvent(run.runId, task.taskId, event),
@@ -739,6 +774,8 @@ export class Supervisor {
 					thinking: task.thinking,
 					workspace: task.workspace,
 					cwd: task.cwd,
+					mode: task.mode,
+					sessionId: task.sessionId,
 					error: task.error,
 					manualKill: task.manualKill,
 					reaped: task.reaped,

@@ -17,13 +17,14 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { ExpandableToolRender, TOOL_CHAT_PADDING } from "../lib/tui/index.ts";
 import { Type } from "typebox";
 
-import { THINKING_LEVELS, WORKSPACE_MODES } from "./contracts.ts";
+import { SUBAGENT_MODES, THINKING_LEVELS, WORKSPACE_MODES } from "./contracts.ts";
 import type {
 	Handoff,
 	ResultRef,
 	SubagentDetails,
 	ThinkingLevel,
 	WorkspaceMode,
+	SubagentMode,
 	WorktreeInfo,
 } from "./contracts.ts";
 import {
@@ -63,6 +64,9 @@ const SUBAGENT_TOOLS = [
 	"subagent_steer",
 	"subagent_abort",
 	"subagent_ack",
+	"subagent_resume",
+	"subagent_sessions",
+	"subagent_close",
 ] as const;
 export const SUBAGENT_MANAGEMENT_TOOLS = SUBAGENT_TOOLS.slice(1);
 
@@ -81,6 +85,7 @@ interface TaskSpec {
 	role?: string;
 	/** Internal: trusted team role persona stamped by the team extension. */
 	roleInstructions?: string;
+	mode?: SubagentMode;
 }
 
 export interface SubagentToolOptions {
@@ -113,6 +118,12 @@ const TaskSchema = Type.Object({
 		StringEnum(WORKSPACE_MODES, {
 			description:
 				'"shared" edits the current workspace; "worktree" creates an isolated Git worktree',
+		}),
+	),
+	mode: Type.Optional(
+		StringEnum(SUBAGENT_MODES, {
+			description:
+				'"ephemeral" is one-shot; "persistent" retains the exact child conversation for resume',
 		}),
 	),
 	cwd: Type.Optional(
@@ -156,6 +167,12 @@ const SubagentParams = Type.Object({
 			description: "Thinking level used by tasks without an override",
 		}),
 	),
+	mode: Type.Optional(
+		StringEnum(SUBAGENT_MODES, {
+			description:
+				"Default child mode; persistent retains the exact conversation and can be resumed by session ID",
+		}),
+	),
 	workspace: Type.Optional(
 		StringEnum(WORKSPACE_MODES, {
 			description: 'Default workspace mode; defaults to "shared"',
@@ -184,6 +201,25 @@ const SubagentParams = Type.Object({
 			maximum: MAX_TASKS,
 		}),
 	),
+});
+
+const ResumeParams = Type.Object({
+	sessionId: Type.String({ description: "Stable persistent child session ID" }),
+	task: Type.String({ description: "New prompt for the exact retained child conversation" }),
+	inputFrom: Type.Optional(
+		Type.Array(ResultRefSchema, {
+			description: "Completed successful subagent outputs to inject into the resumed prompt",
+			maxItems: MAX_HANDOFFS,
+		}),
+	),
+});
+
+const SessionsParams = Type.Object({
+	sessionId: Type.Optional(Type.String({ description: "Stable persistent child session ID" })),
+});
+
+const CloseParams = Type.Object({
+	sessionId: Type.String({ description: "Stable persistent child session ID" }),
 });
 
 function validateHandoffs(handoffs: Handoff[]): void {
@@ -389,12 +425,12 @@ function renderStatusLines(snapshot: RunSnapshot | RunSnapshot[], theme: Theme):
 				const error = task.error ? ` · ${task.error}` : "";
 				if (!task.activity) {
 					return [
-						`${icon} #${task.index + 1} ${task.status} · ${task.model}:${task.thinking} · ${task.workspace}${error}`,
+						`${icon} #${task.index + 1} ${task.status} · ${task.model}:${task.thinking} · ${task.workspace} · ${task.mode ?? "ephemeral"}${task.sessionId ? ` · session=${task.sessionId}` : ""}${error}`,
 					];
 				}
 				const activity = task.activity;
 				const lines = [
-					`${icon} #${task.index + 1} ${task.status} · ${task.model}:${task.thinking} · ${task.workspace} · event ${formatActivityAge(activity.eventAgeMs)} ago${error}`,
+					`${icon} #${task.index + 1} ${task.status} · ${task.model}:${task.thinking} · ${task.workspace} · ${task.mode ?? "ephemeral"}${task.sessionId ? ` · session=${task.sessionId}` : ""} · event ${formatActivityAge(activity.eventAgeMs)} ago${error}`,
 					theme.fg(
 						"muted",
 						`  token=${activity.token} · ${activity.turns} turns · $${activity.costUsd.toFixed(2)} · ${activity.toolCalls} tools (${activity.succeededTools} ok, ${activity.failedTools} failed) · signals=${activity.signals.join(",") || "none"}`,
@@ -446,7 +482,9 @@ export function registerSubagentTools(
 			"Use inputFrom to inject completed prerequisite outputs directly into a later task without relaying them through parent context.",
 			"Use task for one agent or tasks for parallel agents.",
 			"By default children inherit every active parent tool except the subagent management tools; explicit tool allowlists may narrow access.",
-			"Child subagents cannot invoke subagent.",
+			"Child subagents cannot invoke subagent or any session-management tool.",
+			"Omit mode or use ephemeral for one-shot work. Use persistent only when the exact child conversation must remain resumable; resume later with subagent_resume and its stable sessionId.",
+			"Persistent resume restores the exact child model, tools, trust, workspace, role prompt, and conversation under Pi compaction semantics; it does not accept execution-contract overrides.",
 		].join(" "),
 		promptSnippet: "Delegate independent work to non-blocking Pi subagents",
 		promptGuidelines: [
@@ -461,6 +499,7 @@ export function registerSubagentTools(
 			PARALLEL_FILE_OWNERSHIP_GUIDANCE,
 			"When one subagent output is needed by a later subagent, pass its runId/taskId through inputFrom instead of reading and manually relaying the result.",
 			"Never retry a subagent manually killed by the user until discussing it with them and receiving explicit approval. Only then set userApprovedManualRetry=true.",
+			"For durable work, choose mode=persistent and retain the returned sessionId. Use subagent_sessions to inspect safe state, subagent_resume to continue the exact conversation, and subagent_close only for a non-destructive logical close.",
 		],
 		parameters: SubagentParams,
 
@@ -481,6 +520,7 @@ export function registerSubagentTools(
 							cwd: params.cwd,
 							tools: params.tools,
 							inputFrom: params.inputFrom,
+							mode: params.mode,
 						},
 					]
 				: params.tasks!;
@@ -490,6 +530,9 @@ export function registerSubagentTools(
 				throw new Error(`maxConcurrency cannot exceed the task count (${specs.length})`);
 			}
 			throwIfAborted(signal);
+
+			if (specs.some((spec) => (spec.mode ?? params.mode ?? "ephemeral") === "persistent"))
+				runtime.assertPersistentParent(ctx);
 
 			const blockedKeys = runtime.getBlockedManualRetryKeys(specs);
 			if (blockedKeys.length && params.userApprovedManualRetry !== true) {
@@ -528,6 +571,7 @@ export function registerSubagentTools(
 					throw new Error("No parent-approved tools are available to the subagent");
 				return {
 					spec,
+					mode: spec.mode ?? params.mode ?? "ephemeral",
 					model: resolveModel(spec.model ?? params.model, available, ctx.model),
 					thinking: spec.thinking ?? params.thinking ?? pi.getThinkingLevel(),
 					workspace: spec.workspace ?? params.workspace ?? "shared",
@@ -543,11 +587,14 @@ export function registerSubagentTools(
 
 			const spawnSpecs: TaskSpawnSpec[] = [];
 			const pendingMeta: Array<{ index: number; meta: SubagentTaskMeta }> = [];
+			const persistentLeases: Array<
+				ReturnType<SubagentRuntime["beginPersistentInvocation"]> | undefined
+			> = [];
 			try {
 				for (let index = 0; index < resolvedSpecs.length; index++) {
 					throwIfAborted(signal);
 					const resolved = resolvedSpecs[index];
-					const { spec, model, thinking, workspace, baseCwd, childTools } = resolved;
+					const { spec, mode, model, thinking, workspace, baseCwd, childTools } = resolved;
 					const worktree =
 						workspace === "worktree" ? await createWorktree(baseCwd, index, spec.task) : undefined;
 					const cwd = worktree?.path ?? baseCwd;
@@ -578,6 +625,21 @@ export function registerSubagentTools(
 					pendingMeta.push(preparedMeta);
 					const temporaryPrompt = await writeSystemPrompt(index, systemPrompt);
 					preparedMeta.meta.promptDir = temporaryPrompt.dir;
+					let persistentSession;
+					if (mode === "persistent") {
+						const created = runtime.createPersistentSession(ctx, {
+							model: modelKey(model),
+							thinking,
+							tools: childTools,
+							workspace,
+							cwd,
+							projectTrusted: ctx.isProjectTrusted(),
+							systemPrompt,
+							worktree,
+						});
+						persistentSession = created.child;
+						persistentLeases[index] = runtime.beginPersistentInvocation(ctx, created.sessionId);
+					}
 					spawnSpecs.push({
 						task: spec.task,
 						prompt: taskPrompts[index],
@@ -588,29 +650,74 @@ export function registerSubagentTools(
 						tools: childTools,
 						systemPromptFile: temporaryPrompt.file,
 						projectTrusted: ctx.isProjectTrusted(),
+						mode,
+						persistentSession,
 					});
 				}
 				throwIfAborted(signal);
 			} catch (error) {
+				for (const lease of persistentLeases) {
+					if (!lease) continue;
+					try {
+						runtime.finishPersistentInvocation(lease, true, "persistent spawn preparation failed");
+						runtime.closePersistentSession(ctx, lease.sessionId);
+					} catch {
+						/* Preserve a blocked diagnostic rather than masking the preparation error. */
+					}
+				}
 				await rollbackPrepared(pendingMeta);
 				throw error;
 			}
 
-			const { runId, taskIds } = supervisor.spawn(spawnSpecs, maxConcurrency);
+			let spawned: { runId: string; taskIds: string[] };
+			try {
+				spawned = supervisor.spawn(spawnSpecs, maxConcurrency);
+			} catch (error) {
+				for (const lease of persistentLeases) {
+					if (!lease) continue;
+					try {
+						runtime.finishPersistentInvocation(lease, true, "persistent child spawn failed");
+						runtime.closePersistentSession(ctx, lease.sessionId);
+					} catch {
+						/* Keep the original spawn error. */
+					}
+				}
+				await rollbackPrepared(pendingMeta);
+				throw error;
+			}
+			const { runId, taskIds } = spawned;
+			const run = supervisor.runs.get(runId)!;
 			for (let index = 0; index < taskIds.length; index++) {
 				runtime.setTaskMeta(taskIds[index], pendingMeta[index].meta);
+				const lease = persistentLeases[index];
+				if (lease) {
+					const task = run.tasks[index];
+					try {
+						runtime.associatePersistentTask(taskIds[index], lease, {
+							runId,
+							childPid: task?.child?.pid,
+							ownerToken: task?.ownerToken,
+						});
+					} catch (error) {
+						if (task) {
+							task.error = error instanceof Error ? error.message : String(error);
+							// Association owns the lease before filesystem updates. Reap this
+							// invocation rather than allowing an incompletely owned writer to continue.
+							supervisor.killTask(runId, taskIds[index]);
+						}
+					}
+				}
 			}
 			const active = pi.getActiveTools();
 			pi.setActiveTools([...new Set([...active, ...SUBAGENT_MANAGEMENT_TOOLS])]);
 
-			const run = supervisor.runs.get(runId)!;
 			const details = runtime.detailsFromRun(run);
 			runtime.emitUpdate(details);
 			runtime.persistRun(run);
 
 			const handleLines = details.results.map(
 				(result) =>
-					`- taskId=${result.taskId} model=${result.model} thinking=${result.thinking} workspace=${result.workspace}`,
+					`- taskId=${result.taskId} mode=${result.mode ?? "ephemeral"}${result.sessionId ? ` sessionId=${result.sessionId}` : ""} model=${result.model} thinking=${result.thinking} workspace=${result.workspace}`,
 			);
 			const content =
 				`Spawned ${details.results.length} subagent(s); runId=${runId}. ` +
@@ -995,6 +1102,212 @@ export function registerSubagentTools(
 			return new ExpandableToolRender(
 				context,
 				new Text(theme.fg(context.isError ? "error" : "muted", message), CHAT_PADDING, 0),
+			);
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_resume",
+		label: "Resume Subagent",
+		renderShell: "self",
+		description:
+			"Resume one idle persistent child by stable sessionId. The exact stored model, thinking, tools, trust, cwd/worktree, role prompt, and Pi conversation are restored; execution-contract overrides are refused.",
+		promptSnippet: "Resume an exact persistent subagent conversation",
+		parameters: ResumeParams,
+		async execute(_id, params, signal, onUpdate, ctx) {
+			throwIfAborted(signal);
+			const snapshot = runtime.getPersistentSnapshot(ctx, params.sessionId);
+			if (snapshot.state !== "idle") {
+				throw new Error(
+					`persistent session ${params.sessionId} is not idle (state=${snapshot.state})`,
+				);
+			}
+			if (!fs.existsSync(snapshot.execution.cwd))
+				throw new Error(
+					`persistent session ${params.sessionId} cwd is missing: ${snapshot.execution.cwd}`,
+				);
+			if (snapshot.execution.worktree && !fs.existsSync(snapshot.execution.worktree.path))
+				throw new Error(
+					`persistent session ${params.sessionId} worktree is missing: ${snapshot.execution.worktree.path}`,
+				);
+			if (snapshot.execution.projectTrusted && !ctx.isProjectTrusted())
+				throw new Error(`persistent session ${params.sessionId} requires current project trust`);
+
+			const available = await (options.getModels ?? getScopedSubagentModels)(ctx);
+			if (!available.some((model) => modelKey(model) === snapshot.execution.model))
+				throw new Error(
+					`stored persistent model is unavailable or disabled: ${snapshot.execution.model}`,
+				);
+			const activeTools = new Set(
+				pi
+					.getActiveTools()
+					.filter((tool) => !SUBAGENT_TOOLS.includes(tool as (typeof SUBAGENT_TOOLS)[number])),
+			);
+			const missingTools = snapshot.execution.tools.filter((tool) => !activeTools.has(tool));
+			if (missingTools.length)
+				throw new Error(
+					`stored persistent tools are not active in the parent: ${missingTools.join(", ")}`,
+				);
+			const prompt = formatTaskWithHandoffs(
+				params.task,
+				runtime.resolveHandoffs(params.inputFrom, ctx),
+			);
+			const temporaryPrompt = await writeSystemPrompt(0, snapshot.execution.systemPrompt);
+			let lease: ReturnType<SubagentRuntime["beginPersistentInvocation"]> | undefined;
+			let spawnedTask: { runId: string; taskId: string } | undefined;
+			try {
+				lease = runtime.beginPersistentInvocation(ctx, snapshot.sessionId);
+				const spawned = supervisor.spawn([
+					{
+						task: params.task,
+						prompt,
+						model: snapshot.execution.model,
+						thinking: snapshot.execution.thinking,
+						workspace: snapshot.execution.workspace,
+						cwd: snapshot.execution.cwd,
+						tools: [...snapshot.execution.tools],
+						systemPromptFile: temporaryPrompt.file,
+						projectTrusted: snapshot.execution.projectTrusted,
+						mode: "persistent",
+						persistentSession: { ...snapshot.child },
+					},
+				]);
+				const taskId = spawned.taskIds[0]!;
+				spawnedTask = { runId: spawned.runId, taskId };
+				runtime.setTaskMeta(taskId, {
+					promptDir: temporaryPrompt.dir,
+					worktree: snapshot.execution.worktree,
+				});
+				const taskState = supervisor.runs.get(spawned.runId)?.tasks[0];
+				runtime.associatePersistentTask(taskId, lease, {
+					runId: spawned.runId,
+					childPid: taskState?.child?.pid,
+					ownerToken: taskState?.ownerToken,
+				});
+				pi.setActiveTools([...new Set([...pi.getActiveTools(), ...SUBAGENT_MANAGEMENT_TOOLS])]);
+				const run = supervisor.runs.get(spawned.runId)!;
+				const details = runtime.detailsFromRun(run);
+				runtime.emitUpdate(details);
+				runtime.persistRun(run);
+				const content =
+					`Resumed persistent subagent sessionId=${snapshot.sessionId}; runId=${spawned.runId}. ` +
+					"The exact child conversation continues under Pi compaction semantics. You will be WOKEN when it completes — do not poll.";
+				const result = textResult(content, runtime.parentSafeDetails(details));
+				onUpdate?.(result as AgentToolResult<SubagentDetails>);
+				return result;
+			} catch (error) {
+				if (spawnedTask) {
+					// A child may already be writing the persistent JSONL. Keep its lease
+					// until supervisor cleanup is confirmed, then normal synchronization
+					// releases it or leaves the session blocked.
+					supervisor.killTask(spawnedTask.runId, spawnedTask.taskId);
+				} else {
+					if (lease) {
+						try {
+							runtime.finishPersistentInvocation(lease, true, "persistent resume spawn failed");
+						} catch {
+							/* Preserve the original resume failure. */
+						}
+					}
+					await fs.promises.rm(temporaryPrompt.dir, { recursive: true, force: true });
+				}
+				throw error;
+			}
+		},
+		renderCall(args, theme, context) {
+			return new ExpandableToolRender(
+				context,
+				new Text(
+					theme.fg("toolTitle", theme.bold("Resume subagent")) +
+						theme.fg("muted", ` · ${args.sessionId}`),
+					CHAT_PADDING,
+					0,
+				),
+			);
+		},
+		renderResult(result, _options, theme, context) {
+			const text =
+				result.content.find((part) => part.type === "text")?.text ?? "Persistent resume completed";
+			return new ExpandableToolRender(
+				context,
+				new Text(theme.fg(context.isError ? "error" : "muted", text), CHAT_PADDING, 0),
+			);
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_sessions",
+		label: "Persistent Subagent Sessions",
+		renderShell: "self",
+		description:
+			"List or inspect bounded safe details for persistent child sessions on the active parent branch.",
+		promptSnippet: "Inspect persistent subagent session state",
+		parameters: SessionsParams,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const details = params.sessionId
+				? runtime.getPersistentSession(ctx, params.sessionId)
+				: runtime.listPersistentSessions(ctx);
+			const views = Array.isArray(details) ? details : [details];
+			return textResult(
+				views.length
+					? JSON.stringify(views, null, 2)
+					: "No persistent subagent sessions on the active branch.",
+				params.sessionId ? details : views,
+			);
+		},
+		renderCall(args, theme, context) {
+			return new ExpandableToolRender(
+				context,
+				new Text(
+					theme.fg("toolTitle", theme.bold("Persistent sessions")) +
+						(args.sessionId ? theme.fg("muted", ` · ${args.sessionId}`) : ""),
+					CHAT_PADDING,
+					0,
+				),
+			);
+		},
+		renderResult(result, _options, theme, context) {
+			const text =
+				result.content.find((part) => part.type === "text")?.text ?? "No persistent sessions";
+			return new ExpandableToolRender(
+				context,
+				new Text(theme.fg(context.isError ? "error" : "muted", text), CHAT_PADDING, 0),
+			);
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_close",
+		label: "Close Persistent Subagent",
+		renderShell: "self",
+		description:
+			"Logically close an idle or blocked persistent child without deleting its transcript, worktree, branch, files, or repository changes.",
+		promptSnippet: "Logically close a persistent subagent without deleting work",
+		parameters: CloseParams,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const closed = runtime.closePersistentSession(ctx, params.sessionId);
+			return textResult(
+				`Closed persistent subagent sessionId=${closed.sessionId} logically; retained its transcript and worktree.`,
+				closed,
+			);
+		},
+		renderCall(args, theme, context) {
+			return new ExpandableToolRender(
+				context,
+				new Text(
+					theme.fg("toolTitle", theme.bold("Close persistent subagent")) +
+						theme.fg("muted", ` · ${args.sessionId}`),
+					CHAT_PADDING,
+					0,
+				),
+			);
+		},
+		renderResult(result, _options, theme, context) {
+			const text =
+				result.content.find((part) => part.type === "text")?.text ?? "Persistent close completed";
+			return new ExpandableToolRender(
+				context,
+				new Text(theme.fg(context.isError ? "error" : "muted", text), CHAT_PADDING, 0),
 			);
 		},
 	});
