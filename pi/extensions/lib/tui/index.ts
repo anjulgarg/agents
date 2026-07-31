@@ -64,6 +64,7 @@ export {
 	renderSoftGroupedCall,
 	renderSynchronizedShimmerLine,
 	resetToolActivity,
+	seedSessionTopology,
 	syncToolActivity,
 	type SoftGroupItem,
 	type SoftGroupStreak,

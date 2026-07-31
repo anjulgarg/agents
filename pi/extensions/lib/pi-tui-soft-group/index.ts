@@ -1197,19 +1197,45 @@ function hasVisibleMessageProse(message: any): boolean {
 	return false;
 }
 
-function seedSessionTopology(ctx: any, tracker: SoftGroupTracker, grouped: Set<string>): void {
-	const manager = ctx?.sessionManager;
-	const entries = manager?.getBranch?.() ?? manager?.getEntries?.() ?? [];
-	if (!Array.isArray(entries)) return;
+/**
+ * Seed immutable call order from an ordered transcript before historical rows
+ * repaint in arbitrary order. Accepts pi-ai `Message` values directly, or the
+ * session-branch envelope `{ type: "message", message }` when feeding manager
+ * entries. Structural records (compaction, custom, ...) interrupt what the user
+ * sees as consecutive tool rows, so they are conservative breaks.
+ *
+ * Boundaries follow the parent live rules: consecutive eligible tool calls
+ * (groupToolNames) group, `nonBreakingToolNames` (for example `announce_step`)
+ * never break a streak, and visible prose, user content, other tools, and
+ * failed calls break it. Failed calls are never seeded, so repaint cannot
+ * promote them into a group and their error keeps its own row.
+ */
+export function seedSessionTopology(
+	messages: readonly unknown[],
+	tracker: SoftGroupTracker,
+	groupToolNames: Iterable<string>,
+	options: { nonBreakingToolNames?: Iterable<string> } = {},
+): void {
+	const grouped = new Set(groupToolNames);
+	const nonBreaking = new Set(options.nonBreakingToolNames ?? []);
+	const failedCalls = new Set<string>();
 
-	for (const entry of entries) {
-		if (entry?.type !== "message") {
-			// Custom prose and structural records both interrupt what the user sees
-			// as consecutive tool rows. Invisible records are conservative breaks.
+	// Failures keep their own row: collect the tool calls that errored so their
+	// streak boundary is known before the leaders are chosen.
+	for (const entry of messages) {
+		const message = sessionMessage(entry);
+		if (!message || message.role !== "toolResult") continue;
+		if (message.isError === true && typeof message.toolCallId === "string") {
+			failedCalls.add(message.toolCallId);
+		}
+	}
+
+	for (const entry of messages) {
+		if (isStructuralEntry(entry)) {
 			tracker.noteBreak();
 			continue;
 		}
-		const message = entry.message;
+		const message = sessionMessage(entry);
 		if (!message || message.role === "toolResult") continue;
 		if (message.role !== "assistant") {
 			if (hasVisibleMessageProse(message)) tracker.noteBreak();
@@ -1224,6 +1250,12 @@ function seedSessionTopology(ctx: any, tracker: SoftGroupTracker, grouped: Set<s
 			if (part?.type !== "toolCall") continue;
 			const toolName = typeof part.name === "string" ? part.name : "";
 			const toolCallId = typeof part.id === "string" ? part.id : "";
+			// Hidden progress announcements never interrupt an eligible streak.
+			if (nonBreaking.has(toolName)) continue;
+			if (toolCallId && failedCalls.has(toolCallId)) {
+				tracker.noteBreak();
+				continue;
+			}
 			if (!grouped.has(toolName) || !toolCallId) {
 				tracker.noteBreak();
 				continue;
@@ -1231,6 +1263,55 @@ function seedSessionTopology(ctx: any, tracker: SoftGroupTracker, grouped: Set<s
 			tracker.seedItem({ groupId: toolName, toolCallId, label: toolName });
 		}
 	}
+}
+
+/** Unwrap `{ type: "message", message }` envelopes; raw messages pass through. */
+function sessionMessage(entry: unknown): any {
+	if (!entry || typeof entry !== "object") return undefined;
+	const candidate = entry as Record<string, unknown>;
+	if (candidate.type === "message" && candidate.message !== undefined) {
+		return candidate.message;
+	}
+	return candidate;
+}
+
+/** Structural session records carry a type but no message body. */
+function isStructuralEntry(entry: unknown): boolean {
+	if (!entry || typeof entry !== "object") return false;
+	const candidate = entry as Record<string, unknown>;
+	return (
+		typeof candidate.type === "string" && candidate.type !== "message" && !("role" in candidate)
+	);
+}
+
+function seedSessionTopologyFromEntries(
+	ctx: any,
+	tracker: SoftGroupTracker,
+	grouped: Set<string>,
+	nonBreaking: Set<string>,
+): void {
+	const manager = ctx?.sessionManager;
+	const entries = manager?.getBranch?.() ?? manager?.getEntries?.() ?? [];
+	if (!Array.isArray(entries)) return;
+
+	let run: unknown[] = [];
+	const flush = (): void => {
+		if (run.length > 0) {
+			seedSessionTopology(run, tracker, grouped, { nonBreakingToolNames: nonBreaking });
+			run = [];
+		}
+	};
+	for (const entry of entries) {
+		if (entry?.type !== "message") {
+			// Custom prose and structural records both interrupt what the user sees
+			// as consecutive tool rows. Invisible records are conservative breaks.
+			flush();
+			tracker.noteBreak();
+			continue;
+		}
+		run.push(entry.message);
+	}
+	flush();
 }
 
 /** Bind tracker lifecycle to common Pi extension events. */
@@ -1249,7 +1330,7 @@ export function bindSoftGroupTracker(
 		tracker.reset();
 		resetToolActivity();
 		assistantProseBroken = false;
-		seedSessionTopology(ctx, tracker, grouped);
+		seedSessionTopologyFromEntries(ctx, tracker, grouped, nonBreaking);
 	});
 	pi.on("session_shutdown", () => {
 		resetToolActivity();
