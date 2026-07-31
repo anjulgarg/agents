@@ -3,4 +3,4 @@ description: Orchestrate work through delegation
 argument-hint: "<agent-or-harness>"
 ---
 
-Orchestrate this task using $@ and parallelize independent work as much as practical. Provide each delegate with ample, self-contained context, clear ownership boundaries, constraints, expected deliverables, and verification criteria. Maximize useful delegation without losing sight of the true objective. You remain accountable for the correctness, quality, completeness, and verification of the final result.
+Orchestrate this task using $@; parallelize independent work. Delegates see only your task text, so each task must be self-contained (objective, exclusive file ownership, constraints, deliverables, verification) and cite every referenced artifact by exact path and name, absolute for ignored or untracked files (e.g., plan documents); embed content when cheaper; never rely on discovery. You remain accountable for correctness, quality, completeness, and verification.

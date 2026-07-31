@@ -49,10 +49,10 @@ const MAX_HANDOFF_BYTES = 50 * 1024;
 const MAX_TOTAL_HANDOFF_BYTES = 200 * 1024;
 export const CHAT_PADDING = TOOL_CHAT_PADDING;
 export const SELF_CONTAINED_TASK_GUIDANCE =
-	"Subagents do not receive the parent conversation, parent tool results, or unstated parent findings. " +
-	"Make every delegated task self-contained: include the objective, relevant background and decisions, " +
-	"known files or evidence, constraints, expected deliverable, and verification criteria; pass prerequisite " +
-	"subagent output via inputFrom.";
+	"Subagents see only your task text, so make it self-contained: objective, relevant background and decisions, " +
+	"constraints, expected deliverable, and verification criteria. Cite every referenced artifact by exact path and " +
+	"name, absolute for ignored or untracked files; embed content when cheaper; never expect discovery. Pass " +
+	"prerequisite subagent output via inputFrom.";
 export const PARALLEL_FILE_OWNERSHIP_GUIDANCE =
 	"For parallel tasks in the shared workspace, assign each task an explicit, exclusive set of files it may " +
 	"modify before spawning. Never let parallel tasks discover or choose potentially overlapping mutation " +
@@ -205,7 +205,9 @@ const SubagentParams = Type.Object({
 
 const ResumeParams = Type.Object({
 	sessionId: Type.String({ description: "Stable persistent child session ID" }),
-	task: Type.String({ description: "New prompt for the exact retained child conversation" }),
+	task: Type.String({
+		description: `New prompt for the exact retained child conversation. ${SELF_CONTAINED_TASK_GUIDANCE}`,
+	}),
 	inputFrom: Type.Optional(
 		Type.Array(ResultRefSchema, {
 			description: "Completed successful subagent outputs to inject into the resumed prompt",

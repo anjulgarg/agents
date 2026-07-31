@@ -362,10 +362,12 @@ async function testSelfContainedDelegationGuidance(): Promise<void> {
 		const injected = (await beforeStart?.({ systemPrompt: "base" }, fakeCtx())) as
 			{ systemPrompt?: string } | undefined;
 		const expected = [
-			"do not receive the parent conversation",
-			"Make every delegated task self-contained",
+			"see only your task text",
+			"make it self-contained",
 			"relevant background and decisions",
 			"verification criteria",
+			"Cite every referenced artifact by exact path and",
+			"never expect discovery",
 		];
 		assert(
 			name,
@@ -373,7 +375,7 @@ async function testSelfContainedDelegationGuidance(): Promise<void> {
 				metadata.includes("explicit, exclusive set of files") &&
 				metadata.includes("potentially overlapping mutation targets") &&
 				injected?.systemPrompt?.includes("Available subagent models:") === true &&
-				!(injected?.systemPrompt ?? "").includes("do not receive the parent conversation"),
+				!(injected?.systemPrompt ?? "").includes("see only your task text"),
 			`metadata=${metadata}\nsystemPrompt=${injected?.systemPrompt ?? ""}`,
 		);
 	} finally {
