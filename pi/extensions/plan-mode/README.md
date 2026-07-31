@@ -6,8 +6,9 @@ Read-only exploration mode for safe code analysis.
 
 - **Built-in write tools disabled**: Disables edit/write while preserving other active tools
 - **Bash allowlist**: Only read-only bash commands are allowed
-- **Plan extraction**: Extracts numbered steps from `Plan:` sections
-- **Approved execution handoff**: Returns the numbered plan to the parent agent with full tool access
+- **Foreman planning workflow**: Loads the active `foreman-plan` skill for proportional discovery, separate design and plan approvals, and high-fidelity validation
+- **Plan extraction**: Extracts the final numbered execution summary from `Plan:` sections
+- **Approved execution handoff**: Returns the complete approved plan to the parent agent with full tool access
 - **Session persistence**: State survives session resume
 
 ## Commands
@@ -18,19 +19,13 @@ Read-only exploration mode for safe code analysis.
 ## Usage
 
 1. Enable plan mode with `/plan`, `Shift+Tab`, or the `--plan` flag
-2. Ask the agent to analyze code and create a plan
-3. The agent should output a numbered plan under a `Plan:` header:
-
-```
-Plan:
-1. First step description
-2. Second step description
-3. Third step description
-```
-
-4. Choose "Execute the plan" when prompted
-5. The parent agent receives the approved steps with full tool access
-6. Execution mode ends when that agent run settles
+2. Ask the agent to analyze a change
+3. The agent follows the active `foreman-plan` skill to inspect, clarify, and obtain design approval
+4. After design approval, separately confirm that the implementation plan should be created
+5. The agent returns the validated plan in chat and concludes with a numbered `Plan:` execution summary
+6. Choose "Execute the plan" when prompted
+7. The parent agent receives the complete approved plan with full tool access
+8. Execution mode ends when that agent run settles
 
 ## How It Works
 
@@ -39,12 +34,14 @@ Plan:
 - Built-in edit/write tools disabled
 - Other active tools remain available
 - Bash commands filtered through allowlist
-- Agent creates a plan without making changes
+- Active `foreman-plan` guidance is injected from Pi's discovered skill metadata
+- Missing or unreadable guidance produces a warning and uses a safe approval-gated fallback
+- The plan remains in chat so repository files are not changed
 
 ### Execution Mode
 
 - Full tool access restored
-- Approved plan steps are returned to the parent agent
+- The complete approved plan is returned to the parent agent
 - The parent executes steps in order using its available task-management capabilities
 - Execution mode ends independently when the agent run settles
 

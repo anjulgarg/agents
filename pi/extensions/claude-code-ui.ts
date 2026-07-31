@@ -119,8 +119,8 @@ export function formatGitBranch(branch: string, isLinkedWorktree: boolean): stri
 	return `${isLinkedWorktree ? WORKTREE_ICON : BRANCH_ICON} ${branch}`;
 }
 
-export function formatModelStatus(model: string, thinkingLevel: string): string {
-	return `${model.toLowerCase()} ${thinkingLevel.toLowerCase()}`;
+export function formatModelStatus(model: string, thinkingLevel: string, fastMode = false): string {
+	return `${fastMode ? "⚡ " : ""}${model.toLowerCase()} ${thinkingLevel.toLowerCase()}`;
 }
 
 export function formatExtensionStatuses(statuses: ReadonlyMap<string, string>): string[] {
@@ -394,9 +394,11 @@ export function createFooter(
 				mode === "plan" ? color(214, "plan") : color(78, "auto"),
 				branch ? color(150, formatGitBranch(branch, isLinkedWorktree())) : undefined,
 				color(117, formatCwd(ctx.cwd)),
-				color(183, formatModelStatus(model, getThinkingLevel())),
+				color(
+					183,
+					formatModelStatus(model, getThinkingLevel(), isFastMode() && supportsFastMode(ctx)),
+				),
 				context ? color(117, context) : undefined,
-				isFastMode() && supportsFastMode(ctx) ? color(203, "Fast") : undefined,
 				quota?.fiveHourRemaining !== undefined
 					? color(quotaColor(quota.fiveHourRemaining, 222), `5h ${quota.fiveHourRemaining}%`)
 					: undefined,
@@ -406,7 +408,9 @@ export function createFooter(
 			].filter((segment): segment is string => Boolean(segment));
 
 			const extensionStatuses = footerData.getExtensionStatuses();
-			const filteredStatuses = new Map([...extensionStatuses].filter(([key]) => key !== "mcp"));
+			const filteredStatuses = new Map(
+				[...extensionStatuses].filter(([key]) => key !== "mcp" && key !== "plan-mode"),
+			);
 			segments.push(...formatExtensionStatuses(filteredStatuses));
 
 			return wrapFooterSegments(segments, width);

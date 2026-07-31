@@ -44,7 +44,7 @@ export const profiles: readonly ProfileDefinition[] = [
 	{
 		id: "skills",
 		label: "Skills",
-		description: "The eight retained cross-harness skills.",
+		description: "All retained cross-harness skills.",
 		components: skillIds,
 	},
 ];

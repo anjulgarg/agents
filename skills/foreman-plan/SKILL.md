@@ -82,6 +82,18 @@ Make each feature independently assignable when safe:
 
 Keep guidance high-level enough to preserve engineering judgment. Do not prescribe line-by-line edits, exhaustive test matrices, or unsupported file changes.
 
+## Pi plan mode integration
+
+When the active context contains `[PLAN MODE ACTIVE]`, apply this read-only delivery contract:
+
+- Keep every discovery, design approval, separate plan confirmation, fidelity, and validation requirement in this skill.
+- Remain read-only. Do not create or modify the repository plan document while plan mode is active.
+- After explicit plan confirmation, use [plan-template.md](plan-template.md) as the plan structure but present the completed, validated plan in chat.
+- Conclude the chat response with a `Plan:` header and a numbered execution summary. Each item must identify one ordered feature or integration outcome so the plan-mode extension can offer approval and execution controls.
+- Do not implement the plan. Wait for the plan-mode extension or the user to transition explicitly into execution.
+
+This contract replaces only the artifact-location, file-writing, and plan-path return instructions while plan mode is active. All other skill requirements remain authoritative.
+
 ## Validate the handoff
 
 Before finishing, ensure:

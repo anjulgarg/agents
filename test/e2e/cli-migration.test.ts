@@ -4,7 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAgentsUiServices } from "../../src/cli/services.ts";
 import { applyPlan } from "../../src/install/index.ts";
 import type { OperationPlan } from "../../src/install/index.ts";
-import { components, localPiConfigFiles, resolveProfile } from "../../src/registry/index.ts";
+import {
+	components,
+	localPiConfigFiles,
+	resolveProfile,
+	resolveSelection,
+} from "../../src/registry/index.ts";
 import { cleanupFixtures, fixtureHome, inventory, runAgents, sourceRoot } from "./helpers.ts";
 
 afterEach(cleanupFixtures);
@@ -41,7 +46,7 @@ describe("temporary-home CLI parity", () => {
 			.filter(({ category }) => category === "pi-extension")
 			.map(({ id }) => id);
 		expect(result.plan.requested).toEqual(extensionIds);
-		expect(result.plan.resolved).toEqual(extensionIds);
+		expect(result.plan.resolved).toEqual(resolveSelection(extensionIds));
 		const settings = JSON.parse(await readFile(join(home, ".pi/agent/settings.json"), "utf8"));
 		expect(settings.packages[0].extensions).toHaveLength(extensionIds.length);
 	});

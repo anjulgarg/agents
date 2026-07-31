@@ -25,6 +25,7 @@ const extensionIds = [
 	"pi-extension:conversation-separator",
 	"pi-extension:escape-unsend",
 	"pi-extension:git-checkpoint",
+	"pi-extension:handoff",
 	"pi-extension:hide-thinking-history",
 	"pi-extension:jobs",
 	"pi-extension:lsp",
@@ -78,7 +79,7 @@ describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
 		expect(components.length).toBe(
-			30 +
+			31 +
 				(localPiConfigFiles.settings ? 1 : 0) +
 				(localPiConfigFiles.models ? 1 : 0) +
 				1 +
@@ -91,7 +92,7 @@ describe("component registry", () => {
 		expect(
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
-		expect(components.slice(31).map(({ id }) => id)).toEqual([
+		expect(components.slice(32).map(({ id }) => id)).toEqual([
 			...(localPiConfigFiles.settings ? ["pi-config:settings"] : []),
 			...(localPiConfigFiles.models ? ["pi-config:models"] : []),
 			"pi-config:keybindings",
@@ -112,17 +113,21 @@ describe("component registry", () => {
 				["pi-extension", "pi-config", "pi-package", "pi-prompt", "pi-theme", "pi-team"].includes(
 					category,
 				),
-			).length + 1,
+			).length + 2,
 		);
 		expect(resolveProfile("skills")).toEqual(skillIds);
 		expect(new Set(defaultIds)).toEqual(new Set(components.map(({ id }) => id)));
 		expect(piIds).toContain("instructions:shared");
-		expect(piIds.some((id) => id.startsWith("skill:"))).toBe(false);
+		expect(piIds.filter((id) => id.startsWith("skill:"))).toEqual(["skill:foreman-plan"]);
 		expect(profiles.map(({ id }) => id)).toEqual(["default", "pi", "skills"]);
 		expect(resolveProfile("default")).toEqual(defaultIds);
 	});
 
 	it("adds mandatory dependencies and stable-sorts by category then label", () => {
+		expect(resolveSelection(["pi-extension:plan-mode"])).toEqual([
+			"pi-extension:plan-mode",
+			"skill:foreman-plan",
+		]);
 		expect(resolveSelection(["pi-extension:team"])).toEqual([
 			"pi-extension:subagent",
 			"pi-extension:team",

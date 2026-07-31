@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import planModeExtension from "../plan-mode/index.ts";
 
 function assert(name: string, condition: boolean, details: string): void {
@@ -5,7 +7,9 @@ function assert(name: string, condition: boolean, details: string): void {
 	console.log(`PASS: ${name}`);
 }
 
-const handlers = new Map<string, (event: any, context: any) => Promise<void> | void>();
+type EventHandler = (event: any, context: any) => Promise<any> | any;
+
+const handlers = new Map<string, EventHandler>();
 const busListeners: string[] = [];
 const busEmissions: string[] = [];
 const sent: Array<{ message: any; options: any }> = [];
@@ -15,7 +19,7 @@ let activeTools = ["read", "bash", "edit", "write"];
 let selection = "Execute the plan (track progress)";
 
 const pi = {
-	on: (event: string, handler: (event: any, context: any) => Promise<void> | void) => {
+	on: (event: string, handler: EventHandler) => {
 		handlers.set(event, handler);
 	},
 	events: {
@@ -57,13 +61,67 @@ const planEvent = {
 		{
 			role: "assistant",
 			content: [
-				{ type: "text", text: "Plan:\n1. Inspect the login flow\n2. Update the regression tests" },
+				{
+					type: "text",
+					text: "Validated implementation detail that must survive the execution handoff.\n\nPlan:\n1. Inspect the login flow\n2. Update the regression tests",
+				},
 			],
 		},
 	],
 };
 
 await handlers.get("session_start")?.({}, context);
+const foremanPlanRoot = resolve("skills/foreman-plan");
+const planningContext = await handlers.get("before_agent_start")?.(
+	{
+		systemPromptOptions: {
+			skills: [
+				{
+					name: "foreman-plan",
+					filePath: resolve(foremanPlanRoot, "SKILL.md"),
+					baseDir: foremanPlanRoot,
+				},
+			],
+		},
+	},
+	context,
+);
+assert(
+	"plan mode injects the discovered Foreman planning skill",
+	String(planningContext?.message?.content).includes("[PLAN MODE ACTIVE]") &&
+		String(planningContext?.message?.content).includes("## Adaptive discovery") &&
+		String(planningContext?.message?.content).includes("## Plan confirmation gate") &&
+		String(planningContext?.message?.content).includes("## Pi plan mode integration") &&
+		String(planningContext?.message?.content).includes(foremanPlanRoot),
+	JSON.stringify(planningContext),
+);
+const repeatedPlanningContext = await handlers.get("before_agent_start")?.(
+	{ systemPromptOptions: { skills: [] } },
+	context,
+);
+assert(
+	"plan mode injects the full planning skill only once per activation",
+	repeatedPlanningContext === undefined,
+	JSON.stringify(repeatedPlanningContext),
+);
+const filteredPlanningContext = await handlers.get("context")?.(
+	{
+		messages: [
+			{ role: "user", customType: "plan-mode-context", content: "old guidance" },
+			planningContext?.message,
+			{ role: "user", content: "plan this change" },
+			{ role: "user", content: "explain the [PLAN MODE ACTIVE] marker" },
+		],
+	},
+	context,
+);
+assert(
+	"plan mode keeps only the latest guidance without dropping quoted markers",
+	filteredPlanningContext?.messages?.length === 3 &&
+		filteredPlanningContext.messages[0] === planningContext?.message &&
+		String(filteredPlanningContext.messages[2]?.content).includes("[PLAN MODE ACTIVE]"),
+	JSON.stringify(filteredPlanningContext),
+);
 await handlers.get("agent_end")?.(planEvent, context);
 const execution = sent[0];
 const executionText = execution?.message.content ?? "";
@@ -74,8 +132,9 @@ assert(
 		execution.message.display === false &&
 		execution.options.triggerTurn === true &&
 		execution.options.deliverAs === "followUp" &&
+		executionText.includes("Validated implementation detail that must survive") &&
 		executionText.includes("Inspect the login flow") &&
-		executionText.includes("Regression tests") &&
+		executionText.includes("regression tests") &&
 		executionText.includes("task-management") &&
 		executionText.includes("immediately") &&
 		!executionText.toLowerCase().includes("todo"),
@@ -164,6 +223,17 @@ function createJobHarness(initialTools: string[]) {
 {
 	const harness = createJobHarness(["read", "bash", "edit", "write", "job", "grep"]);
 	await harness.togglePlan();
+	const fallbackPlanningContext = await harness.handlers.get("before_agent_start")?.(
+		{ systemPromptOptions: { skills: [] } },
+		harness.context,
+	);
+	assert(
+		"plan mode uses an approval-gated fallback when the Foreman skill is unavailable",
+		String(fallbackPlanningContext?.message?.content).includes(
+			"The foreman-plan skill could not be loaded",
+		) && String(fallbackPlanningContext?.message?.content).includes("explicit design approval"),
+		JSON.stringify(fallbackPlanningContext),
+	);
 	assert(
 		"plan mode removes job from active tools",
 		!harness.tools().includes("job") &&

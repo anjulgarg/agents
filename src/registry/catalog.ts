@@ -34,6 +34,7 @@ const extensions = [
 	["conversation-separator", "conversation-separator.ts"],
 	["escape-unsend", "escape-unsend.ts"],
 	["git-checkpoint", "git-checkpoint.ts"],
+	["handoff", "handoff.ts"],
 	["hide-thinking-history", "hide-thinking-history.ts"],
 	["jobs", "jobs/index.ts"],
 	["lsp", "lsp/index.ts"],
@@ -88,7 +89,12 @@ const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entryp
 	description: `${title(slug)} Pi extension.`,
 	resources: [{ path: `pi/extensions/${entrypoint}`, kind: "file" }],
 	outputs: [piFilter("extensions", `pi/extensions/${entrypoint}`)],
-	dependsOn: slug === "team" ? ["pi-extension:subagent"] : [],
+	dependsOn:
+		slug === "team"
+			? ["pi-extension:subagent"]
+			: slug === "plan-mode"
+				? ["skill:foreman-plan"]
+				: [],
 	requirements: [NODE, PI],
 	legacyPaths: [`.pi/agent/extensions/${entrypoint}`],
 }));

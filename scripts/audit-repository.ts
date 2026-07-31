@@ -15,6 +15,7 @@ const EXPECTED_EXTENSIONS = [
 	"pi/extensions/conversation-separator.ts",
 	"pi/extensions/escape-unsend.ts",
 	"pi/extensions/git-checkpoint.ts",
+	"pi/extensions/handoff.ts",
 	"pi/extensions/hide-thinking-history.ts",
 	"pi/extensions/jobs/index.ts",
 	"pi/extensions/lsp/index.ts",
@@ -197,7 +198,7 @@ async function validateManifest(root: string, files: readonly string[]): Promise
 	const themes = stringArray(manifest.pi?.themes);
 	if (!extensions || !equalSorted(extensions, EXPECTED_EXTENSIONS))
 		invalid(
-			"Pi extensions must be the exact 28 approved entrypoints",
+			"Pi extensions must be the exact 29 approved entrypoints",
 			"package.json#pi.extensions",
 		);
 	if (

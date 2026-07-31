@@ -12,9 +12,10 @@ let branch: string | null = "main";
 let branchChanged: (() => void) | undefined;
 let renderRequests = 0;
 let unsubscribed = false;
+let extensionStatuses = new Map<string, string>();
 const footerData = {
 	getGitBranch: () => branch,
-	getExtensionStatuses: () => new Map(),
+	getExtensionStatuses: () => extensionStatuses,
 	getAvailableProviderCount: () => 1,
 	onBranchChange(callback: () => void) {
 		branchChanged = callback;
@@ -34,12 +35,13 @@ const ctx = {
 	getContextUsage: () => ({ tokens: 34_000, percent: 12.5 }),
 } as unknown as ExtensionContext;
 let mode = "auto";
+let fastMode = false;
 const footer = createFooter(
 	ctx,
 	footerData,
 	() => false,
 	() => "medium",
-	() => false,
+	() => fastMode,
 	() => ({ fiveHourRemaining: 92, weeklyRemaining: 81 }),
 	() => {
 		renderRequests++;
@@ -101,10 +103,22 @@ assert(
 	wide,
 );
 mode = "plan";
+fastMode = true;
+extensionStatuses = new Map([
+	["plan-mode", "⏸ plan"],
+	["mcp", "MCP: sentry"],
+	["token-speed", "12 tok/s"],
+]);
 const planned = footer.render(240).join("\n");
 assert(
-	"shows the plan mode label at far-left in plan mode",
-	planned.includes("plan") && planned.indexOf("plan") < planned.indexOf("feature/reactive-footer"),
+	"shows one plan mode label at far-left without its duplicate extension status",
+	planned.split("plan").length - 1 === 1 &&
+		planned.indexOf("plan") < planned.indexOf("feature/reactive-footer") &&
+		!planned.includes("⏸") &&
+		!planned.includes("MCP: sentry") &&
+		planned.includes("gpt-5.6 sol ⚡ medium") &&
+		!planned.includes("Fast") &&
+		planned.includes("12 tok/s"),
 	planned,
 );
 footer.dispose();

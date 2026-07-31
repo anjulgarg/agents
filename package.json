@@ -65,6 +65,7 @@
       "pi/extensions/conversation-separator.ts",
       "pi/extensions/escape-unsend.ts",
       "pi/extensions/git-checkpoint.ts",
+      "pi/extensions/handoff.ts",
       "pi/extensions/hide-thinking-history.ts",
       "pi/extensions/jobs/index.ts",
       "pi/extensions/lsp/index.ts",

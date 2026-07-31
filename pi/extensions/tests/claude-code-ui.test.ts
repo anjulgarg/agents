@@ -65,6 +65,11 @@ assert(
 	formatModelStatus("GPT-5.6 Sol", "medium") === "gpt-5.6 sol medium",
 	formatModelStatus("GPT-5.6 Sol", "medium"),
 );
+assert(
+	"places the Fast mode lightning icon left of the model name",
+	formatModelStatus("GPT-5.6 Sol", "medium", true) === "⚡ gpt-5.6 sol medium",
+	formatModelStatus("GPT-5.6 Sol", "medium", true),
+);
 const logo = piLogo({ fg: (_color: string, text: string) => text } as any);
 assert(
 	"aligns the Pi logo with the standard one-column header gutter",

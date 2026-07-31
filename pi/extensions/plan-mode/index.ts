@@ -13,6 +13,8 @@
  * - Execution ends when the agent settles
  */
 
+import { readFile } from "node:fs/promises";
+
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -21,6 +23,14 @@ import { extractPlanItems, isSafeCommand } from "./utils.ts";
 /** Emitted on the inter-extension bus so the footer can show the current mode. */
 export const MODE_EVENT = "agent-mode:change";
 export type AgentMode = "plan" | "auto";
+
+const FOREMAN_PLAN_SKILL = "foreman-plan";
+
+interface PlanningSkill {
+	name: string;
+	filePath: string;
+	baseDir: string;
+}
 
 // Tools
 const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "question"];
@@ -47,10 +57,23 @@ function getTextContent(message: AssistantMessage): string {
 		.join("\n");
 }
 
+function isPlanModeContextMessage(message: AgentMessage & { customType?: string }): boolean {
+	if (message.customType === "plan-mode-context") return true;
+	if (message.role !== "user") return false;
+	if (typeof message.content === "string") return message.content.includes("[PLAN MODE ACTIVE]");
+	return message.content.some(
+		(content) =>
+			content.type === "text" && (content as TextContent).text?.includes("[PLAN MODE ACTIVE]"),
+	);
+}
+
 export default function planModeExtension(pi: ExtensionAPI): void {
 	let planModeEnabled = false;
 	let executionMode = false;
 	let toolsBeforePlanMode: string[] | undefined;
+	let cachedPlanningSkill: { filePath: string; content: string } | undefined;
+	let planningSkillWarningShown = false;
+	let planningGuidanceInjected = false;
 
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration)",
@@ -109,6 +132,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	function togglePlanMode(ctx: ExtensionContext): void {
 		planModeEnabled = !planModeEnabled;
 		executionMode = false;
+		planningGuidanceInjected = false;
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
@@ -144,33 +168,66 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	// Filter out stale plan mode context when not in plan mode
+	// Keep only the current activation's guidance while planning; remove it in auto mode.
 	pi.on("context", async (event) => {
-		if (planModeEnabled) return;
-
+		const lastPlanContextIndex = event.messages.findLastIndex(
+			(message) =>
+				(message as AgentMessage & { customType?: string }).customType === "plan-mode-context",
+		);
 		return {
-			messages: event.messages.filter((m) => {
-				const msg = m as AgentMessage & { customType?: string };
-				if (msg.customType === "plan-mode-context") return false;
-				if (msg.role !== "user") return true;
-
-				const content = msg.content;
-				if (typeof content === "string") {
-					return !content.includes("[PLAN MODE ACTIVE]");
+			messages: event.messages.filter((message, index) => {
+				const planMessage = message as AgentMessage & { customType?: string };
+				if (planModeEnabled) {
+					return planMessage.customType !== "plan-mode-context" || index === lastPlanContextIndex;
 				}
-				if (Array.isArray(content)) {
-					return !content.some(
-						(c) => c.type === "text" && (c as TextContent).text?.includes("[PLAN MODE ACTIVE]"),
-					);
-				}
-				return true;
+				return !isPlanModeContextMessage(planMessage);
 			}),
 		};
 	});
 
+	async function loadPlanningSkill(
+		skills: readonly PlanningSkill[] | undefined,
+	): Promise<{ skill: PlanningSkill; content: string } | undefined> {
+		const skill = skills?.find(({ name }) => name === FOREMAN_PLAN_SKILL);
+		if (!skill) return undefined;
+		if (cachedPlanningSkill?.filePath === skill.filePath) {
+			return { skill, content: cachedPlanningSkill.content };
+		}
+
+		try {
+			const content = await readFile(skill.filePath, "utf8");
+			cachedPlanningSkill = { filePath: skill.filePath, content };
+			planningSkillWarningShown = false;
+			return { skill, content };
+		} catch {
+			return undefined;
+		}
+	}
+
 	// Inject plan/execution context before agent starts
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		if (planModeEnabled) {
+			if (planningGuidanceInjected) return;
+			const planningSkill = await loadPlanningSkill(event.systemPromptOptions.skills);
+			if (!planningSkill && !planningSkillWarningShown) {
+				planningSkillWarningShown = true;
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						"Foreman planning guidance is unavailable; using the safe fallback workflow.",
+						"warning",
+					);
+				}
+			}
+
+			const workflow = planningSkill
+				? `Follow the Foreman planning skill below, including its Pi plan mode integration contract. Resolve its relative references from ${planningSkill.skill.baseDir}.
+
+<foreman_plan_skill path=${JSON.stringify(planningSkill.skill.filePath)}>
+${planningSkill.content}
+</foreman_plan_skill>`
+				: `The foreman-plan skill could not be loaded. Use this safe fallback: inspect first, choose a proportional discovery depth, obtain explicit design approval, then separately ask whether to create the implementation plan. Only after both approvals, return a detailed numbered plan under a "Plan:" header. Never implement it.`;
+
+			planningGuidanceInjected = true;
 			return {
 				message: {
 					customType: "plan-mode-context",
@@ -181,17 +238,9 @@ Restrictions:
 - Built-in edit, write, and job tools are disabled
 - Other currently active tools remain available
 - Bash is restricted to an allowlist of read-only commands (also enforced for stale job calls)
+- Do not implement changes while plan mode remains active
 
-Ask clarifying questions using the question tool.
-
-Create a detailed numbered plan under a "Plan:" header:
-
-Plan:
-1. First step description
-2. Second step description
-...
-
-Do NOT attempt to make changes - just describe what you would do.`,
+${workflow}`,
 					display: false,
 				},
 			};
@@ -225,9 +274,8 @@ verified instead of batching progress updates at the end.`,
 		if (!planModeEnabled || !ctx.hasUI) return;
 
 		const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
-		const steps = lastAssistant
-			? extractPlanItems(getTextContent(lastAssistant)).map((item) => item.text)
-			: [];
+		const approvedPlan = lastAssistant ? getTextContent(lastAssistant) : "";
+		const steps = extractPlanItems(approvedPlan).map((item) => item.text);
 		if (steps.length === 0) return;
 
 		const planStepText = steps.map((text, i) => `${i + 1}. ☐ ${text}`).join("\n");
@@ -246,14 +294,15 @@ verified instead of batching progress updates at the end.`,
 		if (choice?.startsWith("Execute")) {
 			planModeEnabled = false;
 			executionMode = true;
+			planningGuidanceInjected = false;
 			restoreNormalModeTools();
 			updateStatus(ctx);
 			persistState();
 
 			const execMessage = `Execute the user-approved plan below in order. Track progress with your available task-management capabilities and record each step immediately after verification instead of batching updates at the end.
 
-Plan steps:
-${steps.map((text, i) => `${i + 1}. ${text}`).join("\n")}`;
+Approved plan:
+${approvedPlan}`;
 			pi.sendMessage(
 				{ content: execMessage, display: false },
 				{ triggerTurn: true, deliverAs: "followUp" },
@@ -267,8 +316,17 @@ ${steps.map((text, i) => `${i + 1}. ${text}`).join("\n")}`;
 		}
 	});
 
+	pi.on("session_compact", () => {
+		planningGuidanceInjected = false;
+	});
+
+	pi.on("session_tree", () => {
+		planningGuidanceInjected = false;
+	});
+
 	// Restore state on session start/resume
 	pi.on("session_start", async (_event, ctx) => {
+		planningGuidanceInjected = false;
 		if (pi.getFlag("plan") === true) {
 			planModeEnabled = true;
 		}

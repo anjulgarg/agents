@@ -10,7 +10,7 @@ describe("approved first-party inventory", () => {
 	it("passes the repository audit with exact category counts", async () => {
 		const result = await auditRepository(root);
 		expect(result.failures).toEqual([]);
-		expect(result.summary).toMatchObject({ skills: 3, extensions: 28, prompts: 1, themes: 1 });
+		expect(result.summary).toMatchObject({ skills: 3, extensions: 29, prompts: 1, themes: 1 });
 		expect(result.summary.sourceBytes).toBeLessThanOrEqual(2.5 * 1024 * 1024);
 	});
 
