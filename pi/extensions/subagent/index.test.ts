@@ -70,7 +70,7 @@ function ensurePiModulePath(): void {
 
 ensurePiModulePath();
 
-const { initTheme } = await import("@earendil-works/pi-coding-agent");
+const { initTheme, SessionManager } = await import("@earendil-works/pi-coding-agent");
 initTheme("dark");
 
 const rpcPath = "." + "/rpc-client.ts";
@@ -87,6 +87,7 @@ type SupervisorInstance = InstanceType<typeof Supervisor>;
 type ChildHandle = import("./supervisor.ts").ChildHandle;
 
 const {
+	derivePersistentSessionPaths,
 	getScopedSubagentModels,
 	isPiSubagentCmdline,
 	killSubagentRuns,
@@ -1740,6 +1741,160 @@ async function testF6PrefersActiveTeam(): Promise<void> {
 	}
 }
 
+async function testF6RetainsPersistentConversation(): Promise<void> {
+	const name = "i. F6 retains cumulative persistent conversation and cost";
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "subagent-f6-history-"));
+	const ownerParentSessionId = "parent-history";
+	const sessionId = "persistent-history";
+	const paths = derivePersistentSessionPaths(root, ownerParentSessionId, sessionId);
+	const cwd = path.join(root, "workspace");
+	await fs.promises.mkdir(cwd, { recursive: true });
+	const usage = (input: number, output: number, cost: number) => ({
+		input,
+		output,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: input + output,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+	});
+	const childSession = SessionManager.create(cwd, paths.sessionDir, { id: sessionId });
+	childSession.appendMessage({ role: "user", content: "FIRST_PERSISTENT_PROMPT", timestamp: 100 });
+	childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "FIRST_PERSISTENT_ANSWER" }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "test",
+		usage: usage(10, 2, 0.01),
+		stopReason: "stop",
+		timestamp: 200,
+	});
+	childSession.appendMessage({ role: "user", content: "SECOND_PERSISTENT_PROMPT", timestamp: 300 });
+	childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "SECOND_PERSISTENT_ANSWER" }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "test",
+		usage: usage(20, 4, 0.03),
+		stopReason: "stop",
+		timestamp: 400,
+	});
+	const persistedTask = (taskId: string, task: string, cost: number) => ({
+		taskId,
+		index: 0,
+		task,
+		status: "done",
+		model: "test/model",
+		thinking: "off",
+		workspace: "shared",
+		cwd,
+		mode: "persistent",
+		sessionId,
+		output: `${task} output`,
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost, turns: 1 },
+		reaped: true,
+	});
+	const entries = [
+		{
+			type: "custom",
+			customType: "subagent-session-state",
+			data: {
+				type: "subagent-session-state",
+				version: 1,
+				ownerParentSessionId,
+				sessionId,
+				state: "idle",
+				mode: "persistent",
+				child: { sessionId, sessionDir: paths.sessionDir },
+				execution: {
+					model: "test/model",
+					thinking: "off",
+					tools: ["read"],
+					workspace: "shared",
+					cwd,
+					projectTrusted: false,
+					systemPrompt: "test",
+				},
+				latestRunId: "resume-run",
+				latestTaskId: "resume-task",
+				createdAt: 1,
+				updatedAt: 2,
+			},
+		},
+		{
+			type: "custom",
+			customType: "subagent-state",
+			data: {
+				run: {
+					runId: "initial-run",
+					startedAt: 1,
+					tasks: [persistedTask("initial-task", "first request", 0.01)],
+				},
+			},
+		},
+		{
+			type: "custom",
+			customType: "subagent-state",
+			data: {
+				run: {
+					runId: "resume-run",
+					startedAt: 2,
+					tasks: [persistedTask("resume-task", "second request", 0.03)],
+				},
+			},
+		},
+	];
+	const pi = new FakePi();
+	const supervisor = install(pi, [], { persistentStateRoot: root });
+	let component: any;
+	const sessionManager = {
+		isPersisted: () => true,
+		getSessionId: () => ownerParentSessionId,
+		getEntries: () => entries,
+		getBranch: () => entries,
+	};
+	try {
+		const shortcut = pi.shortcuts.get("f6") as { handler: (ctx: any) => Promise<void> };
+		await shortcut.handler(
+			fakeCtx({
+				cwd,
+				mode: "tui",
+				sessionManager,
+				ui: {
+					notify: () => {},
+					custom: async (factory: any) => {
+						component = factory(
+							{ terminal: { rows: 40, columns: 120 }, requestRender() {}, invalidate() {} },
+							{
+								fg: (_key: string, text: string) => text,
+								bg: (_key: string, text: string) => text,
+								bold: (text: string) => text,
+							},
+							{},
+							() => {},
+						);
+					},
+				},
+			}),
+		);
+		const rendered = component?.render(120).join("\n") ?? "";
+		assert(
+			name,
+			component?.groups().length === 1 &&
+				rendered.includes("FIRST_PERSISTENT_ANSWER") &&
+				rendered.includes("SECOND_PERSISTENT_ANSWER") &&
+				rendered.includes("2 turns") &&
+				rendered.includes("$0.0400"),
+			JSON.stringify({ groups: component?.groups(), rendered }),
+		);
+	} finally {
+		component?.dispose?.();
+		supervisor.dispose();
+		await fs.promises.rm(root, { recursive: true, force: true });
+	}
+}
+
 function testF6ShortcutRegistered(): void {
 	const pi = new FakePi();
 	const supervisor = install(pi, []);
@@ -2411,6 +2566,7 @@ async function main(): Promise<void> {
 	await testPersistedManagementAfterReload();
 	testF6ShortcutRegistered();
 	await testF6PrefersActiveTeam();
+	await testF6RetainsPersistentConversation();
 	testGenericChildUiReducer();
 
 	if (failed > 0) {

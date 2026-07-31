@@ -309,13 +309,24 @@ export function buildThreadGroups(runs: SubagentDetails[]): SubagentThreadGroup[
 	const groups = new Map<string, SubagentThreadGroup>();
 	for (const run of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
 		for (const result of run.results) {
-			const key = result.teamRunId ? `team:${result.teamRunId}` : `run:${run.runId}`;
+			const persistentSessionId =
+				result.mode === "persistent" && result.sessionId ? result.sessionId : undefined;
+			const key = result.teamRunId
+				? `team:${result.teamRunId}`
+				: persistentSessionId
+					? `session:${persistentSessionId}`
+					: `run:${run.runId}`;
 			let group = groups.get(key);
 			if (!group) {
 				group = { key, teamRunId: result.teamRunId, startedAt: run.startedAt, items: [] };
 				groups.set(key, group);
 			}
-			group.items.push({ runId: run.runId, startedAt: run.startedAt, result });
+			const item = { runId: run.runId, startedAt: run.startedAt, result };
+			const existing = persistentSessionId
+				? group.items.findIndex((candidate) => candidate.result.sessionId === persistentSessionId)
+				: -1;
+			if (existing >= 0) group.items[existing] = item;
+			else group.items.push(item);
 		}
 	}
 	return [...groups.values()]

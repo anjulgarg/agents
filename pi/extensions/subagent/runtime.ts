@@ -26,6 +26,12 @@ import type {
 } from "./contracts.ts";
 import { emptyUsage, RpcChild, type RpcChildOptions } from "./rpc-client.ts";
 import {
+	cumulativePersistentUsage,
+	loadPersistentThreadHistory,
+	mergePersistentMessages,
+	type PersistentThreadHistory,
+} from "./session-history.ts";
+import {
 	PersistentSessionError,
 	PersistentSessionStore as PersistentSessionStoreImpl,
 	type PersistentSessionLock,
@@ -293,6 +299,7 @@ export class SubagentRuntime {
 	private readonly taskMeta = new Map<string, SubagentTaskMeta>();
 	private readonly wedgedTasks = new Set<string>();
 	private readonly historical = new Map<string, SubagentDetails>();
+	private persistentThreadHistory = new Map<string, PersistentThreadHistory>();
 	private readonly teamNames = new Map<string, string>();
 	private readonly lastViewedTaskByGroup = new Map<string, string>();
 	private readonly approvedManualRetries = new Set<string>();
@@ -769,7 +776,20 @@ export class SubagentRuntime {
 		for (const run of this.supervisor.runs.values()) {
 			merged.set(run.runId, this.detailsFromRun(run));
 		}
-		return [...merged.values()];
+		return [...merged.values()].map((run) => ({
+			...run,
+			results: run.results.map((result) => {
+				if (result.mode !== "persistent" || !result.sessionId) return result;
+				const history = this.persistentThreadHistory.get(result.sessionId);
+				if (!history) return result;
+				const messages = mergePersistentMessages(history.messages, result.messages);
+				return {
+					...result,
+					messages,
+					usage: cumulativePersistentUsage(messages, history.nonMessageUsage),
+				};
+			}),
+		}));
 	}
 
 	statusWithHistory(ctx: ExtensionContext, runId?: string): RunSnapshot | RunSnapshot[] {
@@ -890,12 +910,38 @@ export class SubagentRuntime {
 		this.activityContext?.ui.setWidget(ACTIVITY_WIDGET_KEY, undefined);
 	}
 
+	private async hydratePersistentThreadHistory(ctx: ExtensionContext): Promise<void> {
+		if (!this.parentIsPersisted(ctx)) {
+			this.persistentThreadHistory.clear();
+			return;
+		}
+		const store = this.requirePersistentStore(ctx);
+		const loaded = await Promise.all(
+			store.list().map(async ({ sessionId }) => {
+				try {
+					const snapshot = store.getSnapshot(sessionId);
+					const history = await loadPersistentThreadHistory(snapshot.child);
+					return history ? ([sessionId, history] as const) : undefined;
+				} catch {
+					// The live invocation projection remains usable if durable history is unavailable.
+					return undefined;
+				}
+			}),
+		);
+		this.persistentThreadHistory = new Map(
+			loaded.filter(
+				(entry): entry is readonly [string, PersistentThreadHistory] => entry !== undefined,
+			),
+		);
+	}
+
 	openThreadView = async (ctx: ExtensionContext): Promise<void> => {
 		if (ctx.mode !== "tui") {
 			ctx.ui.notify("Subagent threads require interactive mode.", "warning");
 			return;
 		}
 		this.hydrateHistorical(ctx);
+		await this.hydratePersistentThreadHistory(ctx);
 		const groups = buildThreadGroups(this.allDashboardRuns());
 		if (groups.length === 0) {
 			ctx.ui.notify("No subagents in this session.", "info");

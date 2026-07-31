@@ -59,6 +59,7 @@ const { initTheme } = await import("@earendil-works/pi-coding-agent");
 const { visibleWidth } = await import("@earendil-works/pi-tui");
 initTheme("dark");
 const { SubagentDashboard, SubagentThreadView } = await import("." + "/index.ts");
+const { buildThreadGroups } = await import("." + "/ui.ts");
 const { TeamDashboard } = await import(".." + "/team/index.ts");
 type SubagentDetails = import("./index.ts").SubagentDetails;
 type SubagentResultView = import("./index.ts").SubagentResultView;
@@ -248,7 +249,7 @@ function testSubagentDashboard(): void {
 		undefined,
 		undefined,
 		undefined,
-		(runId, taskId) => {
+		(runId: string, taskId: string) => {
 			killedTask = `${runId}:${taskId}`;
 		},
 		() => {
@@ -487,6 +488,40 @@ function testSubagentDashboard(): void {
 		{ runId: "old-run", startedAt: 1, results: oldAgents },
 		{ runId: "team-run", startedAt: 2, results: teamAgents },
 	];
+	const persistentGroups = buildThreadGroups([
+		{
+			runId: "persistent-first",
+			startedAt: 10,
+			results: [
+				subagentTask({
+					taskId: "persistent-task-1",
+					mode: "persistent",
+					sessionId: "persistent-session",
+					done: true,
+					status: "done",
+				}),
+			],
+		},
+		{
+			runId: "persistent-resume",
+			startedAt: 20,
+			results: [
+				subagentTask({
+					taskId: "persistent-task-2",
+					mode: "persistent",
+					sessionId: "persistent-session",
+				}),
+			],
+		},
+	]);
+	check(
+		"subagent thread: resumed persistent invocations remain one thread",
+		persistentGroups.length === 1 &&
+			persistentGroups[0]?.key === "session:persistent-session" &&
+			persistentGroups[0]?.items.length === 1 &&
+			persistentGroups[0]?.items[0]?.result.taskId === "persistent-task-2",
+		JSON.stringify(persistentGroups),
+	);
 	const grouped = new SubagentThreadView(
 		fakeTui,
 		fakeTheme,

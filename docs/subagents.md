@@ -46,6 +46,8 @@ Use `subagent_close` to make an idle session, or a blocked session with no activ
 
 A resumed child receives normal Pi session context from the same append-only JSONL conversation. If Pi compacted that conversation, the child receives the stored compaction summary and retained tail. The complete transcript remains on disk according to Pi's normal session format.
 
+The F6 thread view reads that durable active branch, merges any live resumed events, and displays cumulative turns, tokens, and cost across invocations. Repeated resumes remain one thread even though each invocation has a distinct run ID and task ID.
+
 A persistent child cannot invoke subagent or subagent-management tools. Dependency outputs may still be supplied through `inputFrom` when spawning or resuming.
 
 ## Ownership and branches
