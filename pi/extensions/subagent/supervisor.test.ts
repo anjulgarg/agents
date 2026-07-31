@@ -1031,7 +1031,7 @@ async function testLiveContextRefreshOnAssistantTurn(): Promise<void> {
 			`calls=${child.refreshCalls}`,
 		);
 		// Compaction refresh retains unknown occupancy instead of stale known tokens.
-		child.emit({ type: "compaction" });
+		child.emit({ type: "compaction_end" });
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		task = supervisor.runs.get(runId)?.tasks[0];
 		assert(

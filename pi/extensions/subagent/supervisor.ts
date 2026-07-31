@@ -898,7 +898,7 @@ export class Supervisor {
 			const message = event.message as { role?: string } | undefined;
 			return message?.role === "assistant";
 		}
-		return event.type === "compaction" || event.type === "session_compacted";
+		return event.type === "compaction_end";
 	}
 
 	private onChildExit(runId: string, taskId: string, code: number): void {
