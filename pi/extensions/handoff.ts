@@ -4,25 +4,10 @@ import { Type } from "typebox";
 export const HANDOFF_COMMAND = "handoff";
 export const MAX_HANDOFF_LENGTH = 24_000;
 
-export const HANDOFF_REQUEST = `Create and activate a handoff to a fresh Pi session now. This request authorizes session replacement, so do not ask for confirmation.
-
-Before calling the handoff tool:
-1. Inspect the active todo list when available. Preserve IDs and statuses for every pending or in-progress task.
-2. Inspect concise repository state when inside a repository. Record the branch or detached state, changed paths, and relevant untracked files without copying large diffs.
-3. Reconcile conversation and tool evidence. Separate verified completed work from pending work. Never claim a check passed unless its result is present.
-4. Exclude credentials, tokens, private runtime state, raw session history, and speculative tasks.
-
-Provide one concise, self-contained Markdown handoff with these sections: Objective, Completed, Pending tasks, Working context, Verification, Blockers and risks, and Next action. Include exact paths, commands, errors, IDs, decisions, and constraints needed for safe continuation. Use "None" or "None known" for empty sections.
-
-End the handoff with this continuation instruction: "Continue from this handoff autonomously. Revalidate repository state before editing, preserve unrelated changes, keep the todo list synchronized, and do not repeat completed work."
-
-Call the handoff tool exactly once with the complete Markdown handoff. Treat a successful call as terminal for this session and do not send a normal final response afterward.`;
+export const HANDOFF_REQUEST = `Prepare and activate a handoff to a fresh Pi session now. Session replacement is authorized without confirmation.`;
 
 export const HANDOFF_PROMPT_GUIDELINES = [
-	"Start session handoffs with the /handoff command. Call the handoff tool only while that command's generated request is active.",
-	"Before calling handoff, inspect available todo state and concise repository state, then distinguish verified completed work from ordered pending work without exposing credentials or raw session history.",
-	"The handoff argument must be concise, self-contained Markdown covering Objective, Completed, Pending tasks, Working context, Verification, Blockers and risks, and Next action, followed by an instruction to continue autonomously.",
-	"Call handoff exactly once after preparing the summary. A successful handoff call is terminal for the old session, so do not send a normal final response afterward.",
+	"Use handoff only for an active /handoff request. Prepare concise but complete notes for handing off this session to another coding agent. Preserve in-progress and pending tasks and todos.",
 ] as const;
 
 interface PendingHandoff {

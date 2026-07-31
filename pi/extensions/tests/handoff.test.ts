@@ -48,7 +48,9 @@ assert(
 		publicCommand !== undefined &&
 		registration.tool?.name === "handoff" &&
 		registration.tool.parameters.properties.handoff.maxLength === MAX_HANDOFF_LENGTH &&
-		registration.tool.promptGuidelines.length === HANDOFF_PROMPT_GUIDELINES.length,
+		registration.tool.promptGuidelines.length === HANDOFF_PROMPT_GUIDELINES.length &&
+		registration.tool.promptGuidelines[0] === HANDOFF_PROMPT_GUIDELINES[0] &&
+		HANDOFF_PROMPT_GUIDELINES[0]?.includes("Preserve in-progress and pending tasks and todos"),
 	JSON.stringify({ commands: [...registration.commands.keys()], tool: registration.tool?.name }),
 );
 
@@ -99,9 +101,8 @@ await Promise.resolve();
 assert(
 	"public handoff command asks the current agent to prepare the handoff",
 	flow.queued.length === 1 &&
-		flow.queued[0]?.content.startsWith(HANDOFF_REQUEST) &&
-		flow.queued[0]?.content.includes("Inspect the active todo list") &&
-		flow.queued[0]?.content.includes("prioritize verification") &&
+		flow.queued[0]?.content ===
+			`${HANDOFF_REQUEST}\n\nRequested focus for the handoff: prioritize verification` &&
 		flow.queued[0]?.options === undefined,
 	JSON.stringify(flow.queued),
 );
