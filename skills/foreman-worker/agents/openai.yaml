@@ -1,6 +1,6 @@
 interface:
   display_name: "Foreman Worker"
-  short_description: "Run an ephemeral or persistent local coding harness"
-  default_prompt: "Use $foreman-worker to invoke the requested coding harness with the required session lifecycle, then independently verify the result."
+  short_description: "Run a native or CLI worker with a stable lifecycle"
+  default_prompt: "Use $foreman-worker to select a native resumable-subagent or CLI transport, preserve the requested session lifecycle, and independently verify the result."
 policy:
   allow_implicit_invocation: false

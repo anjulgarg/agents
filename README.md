@@ -20,7 +20,7 @@ and standards, then extend the workflow with your own tools and integrations.
 - **Pi configuration** with extensions for planning, handoffs, subagents, teams, worktrees,
   checkpoints, memory, jobs, LSP navigation, usage, and focused transcript workflows.
 - **Engineering skills** for planning, pull requests, deep code review, specialist review,
-  GitHub workflows, and estimation readiness.
+  harness-neutral worker orchestration, GitHub workflows, and estimation readiness.
 - **Prompts, teams, themes, and instructions** that coordinate repeatable work across supported
   coding-agent harnesses.
 - **The `agents` CLI**, which installs selected components transactionally into an alternate home,

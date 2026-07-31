@@ -28,4 +28,26 @@ describe("approved first-party inventory", () => {
 		const skill = await readFile(join(root, "skills", "foreman-plan", "SKILL.md"), "utf8");
 		expect(skill).not.toContain("visual-companion");
 	});
+
+	it("keeps Foreman Review transport-neutral with a fail-closed native worker contract", async () => {
+		const worker = await readFile(join(root, "skills", "foreman-worker", "SKILL.md"), "utf8");
+		const native = await readFile(
+			join(root, "skills", "foreman-worker", "references", "native-subagent.md"),
+			"utf8",
+		);
+		const review = await readFile(join(root, "skills", "foreman-review", "SKILL.md"), "utf8");
+
+		expect(worker).toContain("`TRANSPORT`: `auto` by default");
+		expect(worker).toContain("references/native-subagent.md");
+		expect(worker).toContain("A failed persistent resume never creates a replacement worker");
+		expect(worker).toContain("fall back only when no child session or invocation was created");
+		expect(native).toContain("If any required capability is absent or uncertain");
+		expect(native).toContain("resume that exact session by identifier");
+		expect(native).toContain("`subagent_resume`");
+		expect(native).toContain("`subagent_result`");
+		expect(review).toContain("`TRANSPORT=auto`");
+		expect(review).toContain("same exact session");
+		expect(review).toContain("transport, harness, and session ID");
+		expect(review).not.toContain("`subagent_resume`");
+	});
 });
