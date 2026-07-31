@@ -111,10 +111,47 @@ export function selectTitleSegments(
 		};
 	}
 	const fixed = full.filter((segment) => segment.fixed);
+	const model = full.find((segment) => segment.essential && !segment.fixed);
+	const target = Math.max(0, Math.floor(width));
+	const fixedWidth = visibleWidth(joined(fixed));
+	const separatorWidth = visibleWidth(TITLE_SEPARATOR);
+	const separators = Math.max(0, fixed.length + (model ? 1 : 0) - 1);
+	const modelRoom = model ? Math.max(0, target - fixedWidth - separators * separatorWidth) : 0;
+	// Last resort: a truncated readable model still names the agent whenever
+	// there is room for at least one character plus the ellipsis, kept between
+	// position and icon in original semantic order. Otherwise only position and
+	// icon survive and the model moves to the wrapped secondary metadata.
+	if (model && modelRoom >= 2) {
+		const truncated = truncateToWidth(model.text, modelRoom, "…");
+		const selected: TitleSegment[] = [];
+		for (const segment of full) {
+			if (segment.fixed) selected.push(segment);
+			else if (segment === model) selected.push({ ...segment, text: truncated });
+		}
+		return {
+			selected: selected.map((segment) => segment.text),
+			dropped: full.filter((segment) => !segment.fixed && segment !== model),
+		};
+	}
 	return {
 		selected: fixed.map((segment) => segment.text),
 		dropped: full.filter((segment) => !segment.fixed),
 	};
+}
+
+/** Ordered content identity of one message, so in-place live growth reseeds topology. */
+function messageContentIdentity(content: unknown): string {
+	if (typeof content === "string") return `text:${content.length}`;
+	if (!Array.isArray(content)) return "none";
+	const parts = content.map((part) => {
+		if (!part || typeof part !== "object") return "?";
+		const record = part as Record<string, unknown>;
+		if (record.type === "toolCall") {
+			return `tool:${String(record.id ?? "")}:${String(record.name ?? "")}`;
+		}
+		return `part:${String(record.type ?? "")}`;
+	});
+	return `parts:${content.length}:${parts.join(",")}`;
 }
 
 /**
@@ -550,6 +587,10 @@ export class SubagentThreadView implements Component {
 				role: record.role,
 				ts: record.timestamp,
 				id: record.toolCallId ?? record.id,
+				// A live partial assistant message grows in place: without its
+				// ordered content identity a newly streamed tool call would not
+				// reseed grouping before message_end.
+				content: messageContentIdentity(record.content),
 			});
 		}
 		return `${item.runId}:${item.result.taskId}:${messages.length}:${lastIdentity}`;

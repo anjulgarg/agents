@@ -648,6 +648,42 @@ function testSubagentDashboard(): void {
 		);
 	}
 
+	// ---------- thread: truncated model below the essentials threshold ----------
+	const belowThread = makeThread([persistentTask]);
+	for (const width of [26]) {
+		const lines = belowThread.render(width);
+		const title = stripAnsi(lines[0] ?? "");
+		const output = lines.map(stripAnsi).join("\n");
+		check(
+			`thread @${width}: truncated model stays between position and icon`,
+			title.includes("Subagent 1/1 · g… · ✓") &&
+				!title.includes("gpt-5.6 luna max") &&
+				!title.includes("168k/258k") &&
+				!title.includes("persistent"),
+			JSON.stringify(title),
+		);
+		check(
+			`thread @${width}: dropped context and mode move to metadata`,
+			output.includes("168k/258k") && output.includes("persistent"),
+			JSON.stringify(output.slice(0, 400)),
+		);
+		check(
+			`thread @${width}: exact width with truncated title`,
+			lines.every((line: string) => visibleWidth(line) === width),
+		);
+	}
+	const tinyThreadLines = belowThread.render(22);
+	const tinyThreadTitle = stripAnsi(tinyThreadLines[0] ?? "");
+	const tinyThreadOutput = tinyThreadLines.map(stripAnsi).join("\n");
+	check(
+		"thread: tiny widths keep position and icon with model in metadata",
+		tinyThreadTitle.includes("Subagent 1/1 · ✓") &&
+			!tinyThreadTitle.includes("gpt-5.6 luna max") &&
+			tinyThreadOutput.includes("gpt-5.6 luna max") &&
+			tinyThreadLines.every((line: string) => visibleWidth(line) === 22),
+		JSON.stringify(tinyThreadTitle),
+	);
+
 	// ---------- thread: context known / null / absent states ----------
 	const unknownContext = makeThread([
 		subagentTask({ contextUsage: { tokens: null, contextWindow: 258000, percent: null } }),
@@ -776,6 +812,35 @@ function testSubagentDashboard(): void {
 	const firstRender = stabilityView.render(120).join("\n");
 	const secondRender = stabilityView.render(120).join("\n");
 	check("thread: repeated renders are identical", firstRender === secondRender);
+
+	// ---------- thread: in-place live message growth reseeds grouping ----------
+	let liveMessages: any[] = [
+		assistantMessage([toolCallPart("live-1", "read", { path: "/tmp/a.ts" })], 100),
+	];
+	const liveGrow = makeThread(
+		[subagentTask({ done: false, status: "running", messages: liveMessages })],
+		{ tui: tallTui },
+	);
+	const liveInitial = liveGrow
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check("thread: initial live call renders individually", liveInitial.includes("read /tmp/a.ts"));
+	// Same message count, same last-message role/timestamp: only the in-place
+	// ordered content changes, so only a content-aware identity reseeds.
+	liveMessages[0].content = [
+		toolCallPart("live-1", "read", { path: "/tmp/a.ts" }),
+		toolCallPart("live-2", "read", { path: "/tmp/b.ts" }),
+	];
+	const liveGrown = liveGrow
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check(
+		"thread: in-place live growth reseeds grouping before message_end",
+		liveGrown.includes("read\n├─ /tmp/a.ts\n└─ /tmp/b.ts"),
+		JSON.stringify(liveGrown.slice(0, 400)),
+	);
 
 	// ---------- thread: tracker isolation across selected agents ----------
 	const readAgent = subagentTask({
@@ -1010,6 +1075,23 @@ function testSubagentDashboard(): void {
 		"selectTitleSegments reports dropped context and mode",
 		narrowSegments.dropped.map((segment) => segment.text).join(",") === "168k/258k,persistent",
 		JSON.stringify(narrowSegments.dropped),
+	);
+	const truncatedSegments = selectTitleSegments(24, fiveSegments);
+	check(
+		"selectTitleSegments truncates the model below the essentials threshold",
+		truncatedSegments.selected.map(stripAnsi).join(" · ") === "Subagent 1/1 · g… · ✓" &&
+			truncatedSegments.dropped.map((segment) => segment.text).join(",") === "168k/258k,persistent",
+		JSON.stringify(truncatedSegments.selected),
+	);
+	check(
+		"selectTitleSegments keeps only position and icon at tiny widths",
+		selectTitleSegments(1, fiveSegments).selected.join(" · ") === "Subagent 1/1 · ✓",
+		JSON.stringify(selectTitleSegments(1, fiveSegments).selected),
+	);
+	check(
+		"selectTitleSegments never throws at zero width",
+		selectTitleSegments(0, fiveSegments).selected.join(" · ") === "Subagent 1/1 · ✓",
+		JSON.stringify(selectTitleSegments(0, fiveSegments).selected),
 	);
 }
 
