@@ -7,7 +7,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { getSessionArguments, RpcChild, validatePersistentChildSession } from "./rpc-client.ts";
+import {
+	getSessionArguments,
+	RpcChild,
+	validateContextUsageSnapshot,
+	validatePersistentChildSession,
+} from "./rpc-client.ts";
 
 let failed = 0;
 
@@ -254,6 +259,241 @@ try {
 	}
 	await fs.promises.rm(continuityRoot, { recursive: true, force: true });
 }
+
+// --------------------------------------------------------------------------
+// Context telemetry: get_session_stats over the correlated RPC command channel.
+// --------------------------------------------------------------------------
+const validSnapshot = { tokens: 168000, contextWindow: 258000, percent: 65.11627906976744 };
+const fullStatsResponse = {
+	sessionFile: "/private/child-session.json",
+	sessionId: "child-1",
+	userMessages: 3,
+	assistantMessages: 2,
+	toolCalls: 4,
+	toolResults: 4,
+	totalMessages: 9,
+	tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, total: 150 },
+	cost: 0.5,
+	contextUsage: validSnapshot,
+};
+check(
+	"context snapshot accepts finite non-negative values",
+	JSON.stringify(validateContextUsageSnapshot(validSnapshot)) === JSON.stringify(validSnapshot),
+	JSON.stringify(validateContextUsageSnapshot(validSnapshot)),
+);
+check(
+	"context snapshot accepts unknown tokens and percent",
+	JSON.stringify(
+		validateContextUsageSnapshot({ tokens: null, contextWindow: 258000, percent: null }),
+	) === '{"tokens":null,"contextWindow":258000,"percent":null}',
+	JSON.stringify(
+		validateContextUsageSnapshot({ tokens: null, contextWindow: 258000, percent: null }),
+	),
+);
+check(
+	"context validation rejects NaN, negative, and malformed values",
+	[
+		{ tokens: Number.NaN, contextWindow: 258000, percent: 0 },
+		{ tokens: 1, contextWindow: Number.POSITIVE_INFINITY, percent: 0 },
+		{ tokens: 1, contextWindow: 258000, percent: -1 },
+		{ tokens: 1, contextWindow: -258000, percent: 0 },
+		{ tokens: "100", contextWindow: 258000, percent: 0 },
+		{ tokens: 1, contextWindow: 258000 },
+		null,
+		"garbage",
+	].every((candidate) => validateContextUsageSnapshot(candidate) === undefined),
+	"at least one malformed candidate was accepted",
+);
+
+const statsDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-rpc-stats-test-"));
+const statsPi = path.join(statsDir, "stats-pi.mjs");
+const statsPrompt = path.join(statsDir, "system.md");
+await fs.promises.writeFile(statsPrompt, "test", "utf8");
+await fs.promises.writeFile(
+	statsPi,
+	`#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split("\\n");
+  buffer = lines.pop() || "";
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const command = JSON.parse(line);
+    if (command.type === "prompt") {
+      console.log(JSON.stringify({ type: "response", id: command.id, command: "prompt", success: true }));
+      console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } }));
+      console.log(JSON.stringify({ type: "agent_settled" }));
+      continue;
+    }
+    if (command.type === "get_session_stats") {
+      const config = JSON.parse(readFileSync(join(process.cwd(), "stats-config.json"), "utf8"));
+      const entry = config.byId?.[command.id] ?? config.default ?? {};
+      const delay = entry.delay ?? 0;
+      const respond = () => {
+        if (entry.success === false) {
+          console.log(JSON.stringify({ type: "response", id: command.id, command: "get_session_stats", success: false, error: entry.error ?? "unsupported command" }));
+          return;
+        }
+        console.log(JSON.stringify({ type: "response", id: command.id, command: "get_session_stats", success: true, data: entry.data ?? {} }));
+      };
+      if (delay > 0) setTimeout(respond, delay); else respond();
+      continue;
+    }
+    console.log(JSON.stringify({ type: "response", id: command.id, command: command.type, success: false, error: "unsupported" }));
+  }
+});
+`,
+	{ encoding: "utf8", mode: 0o755 },
+);
+const writeStatsConfig = (config: unknown) =>
+	fs.promises.writeFile(path.join(statsDir, "stats-config.json"), JSON.stringify(config), "utf8");
+const statsChildOptions = {
+	cwd: statsDir,
+	model: "test/model",
+	thinking: "off" as const,
+	tools: ["read"],
+	systemPromptFile: statsPrompt,
+	projectTrusted: false,
+	piBin: statsPi,
+};
+
+await writeStatsConfig({ default: { data: fullStatsResponse } });
+const statsChild = new RpcChild(statsChildOptions);
+try {
+	const snapshot = await statsChild.refreshSessionStats();
+	check(
+		"stats happy path exposes validated context occupancy",
+		snapshot?.tokens === 168000 &&
+			snapshot.contextWindow === 258000 &&
+			Math.abs((snapshot.percent ?? 0) - 65.116) < 0.01,
+		JSON.stringify(snapshot),
+	);
+	const copy = statsChild.contextSnapshot();
+	check(
+		"contextSnapshot returns a defensive copy",
+		copy !== undefined &&
+			copy !== snapshot &&
+			JSON.stringify(copy) === JSON.stringify(validSnapshot),
+		JSON.stringify(copy),
+	);
+	copy!.tokens = 1;
+	check(
+		"mutating the exposed copy never changes the child snapshot",
+		statsChild.contextSnapshot()?.tokens === 168000,
+		JSON.stringify(statsChild.contextSnapshot()),
+	);
+	check(
+		"context refresh never changes cumulative UsageStats",
+		statsChild.usage.input === 0 &&
+			statsChild.usage.output === 0 &&
+			statsChild.usage.turns === 0 &&
+			statsChild.usage.cost === 0,
+		JSON.stringify(statsChild.usage),
+	);
+	const exposed = JSON.stringify(statsChild.contextSnapshot());
+	check(
+		"snapshot carries exactly tokens/contextWindow/percent and no sessionFile or full stats",
+		Object.keys(statsChild.contextSnapshot()!).sort().join(",") ===
+			"contextWindow,percent,tokens" &&
+			!exposed.includes("sessionFile") &&
+			!exposed.includes("userMessages") &&
+			!exposed.includes("cost"),
+		exposed,
+	);
+} finally {
+	await statsChild.terminate();
+}
+
+await writeStatsConfig({
+	byId: {
+		"cmd-1": {
+			delay: 60,
+			data: { contextUsage: { tokens: 1000, contextWindow: 258000, percent: 0.4 } },
+		},
+		"cmd-2": {
+			delay: 10,
+			data: { contextUsage: { tokens: 2000, contextWindow: 258000, percent: 0.8 } },
+		},
+	},
+});
+const orderChild = new RpcChild(statsChildOptions);
+try {
+	const first = orderChild.refreshSessionStats();
+	const second = orderChild.refreshSessionStats();
+	const [firstResult, secondResult] = await Promise.all([first, second]);
+	check(
+		"reverse-order refresh responses keep only the newest snapshot",
+		orderChild.contextSnapshot()?.tokens === 2000 &&
+			firstResult?.tokens === 2000 &&
+			secondResult?.tokens === 2000 &&
+			orderChild.contextSnapshot()?.tokens !== 1000,
+		`first=${JSON.stringify(firstResult)} second=${JSON.stringify(secondResult)} latest=${JSON.stringify(orderChild.contextSnapshot())}`,
+	);
+} finally {
+	await orderChild.terminate();
+}
+
+await writeStatsConfig({
+	byId: {
+		"cmd-1": { data: { contextUsage: { tokens: 168000, contextWindow: 258000, percent: 65.1 } } },
+		"cmd-2": { data: { contextUsage: { tokens: null, contextWindow: 258000, percent: null } } },
+	},
+});
+const compactChild = new RpcChild(statsChildOptions);
+try {
+	await compactChild.refreshSessionStats();
+	const afterCompaction = await compactChild.refreshSessionStats();
+	check(
+		"post-compaction unknown tokens replace the previous known occupancy",
+		afterCompaction?.tokens === null &&
+			afterCompaction.contextWindow === 258000 &&
+			afterCompaction.percent === null &&
+			compactChild.contextSnapshot()?.tokens === null &&
+			compactChild.contextSnapshot()?.contextWindow === 258000,
+		JSON.stringify(afterCompaction),
+	);
+} finally {
+	await compactChild.terminate();
+}
+
+const failureCases: Array<{ name: string; config: unknown }> = [
+	{
+		name: "unsupported stats command leaves context unavailable",
+		config: { default: { success: false, error: "unsupported command" } },
+	},
+	{
+		name: "negative stats values are rejected without persisting",
+		config: {
+			default: { data: { contextUsage: { tokens: 100, contextWindow: 258000, percent: -1 } } },
+		},
+	},
+	{
+		name: "missing contextUsage keeps sessionFile out of the projection",
+		config: { default: { data: { sessionFile: "/private/session.json" } } },
+	},
+	{
+		name: "structural garbage stats are rejected",
+		config: { default: { data: { contextUsage: { tokens: "many", contextWindow: 0 } } } },
+	},
+];
+const failingChild = new RpcChild(statsChildOptions);
+try {
+	for (const { name, config } of failureCases) {
+		await writeStatsConfig(config);
+		const snapshot = await failingChild.refreshSessionStats();
+		check(
+			name,
+			snapshot === undefined && failingChild.contextSnapshot() === undefined,
+			JSON.stringify({ snapshot, stored: failingChild.contextSnapshot() }),
+		);
+	}
+} finally {
+	await failingChild.terminate();
+}
+await fs.promises.rm(statsDir, { recursive: true, force: true });
 
 console.log(
 	failed === 0 ? "\nAll RPC UI bridge tests passed" : `\n${failed} RPC UI bridge test(s) FAILED`,

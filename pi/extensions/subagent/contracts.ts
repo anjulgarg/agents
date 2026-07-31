@@ -70,6 +70,18 @@ export interface UsageStats {
 	turns: number;
 }
 
+/**
+ * Bounded snapshot of a child's current context-window occupancy from Pi RPC
+ * `get_session_stats`. Kept separate from cumulative billed UsageStats. `tokens`
+ * and `percent` are null when occupancy is unknown (e.g. right after compaction).
+ * Never carries sessionFile or the complete SessionStats response.
+ */
+export interface ContextUsageSnapshot {
+	tokens: number | null;
+	contextWindow: number;
+	percent: number | null;
+}
+
 export interface ResultRef {
 	runId: string;
 	taskId: string;
@@ -131,6 +143,8 @@ export interface SubagentResultView {
 	messages?: Message[];
 	uiState?: ChildUiSnapshot;
 	pid?: number;
+	/** Latest validated context occupancy; absent in legacy records. */
+	contextUsage?: ContextUsageSnapshot;
 }
 
 export interface SubagentDetails {

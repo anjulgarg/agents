@@ -3,7 +3,13 @@
  *
  * Run: npm run test:extensions
  */
-import { emptyUsage, type RpcChildOptions, type RpcEvent, type UsageStats } from "./rpc-client.ts";
+import {
+	emptyUsage,
+	type ContextUsageSnapshot,
+	type RpcChildOptions,
+	type RpcEvent,
+	type UsageStats,
+} from "./rpc-client.ts";
 import { Supervisor, type ChildHandle, type TaskSpawnSpec } from "./supervisor.ts";
 
 interface Wake {
@@ -88,6 +94,21 @@ class DeferredTerminateChild extends FakeChild {
 
 	finishTermination(): void {
 		this.termination.resolve(true);
+	}
+}
+
+/** Fake child that supports the optional context telemetry contract. */
+class TelemetryFakeChild extends DeferredTerminateChild {
+	/** Per-call outcomes; unset entries hang forever like a non-responsive stats command. */
+	refreshResults: Array<ContextUsageSnapshot | undefined | "hang" | "reject"> = [];
+	refreshCalls = 0;
+
+	refreshSessionStats(): Promise<ContextUsageSnapshot | undefined> {
+		const outcome = this.refreshResults[this.refreshCalls] ?? "hang";
+		this.refreshCalls++;
+		if (outcome === "hang") return new Promise<ContextUsageSnapshot | undefined>(() => {});
+		if (outcome === "reject") return Promise.reject(new Error("stats unavailable"));
+		return Promise.resolve(outcome === undefined ? undefined : { ...outcome });
 	}
 }
 
@@ -972,6 +993,142 @@ async function testUnexpectedExitFailsImmediately(): Promise<void> {
 	}
 }
 
+async function testLiveContextRefreshOnAssistantTurn(): Promise<void> {
+	const name = "s. completed assistant turns and compaction events refresh context";
+	const children: TelemetryFakeChild[] = [];
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		sendUserMessage: () => {},
+		createChild: (options) => {
+			const child = new TelemetryFakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+	try {
+		const { runId } = supervisor.spawn([baseSpec({ task: "context live" })]);
+		const child = children[0]!;
+		child.refreshResults = [
+			{ tokens: 168000, contextWindow: 258000, percent: 65.1 },
+			{ tokens: null, contextWindow: 258000, percent: null },
+		];
+		child.emit({ type: "message_end", message: { role: "assistant", content: [] } });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		let task = supervisor.runs.get(runId)?.tasks[0];
+		assert(
+			name,
+			child.refreshCalls === 1 &&
+				task?.contextUsage?.tokens === 168000 &&
+				task.contextUsage.contextWindow === 258000,
+			`calls=${child.refreshCalls} context=${JSON.stringify(task?.contextUsage)}`,
+		);
+		// Non-assistant message_end is not a context-changing event.
+		child.emit({ type: "message_end", message: { role: "user", content: [] } });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert(
+			`${name} (user turns do not refresh)`,
+			child.refreshCalls === 1,
+			`calls=${child.refreshCalls}`,
+		);
+		// Compaction refresh retains unknown occupancy instead of stale known tokens.
+		child.emit({ type: "compaction" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		task = supervisor.runs.get(runId)?.tasks[0];
+		assert(
+			`${name} (compaction retains unknown occupancy)`,
+			child.refreshCalls === 2 &&
+				task?.contextUsage?.tokens === null &&
+				task.contextUsage.contextWindow === 258000 &&
+				task.contextUsage.percent === null,
+			`calls=${child.refreshCalls} context=${JSON.stringify(task?.contextUsage)}`,
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
+async function testFinalRefreshAppliesBeforeCleanup(): Promise<void> {
+	const name = "t. one final refresh settles context before confirmed cleanup";
+	const children: TelemetryFakeChild[] = [];
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		sendUserMessage: () => {},
+		createChild: (options) => {
+			const child = new TelemetryFakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+	try {
+		const { runId, taskIds } = supervisor.spawn([baseSpec({ task: "final context" })]);
+		const child = children[0]!;
+		child.refreshResults = [{ tokens: 168000, contextWindow: 258000, percent: 65.1 }];
+		child.settle("final result");
+		child.finishTermination();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const task = supervisor.runs.get(runId)?.tasks[0];
+		const result = supervisor.result(runId, taskIds[0]);
+		assert(
+			name,
+			child.refreshCalls === 1 &&
+				task?.status === "done" &&
+				task.reaped === true &&
+				task.contextUsage?.tokens === 168000 &&
+				result.output === "final result" &&
+				result.error === undefined,
+			`calls=${child.refreshCalls} task=${JSON.stringify(task)} result=${JSON.stringify(result)}`,
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
+async function testFinalRefreshFailureNeverBlocksCleanup(): Promise<void> {
+	for (const variant of ["hang", "reject", "unavailable"] as const) {
+		const name = `u. ${variant} final refresh: bounded cleanup, result unchanged, context unavailable`;
+		const children: TelemetryFakeChild[] = [];
+		const supervisor = new Supervisor({
+			watchdogTickMs: 0,
+			sendUserMessage: () => {},
+			createChild: (options) => {
+				const child = new TelemetryFakeChild(options);
+				children.push(child);
+				return child;
+			},
+		});
+		try {
+			const { runId, taskIds } = supervisor.spawn([baseSpec({ task: `final ${variant}` })]);
+			const child = children[0]!;
+			child.refreshResults = [variant === "unavailable" ? undefined : variant];
+			const startedAt = Date.now();
+			child.settle("original completion");
+			child.finishTermination();
+			let reaped = false;
+			for (let attempt = 0; attempt < 200 && !reaped; attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+				reaped = supervisor.runs.get(runId)?.tasks[0]?.reaped === true;
+			}
+			const elapsed = Date.now() - startedAt;
+			const task = supervisor.runs.get(runId)?.tasks[0];
+			const result = supervisor.result(runId, taskIds[0]);
+			assert(
+				name,
+				reaped &&
+					task?.status === "done" &&
+					task.contextUsage === undefined &&
+					result.output === "original completion" &&
+					result.error === undefined,
+				`reaped=${reaped} task=${JSON.stringify(task)} result=${JSON.stringify(result)}`,
+			);
+			if (variant === "hang") {
+				assert(`${name} (bounded wait)`, elapsed >= 900 && elapsed < 2500, `elapsed=${elapsed}ms`);
+			}
+		} finally {
+			supervisor.dispose();
+		}
+	}
+}
+
 async function main(): Promise<void> {
 	await testPersistentMetadata();
 	await testSpawnReturnsBeforeCompletion();
@@ -996,6 +1153,9 @@ async function main(): Promise<void> {
 	await testUnconfirmedCleanupPausesQueue();
 	await testAbortCannotSucceed();
 	await testUnexpectedExitFailsImmediately();
+	await testLiveContextRefreshOnAssistantTurn();
+	await testFinalRefreshAppliesBeforeCleanup();
+	await testFinalRefreshFailureNeverBlocksCleanup();
 
 	if (failed > 0) {
 		console.log(`\n${failed} failure(s)`);

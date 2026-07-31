@@ -81,6 +81,7 @@ const { applyChildUiRequest, emptyChildUiSnapshot, emptyUsage } = await import(r
 type RpcChildOptions = import("./rpc-client.ts").RpcChildOptions;
 type RpcEvent = import("./rpc-client.ts").RpcEvent;
 type UsageStats = import("./rpc-client.ts").UsageStats;
+type ContextUsageSnapshot = import("./rpc-client.ts").ContextUsageSnapshot;
 
 const { Supervisor } = await import(supervisorPath);
 type SupervisorInstance = InstanceType<typeof Supervisor>;
@@ -174,6 +175,29 @@ class RetryCleanupChild extends FakeChild {
 	terminate(): Promise<boolean> {
 		this.cleanupAttempts++;
 		return Promise.resolve(this.cleanupAttempts > 1);
+	}
+}
+
+/** Fake child with the optional context telemetry contract. */
+class StatsFakeChild extends FakeChild {
+	statsResult: ContextUsageSnapshot | "hang" = {
+		tokens: 168000,
+		contextWindow: 258000,
+		percent: 65.11627906976744,
+	};
+	refreshCalls = 0;
+
+	refreshSessionStats(): Promise<ContextUsageSnapshot | undefined> {
+		this.refreshCalls++;
+		if (this.statsResult === "hang") {
+			return new Promise<ContextUsageSnapshot | undefined>(() => {});
+		}
+		return Promise.resolve(this.statsResult ? { ...this.statsResult } : undefined);
+	}
+
+	terminate(): Promise<boolean> {
+		this.killed = true;
+		return Promise.resolve(true);
 	}
 }
 
@@ -2536,6 +2560,204 @@ async function testPublicConcurrencyLimit(): Promise<void> {
 	}
 }
 
+async function testContextTelemetryEphemeralProjection(): Promise<void> {
+	const name = "l. ephemeral tasks project the latest bounded context snapshot";
+	const pi = new FakePi();
+	const children: StatsFakeChild[] = [];
+	const supervisor = install(pi, children, {
+		createChild: (options: RpcChildOptions) => {
+			const child = new StatsFakeChild({ ...options, pid: 45_000 + children.length });
+			children.push(child);
+			return child;
+		},
+	});
+	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-f1-ephemeral-"));
+	try {
+		const spawned = await callTool(
+			pi,
+			"subagent",
+			{ task: "telemetry projection" },
+			fakeCtx({ cwd: promptRoot }),
+		);
+		const runId = spawned.details.runId as string;
+		const taskId = spawned.details.results[0].taskId as string;
+		const child = children[0]!;
+		child.emit({ type: "message_end", message: { role: "assistant", content: [] } });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const live = supervisor.runs.get(runId)?.tasks[0];
+		assert(
+			`${name} (live refresh applied)`,
+			child.refreshCalls === 1 && live?.contextUsage?.tokens === 168000,
+			`calls=${child.refreshCalls} context=${JSON.stringify(live?.contextUsage)}`,
+		);
+		child.settle("telemetry done", { input: 7, output: 3 });
+		for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+		const update = pi.emittedUpdates.at(-1) as any;
+		const result = update?.results?.[0];
+		assert(
+			name,
+			result?.contextUsage?.tokens === 168000 &&
+				result.contextUsage.contextWindow === 258000 &&
+				Math.abs((result.contextUsage.percent ?? 0) - 65.116) < 0.01 &&
+				typeof result.usage.cost === "number",
+			`update=${JSON.stringify(update)}`,
+		);
+		const entry = pi.entries.findLast(
+			(e) =>
+				e.customType === "subagent-state" &&
+				(e.data as any)?.run?.tasks?.some((t: any) => t.taskId === taskId),
+		);
+		const persisted = entry?.data?.run?.tasks?.find((t: any) => t.taskId === taskId);
+		assert(
+			`${name} (persisted bounded snapshot only)`,
+			JSON.stringify(persisted?.contextUsage) ===
+				JSON.stringify({ tokens: 168000, contextWindow: 258000, percent: 65.11627906976744 }) &&
+				!JSON.stringify(entry).includes("sessionFile"),
+			`persisted=${JSON.stringify(persisted)}`,
+		);
+	} finally {
+		supervisor.dispose();
+		await fs.promises.rm(promptRoot, { recursive: true, force: true });
+	}
+}
+
+async function testContextTelemetryPersistentRestore(): Promise<void> {
+	const name = "m. persistent context snapshot survives reaping and historical reconstruction";
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-f1-persist-"));
+	const cwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-f1-cwd-"));
+	const makeChild = (children: StatsFakeChild[]) => (options: RpcChildOptions) => {
+		const child = new StatsFakeChild({ ...options, pid: 46_000 + children.length });
+		children.push(child);
+		return child;
+	};
+	const pi = new FakePi();
+	const children: StatsFakeChild[] = [];
+	const supervisor = install(pi, children, {
+		persistentStateRoot: root,
+		createChild: makeChild(children),
+	});
+	const ctx = persistentCtx(pi, "f1-parent", { cwd });
+	try {
+		const spawned = await callTool(
+			pi,
+			"subagent",
+			{ task: "durable telemetry", mode: "persistent" },
+			ctx,
+		);
+		const taskId = spawned.details.results[0].taskId as string;
+		const sessionId = spawned.details.results[0].sessionId as string;
+		children[0]!.settle("durable done");
+		for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+		const entry = pi.entries.findLast(
+			(e) =>
+				e.customType === "subagent-state" &&
+				(e.data as any)?.run?.tasks?.some((t: any) => t.taskId === taskId),
+		);
+		const persisted = entry?.data?.run?.tasks?.find((t: any) => t.taskId === taskId);
+		assert(
+			`${name} (reaped record persisted)`,
+			persisted?.reaped === true &&
+				JSON.stringify(persisted?.contextUsage) ===
+					JSON.stringify({ tokens: 168000, contextWindow: 258000, percent: 65.11627906976744 }) &&
+				!JSON.stringify(entry).includes("sessionFile"),
+			`persisted=${JSON.stringify(persisted)}`,
+		);
+
+		const reloadedPi = new FakePi();
+		reloadedPi.entries = [...pi.entries];
+		const reloadedChildren: StatsFakeChild[] = [];
+		const reloadedSupervisor = install(reloadedPi, reloadedChildren, {
+			persistentStateRoot: root,
+			createChild: makeChild(reloadedChildren),
+		});
+		const reloadedCtx = persistentCtx(reloadedPi, "f1-parent", { cwd });
+		let component: any;
+		try {
+			await reloadedPi.emit("session_start", {}, reloadedCtx);
+			// A legacy task record without contextUsage must remain readable.
+			reloadedPi.entries.push({
+				type: "custom",
+				customType: "subagent-state",
+				data: {
+					run: {
+						runId: "legacy-run",
+						startedAt: 3,
+						tasks: [
+							{
+								taskId: "legacy-run:0",
+								index: 0,
+								task: "legacy task",
+								status: "done",
+								model: "test/model",
+								thinking: "off",
+								workspace: "shared",
+								cwd,
+								output: "legacy output",
+								usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.01, turns: 1 },
+								reaped: true,
+							},
+						],
+					},
+				},
+			});
+			const shortcut = reloadedPi.shortcuts.get("f6") as { handler: (ctx: any) => Promise<void> };
+			await shortcut.handler(
+				fakeCtx({
+					cwd,
+					mode: "tui",
+					sessionManager: {
+						isPersisted: () => true,
+						getSessionId: () => "f1-parent",
+						getEntries: () => reloadedPi.entries,
+						getBranch: () => reloadedPi.entries,
+					},
+					ui: {
+						notify: () => {},
+						custom: async (factory: any) => {
+							component = factory(
+								{ terminal: { rows: 40, columns: 120 }, requestRender() {}, invalidate() {} },
+								{
+									fg: (_key: string, text: string) => text,
+									bg: (_key: string, text: string) => text,
+									bold: (text: string) => text,
+								},
+								{},
+								() => {},
+							);
+						},
+					},
+				}),
+			);
+			const items = component?.groups()?.flatMap((group: any) => group.items) ?? [];
+			const restored = items.find((item: any) => item.result.taskId === taskId)?.result;
+			const legacy = items.find((item: any) => item.result.taskId === "legacy-run:0")?.result;
+			assert(
+				name,
+				restored?.contextUsage?.tokens === 168000 &&
+					restored.contextUsage.contextWindow === 258000 &&
+					restored.mode === "persistent" &&
+					restored.sessionId === sessionId &&
+					legacy?.contextUsage === undefined &&
+					legacy?.status === "done",
+				`items=${JSON.stringify(
+					items.map((item: any) => ({
+						taskId: item.result.taskId,
+						mode: item.result.mode,
+						contextUsage: item.result.contextUsage,
+					})) as any,
+				)}`,
+			);
+		} finally {
+			component?.dispose?.();
+			reloadedSupervisor.dispose();
+		}
+	} finally {
+		supervisor.dispose();
+		await fs.promises.rm(root, { recursive: true, force: true });
+		await fs.promises.rm(cwd, { recursive: true, force: true });
+	}
+}
+
 async function main(): Promise<void> {
 	await testSelfContainedDelegationGuidance();
 	await testNonBlockingReturn();
@@ -2570,6 +2792,8 @@ async function main(): Promise<void> {
 	await testF6PrefersActiveTeam();
 	await testF6RetainsPersistentConversation();
 	testGenericChildUiReducer();
+	await testContextTelemetryEphemeralProjection();
+	await testContextTelemetryPersistentRestore();
 
 	if (failed > 0) {
 		console.log(`\n${failed} failing`);

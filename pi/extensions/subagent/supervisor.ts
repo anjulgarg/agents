@@ -10,6 +10,7 @@ import {
 	type RpcEvent,
 } from "./rpc-client.ts";
 import type {
+	ContextUsageSnapshot,
 	PersistentChildSession,
 	SubagentMode,
 	ThinkingLevel,
@@ -75,6 +76,8 @@ export interface TaskState {
 	error?: string;
 	manualKill?: boolean;
 	usage: UsageStats;
+	/** Latest validated context occupancy; cleared when a newer refresh fails. */
+	contextUsage?: ContextUsageSnapshot;
 	child?: ChildHandle;
 	/** Spawn inputs retained while queued; never persisted. */
 	spawnSpec?: TaskSpawnSpec;
@@ -122,6 +125,9 @@ export interface ChildHandle {
 	/** Available on real RPC children; optional for injected test children. */
 	transcript?(): readonly Message[];
 	uiSnapshot?(): ChildUiSnapshot;
+	/** Present on RpcChild; optional for injected test children. */
+	refreshSessionStats?(): Promise<ContextUsageSnapshot | undefined>;
+	contextSnapshot?(): ContextUsageSnapshot | undefined;
 	/** Graceful then forced process-group termination; true only after confirmed exit. */
 	terminate?(): Promise<boolean>;
 	forceKill?(): void;
@@ -230,6 +236,8 @@ const DEFAULT_TASK_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_WATCHDOG_TICK_MS = 30_000;
 const DEFAULT_MAX_ACTIVE_CHILDREN = 8;
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+/** Bound on the final context refresh before normal process termination begins. */
+const FINAL_CONTEXT_REFRESH_TIMEOUT_MS = 1000;
 const STDERR_TAIL_MAX = 500;
 const ANSI_ESCAPE_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 
@@ -839,6 +847,7 @@ export class Supervisor {
 			event.type === "agent_settled"
 		)
 			task.activityVersion++;
+		if (this.isContextChangingEvent(event)) this.refreshContext(runId, taskId);
 		if (task.status === "running") this.detectors.get(taskId)?.observe(event, now);
 		if (event.type === "agent_settled") {
 			this.beginFinalization(
@@ -854,6 +863,42 @@ export class Supervisor {
 			return;
 		}
 		this.notifyListeners();
+	}
+
+	private refreshContext(runId: string, taskId: string): void {
+		const task = this.findTask(runId, taskId);
+		if (
+			!task ||
+			isTerminalStatus(task.status) ||
+			task.finalizing ||
+			!task.child?.refreshSessionStats
+		)
+			return;
+		void task.child
+			.refreshSessionStats()
+			.then((snapshot) => {
+				const current = this.findTask(runId, taskId);
+				if (!current || current !== task || isTerminalStatus(current.status) || current.finalizing)
+					return;
+				current.contextUsage = snapshot;
+				this.notifyListeners();
+			})
+			.catch(() => {
+				const current = this.findTask(runId, taskId);
+				if (!current || current !== task || isTerminalStatus(current.status) || current.finalizing)
+					return;
+				current.contextUsage = undefined;
+				this.notifyListeners();
+			});
+	}
+
+	/** A completed assistant turn or a session compaction changes context occupancy. */
+	private isContextChangingEvent(event: RpcEvent): boolean {
+		if (event.type === "message_end") {
+			const message = event.message as { role?: string } | undefined;
+			return message?.role === "assistant";
+		}
+		return event.type === "compaction" || event.type === "session_compacted";
 	}
 
 	private onChildExit(runId: string, taskId: string, code: number): void {
@@ -941,6 +986,51 @@ export class Supervisor {
 			this.finishFinalization(runId, taskId, result, true);
 			return;
 		}
+		if (!task.child.refreshSessionStats) {
+			this.terminateTask(runId, taskId, result);
+			return;
+		}
+		void this.finalContextRefresh(task).then(() => {
+			const current = this.findTask(runId, taskId);
+			if (current === task && current.finalizing) this.terminateTask(runId, taskId, result);
+		});
+	}
+
+	/**
+	 * One bounded final context refresh before termination. Timeout, child exit,
+	 * unsupported command, malformed payload, or rejection clears current context
+	 * availability but never blocks confirmed process cleanup or changes task
+	 * success solely because telemetry failed.
+	 */
+	private finalContextRefresh(task: TaskState): Promise<void> {
+		const child = task.child;
+		if (!child?.refreshSessionStats) return Promise.resolve();
+		let timedOut = false;
+		let timer: NodeJS.Timeout | undefined;
+		const timeout = new Promise<void>((resolve) => {
+			timer = setTimeout(() => {
+				timedOut = true;
+				resolve();
+			}, FINAL_CONTEXT_REFRESH_TIMEOUT_MS);
+			timer.unref?.();
+		});
+		const refresh = child
+			.refreshSessionStats()
+			.then((snapshot) => {
+				if (!timedOut) task.contextUsage = snapshot;
+			})
+			.catch(() => {
+				if (!timedOut) task.contextUsage = undefined;
+			});
+		return Promise.race([timeout, refresh]).then(() => {
+			if (timer) clearTimeout(timer);
+			if (timedOut) task.contextUsage = undefined;
+		});
+	}
+
+	private terminateTask(runId: string, taskId: string, result: FinalizationResult): void {
+		const task = this.findTask(runId, taskId);
+		if (!task || !task.finalizing || !task.child) return;
 		void task.child
 			.terminate()
 			.then((reaped) => this.finishFinalization(runId, taskId, result, reaped))

@@ -4,9 +4,19 @@ import * as path from "node:path";
 
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 
-import type { PersistentChildSession, ThinkingLevel, UsageStats } from "./contracts.ts";
+import type {
+	ContextUsageSnapshot,
+	PersistentChildSession,
+	ThinkingLevel,
+	UsageStats,
+} from "./contracts.ts";
 
-export { THINKING_LEVELS, type ThinkingLevel, type UsageStats } from "./contracts.ts";
+export {
+	THINKING_LEVELS,
+	type ContextUsageSnapshot,
+	type ThinkingLevel,
+	type UsageStats,
+} from "./contracts.ts";
 
 const KILL_GRACE_MS = 3000;
 const KILL_CONFIRM_MS = 1000;
@@ -125,6 +135,40 @@ export function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
 
+/**
+ * Validate a raw `contextUsage` payload into the bounded snapshot contract.
+ * Every numeric value must be finite and non-negative; `tokens` and `percent`
+ * may be null (unknown occupancy). Returns undefined for malformed input so
+ * partial or unsafe values are never persisted or projected.
+ */
+export function validateContextUsageSnapshot(value: unknown): ContextUsageSnapshot | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const candidate = value as Record<string, unknown>;
+	if (
+		typeof candidate.contextWindow !== "number" ||
+		!Number.isFinite(candidate.contextWindow) ||
+		candidate.contextWindow < 0
+	) {
+		return undefined;
+	}
+	const tokens = candidate.tokens;
+	if (tokens !== null && (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0)) {
+		return undefined;
+	}
+	const percent = candidate.percent;
+	if (
+		percent !== null &&
+		(typeof percent !== "number" || !Number.isFinite(percent) || percent < 0)
+	) {
+		return undefined;
+	}
+	return {
+		tokens: tokens as number | null,
+		contextWindow: candidate.contextWindow,
+		percent: percent as number | null,
+	};
+}
+
 export function validatePersistentChildSession(
 	descriptor: PersistentChildSession | undefined,
 ): PersistentChildSession | undefined {
@@ -197,6 +241,11 @@ export class RpcChild {
 	private uiState = emptyChildUiSnapshot();
 	private nextId = 1;
 	private terminating?: Promise<boolean>;
+	/** Latest validated context snapshot; never the complete SessionStats response. */
+	private contextSnapshotValue?: ContextUsageSnapshot;
+	/** Generation of the last applied refresh outcome (stored value or explicit clear). */
+	private contextOutcomeVersion = 0;
+	private nextContextVersion = 1;
 
 	stderr = "";
 	exited = false;
@@ -289,6 +338,43 @@ export class RpcChild {
 
 	uiSnapshot(): ChildUiSnapshot {
 		return applyChildUiRequest(this.uiState, { type: "snapshot" });
+	}
+
+	/** Latest validated context occupancy as a defensive copy, without sessionFile. */
+	contextSnapshot(): ContextUsageSnapshot | undefined {
+		const current = this.contextSnapshotValue;
+		return current === undefined ? undefined : { ...current };
+	}
+
+	/**
+	 * Request `get_session_stats` over the correlated command channel, validate the
+	 * response, and update the latest context snapshot. Monotonic request generation
+	 * rejects stale outcomes: only the newest issued refresh may replace or clear
+	 * the current snapshot. Non-fatal: command failure, unsupported command, child
+	 * exit, or malformed data resolves with undefined and clears availability.
+	 */
+	async refreshSessionStats(): Promise<ContextUsageSnapshot | undefined> {
+		if (this.exited) {
+			this.applyContextOutcome(this.nextContextVersion++, undefined);
+			return this.contextSnapshot();
+		}
+		const version = this.nextContextVersion++;
+		let response: any;
+		try {
+			response = await this.command({ type: "get_session_stats" });
+		} catch {
+			this.applyContextOutcome(version, undefined);
+			return this.contextSnapshot();
+		}
+		const snapshot = validateContextUsageSnapshot(response?.data?.contextUsage);
+		this.applyContextOutcome(version, snapshot);
+		return this.contextSnapshot();
+	}
+
+	private applyContextOutcome(version: number, snapshot: ContextUsageSnapshot | undefined): void {
+		if (version <= this.contextOutcomeVersion) return;
+		this.contextOutcomeVersion = version;
+		this.contextSnapshotValue = snapshot === undefined ? undefined : { ...snapshot };
 	}
 
 	get pid(): number | undefined {

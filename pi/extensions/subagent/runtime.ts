@@ -13,6 +13,7 @@ import {
 import { killSubagentRuns } from "./control.ts";
 
 import type {
+	ContextUsageSnapshot,
 	Handoff,
 	PersistentExecutionContract,
 	PersistentSessionView,
@@ -84,6 +85,8 @@ interface PersistedTask {
 	manualKill?: boolean;
 	output?: string;
 	usage?: UsageStats;
+	/** Optional bounded context snapshot; legacy records without it remain readable. */
+	contextUsage?: ContextUsageSnapshot;
 	worktree?: WorktreeInfo;
 	ownerToken?: string;
 	reaped?: boolean;
@@ -694,6 +697,7 @@ export class SubagentRuntime {
 					manualKill: task.manualKill,
 					output: task.output,
 					usage: { ...task.usage },
+					contextUsage: task.contextUsage,
 					worktree: meta?.worktree,
 					ownerToken: task.ownerToken,
 					reaped: task.reaped,
@@ -1092,6 +1096,7 @@ export class SubagentRuntime {
 					usage: task.usage ?? emptyUsage(),
 					status: isTerminalStatus(task.status) ? task.status : "failed",
 					pid: task.pid,
+					contextUsage: task.contextUsage,
 				})),
 			});
 		}
@@ -1127,6 +1132,7 @@ export class SubagentRuntime {
 			messages: messages ? [...messages] : undefined,
 			uiState,
 			pid: childPid(task.child),
+			contextUsage: task.contextUsage,
 		};
 	}
 
@@ -1187,6 +1193,7 @@ export class SubagentRuntime {
 				usage: task.usage ?? emptyUsage(),
 				status: task.status,
 				pid: task.pid,
+				contextUsage: task.contextUsage,
 			})),
 		};
 	}
