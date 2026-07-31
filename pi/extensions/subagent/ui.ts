@@ -5,12 +5,15 @@ import {
 	UserMessageComponent,
 	getMarkdownTheme,
 	type Theme,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
 	Markdown,
 	matchesKey,
 	Text,
 	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
 	type Component,
 	type TUI,
 } from "@earendil-works/pi-tui";
@@ -21,14 +24,133 @@ import {
 	renderHeader,
 	renderSplitPane,
 	ScrollViewportController,
+	seedSessionTopology,
 	SelectableViewportController,
 	TOOL_CHAT_PADDING,
 } from "../lib/tui/index.ts";
+import {
+	createMinimalToolPresentations,
+	MINIMAL_TOOL_NAMES,
+	type MinimalToolName,
+	type MinimalToolPresentations,
+	type ToolRenderContext,
+} from "../lib/minimal-tool-presentation.ts";
 import { WORKING_FRAMES, WORKING_FRAME_INTERVAL_MS } from "../announce-step.ts";
 import { STATUS_KEY as TOKEN_SPEED_STATUS_KEY } from "../token-speed.ts";
-import type { SubagentDetails, SubagentResultView, UsageStats } from "./contracts.ts";
+import type {
+	ContextUsageSnapshot,
+	SubagentDetails,
+	SubagentResultView,
+	UsageStats,
+} from "./contracts.ts";
 
 const CHAT_PADDING = TOOL_CHAT_PADDING;
+
+/** Tools whose consecutive calls may soft-group, mirroring the parent minimal mode. */
+const GROUPED_TOOL_NAMES = ["read", "find", "grep", "ls", "edit"];
+const TITLE_SEPARATOR = " · ";
+
+/**
+ * Display-only model label: the provider prefix is removed and dashes before a
+ * non-digit become spaces, so `openai-codex/gpt-5.6-luna` reads as
+ * `gpt-5.6 luna`. Thinking effort is appended. Stored identity is untouched.
+ */
+export function formatReadableModel(model: string, thinking?: string): string {
+	const id = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+	const readable = id.replace(/-([^\d])/g, " $1").trim();
+	const base = readable || model || "unknown model";
+	return thinking ? `${base} ${thinking}` : base;
+}
+
+/**
+ * Compact truthful context label from the F1 RPC snapshot. Cumulative billed
+ * traffic is never used as the numerator.
+ */
+export function formatContextLabel(context?: ContextUsageSnapshot): string {
+	if (!context) return "context unavailable";
+	const { tokens, contextWindow } = context;
+	if (typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+		return "context unavailable";
+	}
+	const total = Math.round(contextWindow / 1000);
+	if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0) {
+		return `unknown/${total}k`;
+	}
+	return `${Math.round(tokens / 1000)}k/${total}k`;
+}
+
+/** One candidate segment of the responsive thread title. */
+export interface TitleSegment {
+	text: string;
+	/** Kept on the title line even when the full sequence does not fit. */
+	fixed?: boolean;
+	/** Readable model: preserved at narrow widths alongside position and icon. */
+	essential?: boolean;
+}
+
+/**
+ * Responsive title composition. When the full semantic sequence fits it is
+ * used verbatim; otherwise lower-priority context and mode move to secondary
+ * metadata and only position, readable model, and status icon remain.
+ */
+export function selectTitleSegments(
+	width: number,
+	segments: readonly TitleSegment[],
+): { selected: readonly string[]; dropped: readonly TitleSegment[] } {
+	const joined = (candidates: readonly TitleSegment[]): string =>
+		candidates.map((segment) => segment.text).join(TITLE_SEPARATOR);
+	const full = segments.filter((segment) => segment.text.length > 0);
+	if (visibleWidth(joined(full)) <= Math.max(0, width)) {
+		return { selected: full.map((segment) => segment.text), dropped: [] };
+	}
+	const essentials = full.filter((segment) => segment.fixed || segment.essential);
+	if (visibleWidth(joined(essentials)) <= Math.max(0, width)) {
+		return {
+			selected: essentials.map((segment) => segment.text),
+			dropped: full.filter((segment) => !segment.fixed && !segment.essential),
+		};
+	}
+	const fixed = full.filter((segment) => segment.fixed);
+	return {
+		selected: fixed.map((segment) => segment.text),
+		dropped: full.filter((segment) => !segment.fixed),
+	};
+}
+
+/**
+ * Wrap a shared minimal presentation as a render-only ToolDefinition so
+ * ToolExecutionComponent renders the exact parent compact rows. Tools outside
+ * MINIMAL_TOOL_NAMES return undefined and keep Pi's generic renderer.
+ */
+function renderOnlyToolDefinition(
+	toolName: string,
+	presentations: MinimalToolPresentations,
+): ToolDefinition | undefined {
+	if (!MINIMAL_TOOL_NAMES.includes(toolName as MinimalToolName)) return undefined;
+	const presentation = presentations[toolName as MinimalToolName];
+	return {
+		name: toolName,
+		label: toolName,
+		renderShell: "self",
+		parameters: {},
+		execute: () => {
+			throw new Error("read-only subagent transcript");
+		},
+		renderCall: (args: unknown, theme: Theme, context: unknown) =>
+			presentation.renderCall(
+				(args ?? {}) as Record<string, unknown>,
+				theme,
+				context as ToolRenderContext,
+			),
+		renderResult: (result: unknown, options: unknown, theme: Theme, context: unknown) =>
+			presentation.renderResult(
+				result as Parameters<MinimalToolPresentations[MinimalToolName]["renderResult"]>[0],
+				options as Parameters<MinimalToolPresentations[MinimalToolName]["renderResult"]>[1],
+				theme,
+				context as ToolRenderContext,
+			),
+	} as unknown as ToolDefinition;
+}
 
 export class CompactSubagentLine implements Component {
 	constructor(private readonly text: string) {}
@@ -351,6 +473,10 @@ function messageText(message: Message): string {
 export class SubagentThreadView implements Component {
 	private readonly selection = new SelectableViewportController();
 	private readonly transcript = new ScrollViewportController();
+	/** Render-only parent-parity presentation for the selected thread. */
+	private readonly presentation = createMinimalToolPresentations();
+	/** Sequence identity the presentation topology was last seeded from. */
+	private seededSequenceKey = "";
 	private followTail = true;
 	private expanded = false;
 	private killArmed?: "task" | "all";
@@ -414,8 +540,32 @@ export class SubagentThreadView implements Component {
 		return { group, index };
 	}
 
+	private sequenceIdentity(item: SubagentThreadItem): string {
+		const messages = item.result.messages ?? [];
+		const last = messages.at(-1);
+		let lastIdentity = "none";
+		if (last && typeof last === "object") {
+			const record = last as unknown as Record<string, unknown>;
+			lastIdentity = JSON.stringify({
+				role: record.role,
+				ts: record.timestamp,
+				id: record.toolCallId ?? record.id,
+			});
+		}
+		return `${item.runId}:${item.result.taskId}:${messages.length}:${lastIdentity}`;
+	}
+
 	private contentLines(item: SubagentThreadItem, width: number): string[] {
 		const messages = item.result.messages ?? [];
+		const sequenceKey = this.sequenceIdentity(item);
+		if (this.seededSequenceKey !== sequenceKey) {
+			this.seededSequenceKey = sequenceKey;
+			this.presentation.tracker.reset();
+			this.presentation.reset();
+			seedSessionTopology(messages, this.presentation.tracker, GROUPED_TOOL_NAMES, {
+				nonBreakingToolNames: ["announce_step"],
+			});
+		}
 		const components: Component[] = [];
 		const pendingTools = new Map<string, ToolExecutionComponent>();
 
@@ -435,7 +585,7 @@ export class SubagentThreadView implements Component {
 						part.id,
 						part.arguments,
 						{ showImages: false },
-						undefined,
+						renderOnlyToolDefinition(part.name, this.presentation.presentations),
 						this.tui,
 						item.result.cwd,
 					);
@@ -523,7 +673,7 @@ export class SubagentThreadView implements Component {
 		return [
 			{ key: "↑/Esc", label: "parent" },
 			{ key: "←/→", label: "agent" },
-			{ key: "Shift+←/→", label: "run" },
+			{ key: "Shift+←/→", label: "history" },
 			{ key: "PgUp/PgDn", label: "scroll" },
 			{ key: "Ctrl+O", label: "details" },
 			{ key: "k", label: "kill" },
@@ -548,7 +698,7 @@ export class SubagentThreadView implements Component {
 				theme: this.theme,
 			});
 		}
-		const { group, index: groupIndex } = current;
+		const { group } = current;
 		const item = group.items[this.selection.selected];
 		const statusIcon = !item.result.done
 			? (WORKING_FRAMES[this.spinnerFrame] ?? WORKING_FRAMES[0])
@@ -556,29 +706,44 @@ export class SubagentThreadView implements Component {
 				? "✗"
 				: "✓";
 		const statusColor = !item.result.done ? "warning" : item.result.error ? "error" : "success";
-		const title = this.theme.fg(statusColor, `${statusIcon} ${item.result.status.toUpperCase()}`);
-		const context = group.teamRunId
-			? [`${this.getTeamName(group.teamRunId) ?? "Team"} team`, item.result.role]
-			: [`delegation ${groupIndex + 1} of ${groups.length}`];
+		const position = `Subagent ${this.selection.selected + 1}/${group.items.length}`;
+		const modelLabel = formatReadableModel(item.result.model, item.result.thinking);
+		const contextLabel = formatContextLabel(item.result.contextUsage);
+		const mode = item.result.mode ?? "ephemeral";
+		const titleSegments = selectTitleSegments(contentWidth, [
+			{ text: position, fixed: true },
+			{ text: modelLabel, essential: true },
+			{ text: contextLabel },
+			{ text: mode },
+			{ text: this.theme.fg(statusColor, statusIcon), fixed: true },
+		]);
+		const teamContext = group.teamRunId
+			? [`${this.getTeamName(group.teamRunId) ?? "Team"} team`, item.result.role].filter(
+					(value): value is string => Boolean(value),
+				)
+			: [];
 		const tokenSpeed = item.result.uiState?.statuses[TOKEN_SPEED_STATUS_KEY];
-		const details = [
-			...context.filter((value): value is string => Boolean(value)),
-			item.result.model,
-			item.result.thinking,
+		const metadataSegments = [
+			...teamContext,
+			item.result.status,
 			item.result.workspace,
-			item.result.mode ?? "ephemeral",
+			...titleSegments.dropped.map((segment) => segment.text),
 			item.result.sessionId ? `session ${item.result.sessionId}` : undefined,
 			tokenSpeed,
 		].filter((value): value is string => Boolean(value));
+		const metadataLines = metadataSegments.length
+			? wrapTextWithAnsi(metadataSegments.join(TITLE_SEPARATOR), Math.max(1, contentWidth))
+			: [];
 		const wrappedTask = new Text(item.result.task, 0, 0).render(contentWidth);
 		const taskTitle = this.expanded ? wrappedTask : wrappedTask.slice(0, 3);
 		if (!this.expanded && wrappedTask.length > 3 && taskTitle[2] !== undefined) {
 			taskTitle[2] = truncateToWidth(taskTitle[2], Math.max(1, contentWidth - 1), "") + "…";
 		}
-		const headerLines = [details.join(" · "), "", ...taskTitle, ""];
+		const headerTitle = titleSegments.selected.join(TITLE_SEPARATOR);
+		const headerLines = [...metadataLines, "", ...taskTitle, ""];
 		const renderedHeader = renderHeader({
 			width,
-			title: `Subagent ${this.selection.selected + 1} of ${group.items.length} · ${title}`,
+			title: headerTitle,
 			lines: headerLines,
 			theme: this.theme,
 		});
@@ -597,7 +762,7 @@ export class SubagentThreadView implements Component {
 		return renderFullscreenScreen({
 			width,
 			height,
-			title: `Subagent ${this.selection.selected + 1} of ${group.items.length} · ${title}`,
+			title: headerTitle,
 			headerLines,
 			body,
 			bodyPaddingX: 0,

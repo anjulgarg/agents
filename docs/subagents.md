@@ -50,6 +50,26 @@ The F6 thread view reads that durable active branch, merges any live resumed eve
 
 A persistent child cannot invoke subagent or subagent-management tools. Dependency outputs may still be supplied through `inputFrom` when spawning or resuming.
 
+## F6 thread view
+
+The F6 thread view is a strictly read-only viewer. It renders the child's active branch merged with live events but offers no editor, child commands, steering, compaction controls, branch navigation, or model changes. Navigation, kill confirmation, parent return, and close behave as before.
+
+### Header
+
+The header is provider-free and responsive. The wide title follows `Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent · ✓`: subagent position, a readable model label with thinking effort appended, true context occupancy, the mode, and an icon-only status. Provider prefixes are stripped and model IDs are normalized for reading; the stored model identity is never changed. Status is always icon-only (an animated frame such as `⠋` while running, `✗` on failure, `✓` on success); status words never appear next to the icon in the title.
+
+At narrow widths the title keeps subagent position, readable model, and status icon, and moves context and mode into wrapped secondary metadata together with team role, workspace, session identity, token speed, and the status word. Secondary metadata wraps to the exact terminal width.
+
+### Context occupancy
+
+The context segment comes from the child's Pi `get_session_stats` RPC snapshot (`contextUsage`), never from cumulative billed input/output traffic. Known occupancy renders compactly as `168k/258k`; unknown tokens right after compaction render as `unknown/258k`; an absent or invalid snapshot renders `context unavailable`. Cumulative turns, tokens, and cost remain in the transcript footer summary and are unrelated to the context segment.
+
+### Transcript and grouping
+
+Supported parent tools (read, find, grep, ls, edit) render with the same compact presentation and soft grouping as the parent minimal transcript. Consecutive calls collapse into one leader row, `announce_step` does not break an eligible streak, and visible prose or user content does. Successful results collapse; failures keep an explicit row; bash and write remain individually visible. Ctrl+O expands per-call details. Tools outside the shared set keep Pi's generic tool rendering.
+
+Historical run groups stay internal: Shift+Left and Shift+Right continue to move across them, and the footer labels that navigation `history` without exposing a run or delegation counter.
+
 ## Ownership and branches
 
 A persistent child belongs to the exact persisted parent session that created it. It survives a parent process restart and `/resume` of that parent. It is not globally discoverable or transferable and cannot be claimed from another parent or project session, `/new`, `/fork`, `/clone`, or a parent branch before the child was created.

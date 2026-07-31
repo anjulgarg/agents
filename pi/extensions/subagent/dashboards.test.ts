@@ -6,6 +6,12 @@
  * /subagents or /teams. These cases exercise the layouts that actually break: long
  * stderr-bearing errors, unbroken long strings, and the narrow/wide split.
  *
+ * The F6 thread suite also locks the F3 visual contract: the wide 120-column semantic
+ * title, narrow 60/40 essentials with wrapped metadata, icon-only status, truthful
+ * context labels, history navigation hints, shared parent minimal tool grouping,
+ * visible failures, generic fallback for unsupported tools, repeated-render
+ * stability, tracker isolation across selected agents, and disposal.
+ *
  * Run: npm run test:extensions
  */
 import * as fs from "node:fs";
@@ -59,7 +65,8 @@ const { initTheme } = await import("@earendil-works/pi-coding-agent");
 const { visibleWidth } = await import("@earendil-works/pi-tui");
 initTheme("dark");
 const { SubagentDashboard, SubagentThreadView } = await import("." + "/index.ts");
-const { buildThreadGroups } = await import("." + "/ui.ts");
+const { buildThreadGroups, formatContextLabel, formatReadableModel, selectTitleSegments } =
+	await import("." + "/ui.ts");
 const { TeamDashboard } = await import(".." + "/team/index.ts");
 type SubagentDetails = import("./index.ts").SubagentDetails;
 type SubagentResultView = import("./index.ts").SubagentResultView;
@@ -85,6 +92,9 @@ const fakeTheme = {
 } as any;
 const fakeKeybindings = { matches: () => false } as any;
 
+/** Strip ANSI SGR sequences for semantic assertions. */
+const stripAnsi = (line: string): string => line.replace(/\x1b\[[\d;]*m/g, "");
+
 /** render() must return a string[] with no holes, at any width. */
 function renders(label: string, render: (width: number) => string[]): void {
 	for (const width of [60, 120]) {
@@ -104,6 +114,25 @@ function renders(label: string, render: (width: number) => string[]): void {
 		} catch (error) {
 			check(
 				`${label} @${layout}(${width})`,
+				false,
+				`threw: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+}
+
+/** F6 body lines use bodyPaddingX 0, so only exact visible width is contractual. */
+function rendersThread(label: string, render: (width: number) => string[]): void {
+	for (const width of [40, 60, 120]) {
+		try {
+			const lines = render(width);
+			const ok =
+				Array.isArray(lines) &&
+				lines.every((line) => typeof line === "string" && visibleWidth(line) === width);
+			check(`${label} @(${width})`, ok, `got ${JSON.stringify(lines?.slice(0, 1))}`);
+		} catch (error) {
+			check(
+				`${label} @(${width})`,
 				false,
 				`threw: ${error instanceof Error ? error.message : String(error)}`,
 			);
@@ -141,6 +170,60 @@ function makeSubagentDashboard(runs: SubagentDetails[], tui = fakeTui): any {
 		() => {},
 		() => {},
 	);
+}
+
+function makeThread(
+	results: SubagentResultView[],
+	options: { tui?: any; onDone?: () => void } = {},
+): any {
+	return new SubagentThreadView(
+		options.tui ?? fakeTui,
+		fakeTheme,
+		() => subagentRuns(results),
+		() => () => {},
+		options.onDone ?? (() => {}),
+	);
+}
+
+function assistantMessage(parts: any[], timestamp = 1): any {
+	return {
+		role: "assistant",
+		content: parts,
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		api: "openai-responses",
+		provider: "openai",
+		model: "test",
+		timestamp,
+	};
+}
+
+function toolResultMessage(
+	toolCallId: string,
+	toolName: string,
+	text: string,
+	isError = false,
+	timestamp = 2,
+): any {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName,
+		content: [{ type: "text", text }],
+		isError,
+		timestamp,
+	};
+}
+
+function toolCallPart(id: string, name: string, args: Record<string, unknown>): any {
+	return { type: "toolCall", id, name, arguments: args };
 }
 
 // A startup-failed child produces exactly this: exit code + a long ANSI-stripped tail.
@@ -182,38 +265,17 @@ function testSubagentDashboard(): void {
 		running.render(120).join("\n").includes("k kill running"),
 	);
 
+	// ---------- thread: running icon-only status ----------
 	let returnedToParent = 0;
-	const thread = new SubagentThreadView(
-		fakeTui,
-		fakeTheme,
-		() =>
-			subagentRuns([
-				subagentTask({
-					messages: [
-						{
-							role: "assistant",
-							content: [{ type: "text", text: "Inspecting the current implementation." }],
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "stop",
-							api: "openai-responses",
-							provider: "openai",
-							model: "test",
-							timestamp: Date.now(),
-						},
-					] as any,
-				}),
-			]),
-		() => () => {},
-		() => {
-			returnedToParent++;
-		},
+	const thread = makeThread(
+		[
+			subagentTask({
+				messages: [
+					assistantMessage([{ type: "text", text: "Inspecting the current implementation." }]),
+				] as any,
+			}),
+		],
+		{ onDone: () => returnedToParent++ },
 	);
 	const threadLines = thread.render(120);
 	check("subagent thread: fills terminal height", threadLines.length === fakeTui.terminal.rows);
@@ -221,9 +283,11 @@ function testSubagentDashboard(): void {
 		"subagent thread: omits redundant parent breadcrumb",
 		!threadLines[0]?.includes("Parent /"),
 	);
+	const threadTitle = stripAnsi(threadLines[0] ?? "");
 	check(
-		"subagent thread: animated status shares title line",
-		threadLines[0]?.includes("Subagent 1 of 1 · ⠋ RUNNING") === true,
+		"subagent thread: running status is icon-only in the title",
+		threadTitle.includes("⠋") && !threadTitle.includes("RUNNING"),
+		JSON.stringify(threadTitle),
 	);
 	check(
 		"subagent thread: prompt has vertical padding",
@@ -236,6 +300,7 @@ function testSubagentDashboard(): void {
 	thread.handleInput("\x1b");
 	check("subagent thread: escape returns to parent", returnedToParent === 1);
 
+	// ---------- thread: kill arming and confirmation ----------
 	let killedTask = "";
 	let killedAll = 0;
 	const killable = new SubagentThreadView(
@@ -276,38 +341,14 @@ function testSubagentDashboard(): void {
 	killable.handleInput(kittyShiftK);
 	check("subagent thread: confirmed Shift+K kills all agents", killedAll === 1, String(killedAll));
 
+	// ---------- thread: responsive title and wrapped metadata ----------
 	const longPrompt = `${"word ".repeat(80)}PROMPT_TAIL`;
-	const expandable = new SubagentThreadView(
-		fakeTui,
-		fakeTheme,
-		() =>
-			subagentRuns([
-				subagentTask({
-					task: longPrompt,
-					messages: [
-						{
-							role: "assistant",
-							content: [{ type: "text", text: "Working." }],
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "stop",
-							api: "openai-responses",
-							provider: "openai",
-							model: "test",
-							timestamp: Date.now(),
-						},
-					] as any,
-				}),
-			]),
-		() => () => {},
-		() => {},
-	);
+	const expandable = makeThread([
+		subagentTask({
+			task: longPrompt,
+			messages: [assistantMessage([{ type: "text", text: "Working." }])] as any,
+		}),
+	]);
 	const collapsedPrompt = expandable.render(60);
 	check(
 		"subagent thread: prompt starts collapsed",
@@ -323,53 +364,17 @@ function testSubagentDashboard(): void {
 		expandable.render(60).join("\n").includes("PROMPT_TAIL"),
 	);
 
-	const toolThread = new SubagentThreadView(
-		fakeTui,
-		fakeTheme,
-		() =>
-			subagentRuns([
-				subagentTask({
-					done: true,
-					status: "done",
-					messages: [
-						{
-							role: "assistant",
-							content: [
-								{
-									type: "toolCall",
-									id: "read-1",
-									name: "read",
-									arguments: { path: "/tmp/example.ts" },
-								},
-							],
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "toolUse",
-							api: "openai-responses",
-							provider: "openai",
-							model: "test",
-							timestamp: Date.now(),
-						},
-						{
-							role: "toolResult",
-							toolCallId: "read-1",
-							toolName: "read",
-							content: [{ type: "text", text: "EXPANDED_TOOL_OUTPUT" }],
-							isError: false,
-							timestamp: Date.now(),
-						},
-					] as any,
-				}),
-			]),
-		() => () => {},
-		() => {},
-	);
+	// ---------- thread: shared compact tool presentation and Ctrl+O ----------
+	const toolThread = makeThread([
+		subagentTask({
+			done: true,
+			status: "done",
+			messages: [
+				assistantMessage([toolCallPart("read-1", "read", { path: "/tmp/example.ts" })]),
+				toolResultMessage("read-1", "read", "EXPANDED_TOOL_OUTPUT"),
+			] as any,
+		}),
+	]);
 	check(
 		"subagent thread: tool output starts collapsed",
 		!toolThread.render(120).join("\n").includes("EXPANDED_TOOL_OUTPUT"),
@@ -390,16 +395,11 @@ function testSubagentDashboard(): void {
 
 	// ---------- padding alignment ----------
 	const alignTitleLine = alignLines[0];
-	const alignMetaLine = alignLines.find(
-		(l: string) => l.includes("delegation") || l.includes("openai-codex/gpt"),
-	);
-	const visibleStrip = (line: string) => line.replace(/\x1b\[[\d;]*m/g, "");
-	const alignTaskHeaderLine = alignLines.find((l: string) =>
-		visibleStrip(l).includes("Do a thing"),
-	);
-	const alignToolLine = alignLines.find((l: string) => visibleStrip(l).includes("read /tmp"));
+	const alignMetaLine = alignLines.find((l: string) => stripAnsi(l).includes("done · shared"));
+	const alignTaskHeaderLine = alignLines.find((l: string) => stripAnsi(l).includes("Do a thing"));
+	const alignToolLine = alignLines.find((l: string) => stripAnsi(l).includes("read /tmp"));
 	const alignTaskLine = alignLines.find((l: string) =>
-		visibleStrip(l).includes("EXPANDED_TOOL_OUTPUT"),
+		stripAnsi(l).includes("EXPANDED_TOOL_OUTPUT"),
 	);
 	function visibleFirst(line: string): string {
 		return line.replace(/\x1b\[[\d;]*m/g, "")[0] ?? "";
@@ -442,19 +442,9 @@ function testSubagentDashboard(): void {
 		invalidate() {},
 	} as any;
 	const longOutput = Array.from({ length: 16 }, (_, i) => `Output line ${i + 1}`).join("\n");
-	const narrowThread = new SubagentThreadView(
-		narrowTui,
-		fakeTheme,
-		() =>
-			subagentRuns([
-				subagentTask({
-					done: true,
-					status: "done",
-					output: longOutput,
-				}),
-			]),
-		() => () => {},
-		() => {},
+	const narrowThread = makeThread(
+		[subagentTask({ done: true, status: "done", output: longOutput })],
+		{ tui: narrowTui },
 	);
 	const narrowThreadLines = narrowThread.render(40);
 	check(
@@ -468,6 +458,7 @@ function testSubagentDashboard(): void {
 		narrowThreadWide.some((line: string) => line.includes("1 turn")),
 	);
 
+	// ---------- thread groups: persistent coalescing and navigation ----------
 	const oldAgents = Array.from({ length: 20 }, (_, index) =>
 		subagentTask({
 			index,
@@ -535,7 +526,7 @@ function testSubagentDashboard(): void {
 	);
 	check(
 		"subagent thread: active team is scoped to four agents",
-		grouped.render(120)[0]?.includes("Subagent 1 of 4") === true,
+		grouped.render(120)[0]?.includes("Subagent 1/4") === true,
 	);
 	check(
 		"subagent thread: shows team context",
@@ -544,68 +535,34 @@ function testSubagentDashboard(): void {
 	grouped.handleInput("\x1b[C");
 	check(
 		"subagent thread: right stays within active team",
-		grouped.render(120)[0]?.includes("Subagent 2 of 4") === true,
+		grouped.render(120)[0]?.includes("Subagent 2/4") === true,
 	);
 	grouped.handleInput("\x1b[1;2D");
 	check(
-		"subagent thread: shift+left switches delegation groups",
-		grouped.render(120)[0]?.includes("Subagent 1 of 20") === true,
+		"subagent thread: shift+left switches history groups",
+		grouped.render(120)[0]?.includes("Subagent 1/20") === true,
 	);
 
-	const announced = new SubagentThreadView(
-		fakeTui,
-		fakeTheme,
-		() =>
-			subagentRuns([
-				subagentTask({
-					uiState: {
-						statuses: {
-							working: "Inspecting project files...",
-							lint: "clean",
-							"token-speed": "40 tok/s",
-						},
-						widgets: { tasks: { lines: ["2 tasks remaining"], placement: "belowEditor" } },
-						notifications: [{ message: "Check generated output", type: "warning" }],
-					},
-					messages: [
-						{
-							role: "assistant",
-							content: [
-								{
-									type: "toolCall",
-									id: "announce-1",
-									name: "announce_step",
-									arguments: { step: "Inspecting project files" },
-								},
-							],
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "toolUse",
-							api: "openai-responses",
-							provider: "openai",
-							model: "test",
-							timestamp: Date.now(),
-						},
-						{
-							role: "toolResult",
-							toolCallId: "announce-1",
-							toolName: "announce_step",
-							content: [{ type: "text", text: "Step announced." }],
-							isError: false,
-							timestamp: Date.now(),
-						},
-					] as any,
-				}),
-			]),
-		() => () => {},
-		() => {},
-	);
+	// ---------- thread: generic state projection ----------
+	const announced = makeThread([
+		subagentTask({
+			uiState: {
+				statuses: {
+					working: "Inspecting project files...",
+					lint: "clean",
+					"token-speed": "40 tok/s",
+				},
+				widgets: { tasks: { lines: ["2 tasks remaining"], placement: "belowEditor" } },
+				notifications: [{ message: "Check generated output", type: "warning" }],
+			},
+			messages: [
+				assistantMessage([
+					toolCallPart("announce-1", "announce_step", { step: "Inspecting project files" }),
+				]),
+				toolResultMessage("announce-1", "announce_step", "Step announced."),
+			] as any,
+		}),
+	]);
 	const announcedLines = announced.render(120);
 	const announcedOutput = announcedLines.join("\n");
 	const announcedWorking = announcedLines.find((line: string) =>
@@ -634,6 +591,309 @@ function testSubagentDashboard(): void {
 		"subagent thread: announce tool stays visually hidden",
 		!announcedOutput.includes("announce_step"),
 	);
+
+	// ---------- thread: wide exact semantic header ----------
+	const persistentTask = subagentTask({
+		taskId: "p1",
+		mode: "persistent",
+		sessionId: "sess-1",
+		done: true,
+		status: "done",
+		thinking: "max",
+		contextUsage: { tokens: 168000, contextWindow: 258000, percent: 65.116 },
+	});
+	const wideThread = makeThread([persistentTask]);
+	const wideLines = wideThread.render(120);
+	const wideTitle = stripAnsi(wideLines[0] ?? "");
+	check(
+		"thread @120: exact semantic title",
+		wideTitle.includes("Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent · ✓"),
+		JSON.stringify(wideTitle),
+	);
+	check("thread @120: provider prefix absent", !wideTitle.includes("openai-codex/"));
+	check("thread @120: no delegation label", !wideTitle.includes("delegation"));
+	check("thread @120: no RUNNING status word", !wideTitle.includes("RUNNING"));
+	check("thread @120: no legacy 'of' position", !wideTitle.includes("Subagent 1 of 1"));
+	check(
+		"thread @120: context stays in title, not metadata",
+		!stripAnsi(wideLines[1] ?? "").includes("168k/258k") &&
+			!stripAnsi(wideLines[1] ?? "").includes("persistent"),
+	);
+	check(
+		"thread @120: wrapped metadata keeps secondary fields",
+		stripAnsi(wideLines[1] ?? "").includes("done · shared") &&
+			stripAnsi(wideLines[1] ?? "").includes("session sess-1"),
+	);
+
+	// ---------- thread: narrow essentials and truthful fallback ----------
+	for (const width of [60, 40]) {
+		const lines = makeThread([persistentTask]).render(width);
+		const title = stripAnsi(lines[0] ?? "");
+		check(
+			`thread @${width}: position, model, icon stay in title`,
+			title.includes(`Subagent 1/1 · gpt-5.6 luna max · ✓`),
+			JSON.stringify(title),
+		);
+		check(
+			`thread @${width}: context and mode leave the title`,
+			!title.includes("168k/258k") && !title.includes("persistent"),
+			JSON.stringify(title),
+		);
+		const output = lines.map(stripAnsi).join("\n");
+		check(`thread @${width}: context moves to wrapped metadata`, output.includes("168k/258k"));
+		check(`thread @${width}: mode moves to wrapped metadata`, output.includes("persistent"));
+		check(
+			`thread @${width}: every line is exactly the frame width`,
+			lines.every((line: string) => visibleWidth(line) === width),
+		);
+	}
+
+	// ---------- thread: context known / null / absent states ----------
+	const unknownContext = makeThread([
+		subagentTask({ contextUsage: { tokens: null, contextWindow: 258000, percent: null } }),
+	]);
+	check(
+		"thread: null tokens render as unknown occupancy",
+		unknownContext.render(60).map(stripAnsi).join("\n").includes("unknown/258k"),
+	);
+	const absentContext = makeThread([subagentTask({ contextUsage: undefined })]);
+	check(
+		"thread: absent context renders unavailable",
+		absentContext.render(60).map(stripAnsi).join("\n").includes("context unavailable"),
+	);
+	const invalidContext = makeThread([
+		subagentTask({
+			contextUsage: { tokens: 100, contextWindow: Number.NaN, percent: null } as any,
+		}),
+	]);
+	check(
+		"thread: invalid context renders unavailable",
+		invalidContext.render(60).map(stripAnsi).join("\n").includes("context unavailable"),
+	);
+
+	// ---------- thread: wrapped long secondary metadata ----------
+	const longMetaTask = subagentTask({
+		workspace: "worktree",
+		sessionId: "session-abcdef-1234567890abcdef-xyz",
+		uiState: { statuses: { "token-speed": "1234 tok/s" } } as any,
+	});
+	for (const width of [40, 60]) {
+		const lines = makeThread([longMetaTask]).render(width);
+		const output = lines.map(stripAnsi).join("\n");
+		check(
+			`thread @${width}: long metadata wraps with exact width`,
+			lines.every((line: string) => visibleWidth(line) === width) &&
+				output.includes("1234 tok/s") &&
+				output.includes("session-abcdef-1234567890abcdef-xyz"),
+			JSON.stringify(lines.slice(0, 4)),
+		);
+	}
+
+	// ---------- thread: history hint, no run counter ----------
+	const footerOutput = makeThread([subagentTask()]).render(120).map(stripAnsi).join("\n");
+	check(
+		"thread: footer labels Shift+ arrows as history",
+		footerOutput.includes("Shift+←/→ history"),
+	);
+	check("thread: no run hint remains", !footerOutput.includes("Shift+←/→ run"));
+	check(
+		"thread: delegation never renders",
+		!footerOutput.includes("delegation") &&
+			!makeThread([subagentTask()]).render(60).map(stripAnsi).join("\n").includes("delegation"),
+	);
+
+	// ---------- thread: shared parent minimal grouping ----------
+	const tallTui = {
+		terminal: { rows: 80, columns: 120 },
+		requestRender() {},
+		invalidate() {},
+	} as any;
+	const groupingMessages: any[] = [
+		assistantMessage([
+			toolCallPart("g1", "read", { path: "/tmp/one.ts" }),
+			toolCallPart("g2", "announce_step", { step: "Inspecting files" }),
+			toolCallPart("g3", "read", { path: "/tmp/two.ts" }),
+			toolCallPart("g4", "read", { path: "/tmp/three.ts" }),
+		]),
+		toolResultMessage("g1", "read", "ONE_CONTENT"),
+		toolResultMessage("g2", "announce_step", "Step announced."),
+		toolResultMessage("g3", "read", "TWO_CONTENT"),
+		toolResultMessage("g4", "read", "THREE_CONTENT"),
+		assistantMessage([{ type: "text", text: "Visible prose separates tool waves." }], 3),
+		assistantMessage(
+			[
+				toolCallPart("g5", "grep", { pattern: "foo", path: "/tmp" }),
+				toolCallPart("g6", "grep", { pattern: "bar", path: "/tmp" }),
+				toolCallPart("g7", "bash", { command: "npm test" }),
+				toolCallPart("g8", "write", { path: "/tmp/out.ts", content: "a\nb\nc\n" }),
+			],
+			4,
+		),
+		toolResultMessage("g5", "grep", "foo:1"),
+		toolResultMessage("g6", "grep", "NO MATCHES", true),
+		toolResultMessage("g7", "bash", "tests passed"),
+		toolResultMessage("g8", "write", "Wrote 3 lines"),
+	];
+	const groupingView = makeThread([subagentTask({ messages: groupingMessages })], { tui: tallTui });
+	const groupedCollapsed = groupingView
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check(
+		"thread: consecutive reads group across announce_step",
+		groupedCollapsed.includes("read\n├─ /tmp/one.ts\n├─ /tmp/two.ts\n└─ /tmp/three.ts"),
+		JSON.stringify(groupedCollapsed.slice(0, 400)),
+	);
+	check(
+		"thread: visible prose breaks the streak",
+		groupedCollapsed.includes("Visible prose separates tool waves."),
+	);
+	check("thread: grep after prose stays separate", groupedCollapsed.includes("grep /foo/ in /tmp"));
+	check("thread: failed grep keeps an explicit row", groupedCollapsed.includes("× NO MATCHES"));
+	check("thread: bash remains individual", groupedCollapsed.includes("$ npm test"));
+	check(
+		"thread: write remains individual",
+		groupedCollapsed.includes("write /tmp/out.ts · 4 lines"),
+	);
+	check("thread: announce_step stays visually hidden", !groupedCollapsed.includes("announce_step"));
+	groupingView.handleInput("\x0f");
+	const groupedExpanded = groupingView
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check(
+		"thread: ctrl+o reveals per-call read output",
+		groupedExpanded.includes("ONE_CONTENT") &&
+			groupedExpanded.includes("TWO_CONTENT") &&
+			groupedExpanded.includes("THREE_CONTENT"),
+		JSON.stringify(groupedExpanded.slice(0, 400)),
+	);
+
+	// ---------- thread: repeated renders never duplicate topology ----------
+	const stabilityView = makeThread([subagentTask({ messages: groupingMessages })], {
+		tui: tallTui,
+	});
+	const firstRender = stabilityView.render(120).join("\n");
+	const secondRender = stabilityView.render(120).join("\n");
+	check("thread: repeated renders are identical", firstRender === secondRender);
+
+	// ---------- thread: tracker isolation across selected agents ----------
+	const readAgent = subagentTask({
+		taskId: "agent-a",
+		messages: [
+			assistantMessage([
+				toolCallPart("a1", "read", { path: "/tmp/alpha.ts" }),
+				toolCallPart("a2", "read", { path: "/tmp/beta.ts" }),
+			]),
+			toolResultMessage("a1", "read", "ALPHA"),
+			toolResultMessage("a2", "read", "BETA"),
+		] as any,
+	});
+	const writeAgent = subagentTask({
+		taskId: "agent-b",
+		messages: [
+			assistantMessage([toolCallPart("w1", "write", { path: "/tmp/out.ts", content: "x\n" })]),
+			toolResultMessage("w1", "write", "Wrote 1 lines"),
+		] as any,
+	});
+	const multiAgent = makeThread([readAgent, writeAgent], { tui: tallTui });
+	const agentARender = multiAgent
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check("thread: agent A groups its reads", agentARender.includes("read\n├─ /tmp/alpha.ts"));
+	multiAgent.handleInput("\x1b[C");
+	const agentBRender = multiAgent
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check(
+		"thread: agent B leaks no previous groups",
+		!agentBRender.includes("read\n├─") && agentBRender.includes("write /tmp/out.ts"),
+		JSON.stringify(agentBRender.slice(0, 400)),
+	);
+	multiAgent.handleInput("\x1b[D");
+	const agentAAgain = multiAgent
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check(
+		"thread: returning to agent A restores grouping",
+		agentAAgain.includes("read\n├─ /tmp/alpha.ts"),
+	);
+
+	// ---------- thread: unsupported tools keep generic fallback ----------
+	const unsupportedView = makeThread(
+		[
+			subagentTask({
+				done: true,
+				status: "done",
+				messages: [
+					assistantMessage([toolCallPart("u1", "subagent_result", { taskId: "abc-123" })]),
+					toolResultMessage("u1", "subagent_result", "RESULT_BODY_TEXT"),
+				] as any,
+			}),
+		],
+		{ tui: tallTui },
+	);
+	const fallbackOutput = unsupportedView.render(120).map(stripAnsi).join("\n");
+	check(
+		"thread: unsupported tool uses generic rendering",
+		fallbackOutput.includes("subagent_result") &&
+			fallbackOutput.includes('"taskId": "abc-123"') &&
+			fallbackOutput.includes("RESULT_BODY_TEXT"),
+		JSON.stringify(fallbackOutput.slice(0, 400)),
+	);
+
+	// ---------- thread: durable plus live message projection ----------
+	const mergedView = makeThread(
+		[
+			subagentTask({
+				mode: "persistent",
+				sessionId: "persistent-merge-session",
+				done: true,
+				status: "done",
+				messages: [
+					assistantMessage([toolCallPart("m1", "read", { path: "/tmp/durable.ts" })]),
+					toolResultMessage("m1", "read", "DURABLE_OUTPUT"),
+					assistantMessage([{ type: "text", text: "Live partial response..." }], 5),
+					assistantMessage([toolCallPart("m2", "grep", { pattern: "live", path: "." })], 6),
+				] as any,
+			}),
+		],
+		{ tui: tallTui },
+	);
+	const mergedOutput = mergedView
+		.render(120)
+		.map((line: string) => stripAnsi(line).trim())
+		.join("\n");
+	check(
+		"thread: durable history renders once",
+		(mergedOutput.match(/read \/tmp\/durable\.ts/g) ?? []).length === 1 &&
+			!mergedOutput.includes("DURABLE_OUTPUT"),
+		JSON.stringify(mergedOutput.slice(0, 400)),
+	);
+	check(
+		"thread: live partial content renders once",
+		(mergedOutput.match(/Live partial response\.\.\./g) ?? []).length === 1,
+	);
+	check(
+		"thread: cumulative usage is untouched by context display",
+		mergedView.render(120).map(stripAnsi).join("\n").includes("1 turns, 2 tokens"),
+	);
+
+	// ---------- thread: disposal clears the animation timer ----------
+	const originalClearInterval = globalThis.clearInterval;
+	const clearedHandles: unknown[] = [];
+	(globalThis as any).clearInterval = (handle: unknown) => {
+		clearedHandles.push(handle);
+		originalClearInterval(handle);
+	};
+	const disposable = makeThread([subagentTask()]);
+	disposable.dispose();
+	disposable.dispose();
+	(globalThis as any).clearInterval = originalClearInterval;
+	check("thread: dispose clears the animation timer", clearedHandles.length >= 1);
 
 	// ---------- dashboard narrow-width wrapped-footer ----------
 	const narrowDashTui = {
@@ -668,7 +928,8 @@ function testSubagentDashboard(): void {
 		narrowDashWide.some((line: string) => line.includes("DASHBOARD_TAIL_MARKER")),
 	);
 
-	for (const width of [1, 7, 60, 120]) {
+	// ---------- exact-width full-screen frames ----------
+	for (const width of [1, 7, 40, 60, 120]) {
 		const dashboardLines = makeSubagentDashboard(subagentRuns([subagentTask()])).render(width);
 		check(
 			`subagent dashboard: exact-width full-screen frame @${width}`,
@@ -694,6 +955,61 @@ function testSubagentDashboard(): void {
 		"subagent dashboard: tiny terminal remains framed",
 		tinyDashboard.length === 4 && tinyDashboard.every((line: string) => visibleWidth(line) === 7),
 		JSON.stringify(tinyDashboard),
+	);
+
+	// ---------- pure formatters ----------
+	check(
+		"formatReadableModel strips provider and appends thinking",
+		formatReadableModel("openai-codex/gpt-5.6-luna", "max") === "gpt-5.6 luna max",
+		formatReadableModel("openai-codex/gpt-5.6-luna", "max"),
+	);
+	check(
+		"formatReadableModel keeps digit dashes",
+		formatReadableModel("openai/gpt-4o", "low") === "gpt-4o low",
+	);
+	check(
+		"formatReadableModel normalizes non-gpt ids",
+		formatReadableModel("anthropic/claude-sonnet-4-5") === "claude sonnet-4-5",
+	);
+	check(
+		"formatContextLabel renders known occupancy",
+		formatContextLabel({ tokens: 168000, contextWindow: 258000, percent: 65.116 }) === "168k/258k",
+	);
+	check(
+		"formatContextLabel renders unknown occupancy",
+		formatContextLabel({ tokens: null, contextWindow: 258000, percent: null }) === "unknown/258k",
+	);
+	check(
+		"formatContextLabel renders absent context",
+		formatContextLabel(undefined) === "context unavailable",
+	);
+	check(
+		"formatContextLabel rejects invalid windows",
+		formatContextLabel({ tokens: 100, contextWindow: Number.NaN, percent: null } as any) ===
+			"context unavailable",
+	);
+	const fiveSegments = [
+		{ text: "Subagent 1/1", fixed: true },
+		{ text: "gpt-5.6 luna max", essential: true },
+		{ text: "168k/258k" },
+		{ text: "persistent" },
+		{ text: "✓", fixed: true },
+	];
+	check(
+		"selectTitleSegments keeps the full sequence when it fits",
+		selectTitleSegments(120, fiveSegments).selected.join(" · ") ===
+			"Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent · ✓",
+	);
+	const narrowSegments = selectTitleSegments(40, fiveSegments);
+	check(
+		"selectTitleSegments narrows to position, model, icon",
+		narrowSegments.selected.join(" · ") === "Subagent 1/1 · gpt-5.6 luna max · ✓",
+		JSON.stringify(narrowSegments.selected),
+	);
+	check(
+		"selectTitleSegments reports dropped context and mode",
+		narrowSegments.dropped.map((segment) => segment.text).join(",") === "168k/258k,persistent",
+		JSON.stringify(narrowSegments.dropped),
 	);
 }
 
