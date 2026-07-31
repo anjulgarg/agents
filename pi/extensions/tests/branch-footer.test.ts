@@ -116,7 +116,7 @@ assert(
 		planned.indexOf("plan") < planned.indexOf("feature/reactive-footer") &&
 		!planned.includes("⏸") &&
 		!planned.includes("MCP: sentry") &&
-		planned.includes("gpt-5.6 sol ⚡ medium") &&
+		planned.includes("⚡ gpt-5.6 sol medium") &&
 		!planned.includes("Fast") &&
 		planned.includes("12 tok/s"),
 	planned,
