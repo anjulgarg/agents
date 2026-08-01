@@ -908,8 +908,9 @@ function testSubagentDashboard(): void {
 	]);
 	const legacyOutput = legacyWorktree.render(60).map(stripAnsi).join("\n");
 	check(
-		"thread: legacy worktree metadata is readable without a fabricated session id",
-		legacyOutput.includes(`󰙅 · ${expectedCompactUsage}`) &&
+		"thread: unverified legacy worktree mode does not render a false marker",
+		legacyOutput.includes(expectedCompactUsage) &&
+			!legacyOutput.includes("󰙅") &&
 			!legacyOutput.includes("legacy-session-hidden") &&
 			!legacyOutput.includes("undefined"),
 		JSON.stringify(legacyOutput.slice(0, 300)),

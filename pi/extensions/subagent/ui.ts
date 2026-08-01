@@ -1038,9 +1038,9 @@ export class SubagentThreadView implements Component {
 		const tokenSpeed = item.result.uiState?.statuses[TOKEN_SPEED_STATUS_KEY];
 		const metadataWidth = Math.max(0, Math.floor(contentWidth));
 		const usageRow =
-			item.result.workspace === "worktree"
+			item.result.workspace === "worktree" && item.result.worktree?.branch
 				? renderSelectedWorktreeUsage(
-						selectWorktreeUsageRow(metadataWidth, item.result.worktree?.branch, item.result.usage),
+						selectWorktreeUsageRow(metadataWidth, item.result.worktree.branch, item.result.usage),
 						item.result.usage,
 						metadataWidth,
 					)
