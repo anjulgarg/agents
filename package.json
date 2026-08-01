@@ -61,6 +61,7 @@
       "pi/extensions/claude-code-ui.ts",
       "pi/extensions/codex-usage.ts",
       "pi/extensions/codex-web-search.ts",
+      "pi/extensions/compaction-model.ts",
       "pi/extensions/context.ts",
       "pi/extensions/conversation-separator.ts",
       "pi/extensions/escape-unsend.ts",

@@ -21,6 +21,7 @@ const extensionIds = [
 	"pi-extension:claude-code-ui",
 	"pi-extension:codex-usage",
 	"pi-extension:codex-web-search",
+	"pi-extension:compaction-model",
 	"pi-extension:context",
 	"pi-extension:conversation-separator",
 	"pi-extension:escape-unsend",
@@ -79,7 +80,7 @@ describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
 		expect(components.length).toBe(
-			31 +
+			32 +
 				(localPiConfigFiles.settings ? 1 : 0) +
 				(localPiConfigFiles.models ? 1 : 0) +
 				1 +
@@ -92,7 +93,7 @@ describe("component registry", () => {
 		expect(
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
-		expect(components.slice(32).map(({ id }) => id)).toEqual([
+		expect(components.slice(33).map(({ id }) => id)).toEqual([
 			...(localPiConfigFiles.settings ? ["pi-config:settings"] : []),
 			...(localPiConfigFiles.models ? ["pi-config:models"] : []),
 			"pi-config:keybindings",

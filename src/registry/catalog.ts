@@ -30,6 +30,7 @@ const extensions = [
 	["claude-code-ui", "claude-code-ui.ts"],
 	["codex-usage", "codex-usage.ts"],
 	["codex-web-search", "codex-web-search.ts"],
+	["compaction-model", "compaction-model.ts"],
 	["context", "context.ts"],
 	["conversation-separator", "conversation-separator.ts"],
 	["escape-unsend", "escape-unsend.ts"],

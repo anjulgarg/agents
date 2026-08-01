@@ -11,6 +11,7 @@ const EXPECTED_EXTENSIONS = [
 	"pi/extensions/claude-code-ui.ts",
 	"pi/extensions/codex-usage.ts",
 	"pi/extensions/codex-web-search.ts",
+	"pi/extensions/compaction-model.ts",
 	"pi/extensions/context.ts",
 	"pi/extensions/conversation-separator.ts",
 	"pi/extensions/escape-unsend.ts",
@@ -198,7 +199,7 @@ async function validateManifest(root: string, files: readonly string[]): Promise
 	const themes = stringArray(manifest.pi?.themes);
 	if (!extensions || !equalSorted(extensions, EXPECTED_EXTENSIONS))
 		invalid(
-			"Pi extensions must be the exact 29 approved entrypoints",
+			"Pi extensions must be the exact 30 approved entrypoints",
 			"package.json#pi.extensions",
 		);
 	if (
