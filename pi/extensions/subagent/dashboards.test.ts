@@ -299,9 +299,9 @@ function testSubagentDashboard(): void {
 	};
 	const coloredTitle = makeThread([subagentTask()], { theme: ansiTheme }).render(120)[0] ?? "";
 	check(
-		"subagent thread: header attributes use distinct status-line pastel colors",
+		"subagent thread: loader and identity match the parent activity accent",
 		coloredTitle.includes("\x1b[35m\x1b[1m◐") &&
-			coloredTitle.includes("\x1b[38;5;150m\x1b[1mSubagent 1/1") &&
+			coloredTitle.includes("\x1b[35m\x1b[1mSubagent 1/1") &&
 			coloredTitle.includes("\x1b[38;5;183m\x1b[1mgpt-5.6 luna low") &&
 			coloredTitle.includes("\x1b[38;5;117m\x1b[1mcontext unavailable") &&
 			coloredTitle.includes("\x1b[38;5;222m\x1b[1mephemeral") &&

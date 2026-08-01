@@ -48,7 +48,6 @@ const THREAD_STATUS_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 const WORKTREE_METADATA_ICON = "󰙅";
 const RESET_FOREGROUND = "\x1b[39m";
 const HEADER_PASTELS = {
-	position: 150,
 	model: 183,
 	context: 117,
 	mode: 222,
@@ -764,8 +763,8 @@ export class SubagentThreadView implements Component {
 				: "✓";
 		const statusColor = !item.result.done ? "accent" : item.result.error ? "error" : "success";
 		const position = `Subagent ${this.selection.selected + 1}/${group.items.length}`;
-		const statusPosition = `${this.theme.fg(statusColor, this.theme.bold(statusIcon))} ${pastel(
-			HEADER_PASTELS.position,
+		const statusPosition = `${this.theme.fg(statusColor, this.theme.bold(statusIcon))} ${this.theme.fg(
+			"accent",
 			this.theme.bold(position),
 		)}`;
 		const modelLabel = formatReadableModel(item.result.model, item.result.thinking);
