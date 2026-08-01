@@ -24,8 +24,6 @@ resources and workflow to its constraints, and keep the quality and safety guara
 
 - Never add credentials, authentication data, sessions, caches, private runtime state, or personal
   configuration.
-- Never test installation or removal against a real home directory. Use a unique temporary
-  directory and pass it explicitly with `--home`.
 - Preserve unknown files, unowned JSON fields, and resources outside the selected component.
 - Keep destination containment, link checks, locking, backup, receipt, rollback, and confirmation
   protections intact.
