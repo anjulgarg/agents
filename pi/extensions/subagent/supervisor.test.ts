@@ -71,6 +71,12 @@ class FakeChild implements ChildHandle {
 		this.onExit?.(code);
 	}
 
+	/** Test helper: complete one assistant turn without settling the child. */
+	completeTurn(usage: Partial<UsageStats>): void {
+		Object.assign(this.usage, usage);
+		this.onEvent?.({ type: "message_end", message: { role: "assistant" } });
+	}
+
 	/** Test helper: emit agent_settled with captured output/usage. */
 	settle(output: string, usage?: Partial<UsageStats>): void {
 		this.text = output;
@@ -574,6 +580,39 @@ async function testStatusReportsObjectiveActivity(): Promise<void> {
 				!("idle" in task.activity),
 			`activity=${JSON.stringify(task?.activity)}`,
 		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
+async function testLiveUsageProjection(): Promise<void> {
+	const name = "j. running task projects usage after each assistant turn";
+	const children: FakeChild[] = [];
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		sendUserMessage: () => {},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+	try {
+		const { runId, taskIds } = supervisor.spawn([baseSpec()]);
+		children[0].completeTurn({ input: 5000, output: 508, cost: 0.0045, turns: 1 });
+		const status = supervisor.status(runId);
+		const task = Array.isArray(status) ? undefined : status.tasks[0];
+		const liveResult = supervisor.result(runId, taskIds[0]);
+		assert(
+			name,
+			task?.status === "running" &&
+				liveResult.usage.turns === 1 &&
+				liveResult.usage.input === 5000 &&
+				liveResult.usage.output === 508 &&
+				liveResult.usage.cost === 0.0045,
+			JSON.stringify({ task, liveResult }),
+		);
+		children[0].settle("done");
 	} finally {
 		supervisor.dispose();
 	}
@@ -1152,6 +1191,7 @@ async function main(): Promise<void> {
 	await testAbortTask();
 	await testStatusTerse();
 	await testStatusReportsObjectiveActivity();
+	await testLiveUsageProjection();
 	await testResultDetail();
 	await testManualKillMetadata();
 	await testSoftSignalStuckInTool();

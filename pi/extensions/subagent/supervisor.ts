@@ -849,7 +849,10 @@ export class Supervisor {
 			event.type === "agent_settled"
 		)
 			task.activityVersion++;
-		if (this.isContextChangingEvent(event)) this.refreshContext(runId, taskId);
+		if (this.isContextChangingEvent(event)) {
+			if (task.child) task.usage = { ...task.child.usage };
+			this.refreshContext(runId, taskId);
+		}
 		if (task.status === "running") this.detectors.get(taskId)?.observe(event, now);
 		if (event.type === "agent_settled") {
 			this.beginFinalization(
