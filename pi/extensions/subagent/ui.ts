@@ -44,6 +44,7 @@ import type {
 	UsageStats,
 } from "./contracts.ts";
 
+const THREAD_STATUS_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 const CHAT_PADDING = TOOL_CHAT_PADDING;
 
 /** Tools whose consecutive calls may soft-group, mirroring the parent minimal mode. */
@@ -91,7 +92,7 @@ export interface TitleSegment {
 /**
  * Responsive title composition. When the full semantic sequence fits it is
  * used verbatim; otherwise lower-priority context and mode move to secondary
- * metadata and only position, readable model, and status icon remain.
+ * metadata and only the status-prefixed position and readable model remain.
  */
 export function selectTitleSegments(
 	width: number,
@@ -742,21 +743,22 @@ export class SubagentThreadView implements Component {
 		const { group } = current;
 		const item = group.items[this.selection.selected];
 		const statusIcon = !item.result.done
-			? (WORKING_FRAMES[this.spinnerFrame] ?? WORKING_FRAMES[0])
+			? (THREAD_STATUS_FRAMES[this.spinnerFrame % THREAD_STATUS_FRAMES.length] ??
+				THREAD_STATUS_FRAMES[0])
 			: item.result.error
 				? "✗"
 				: "✓";
 		const statusColor = !item.result.done ? "warning" : item.result.error ? "error" : "success";
 		const position = `Subagent ${this.selection.selected + 1}/${group.items.length}`;
+		const statusPosition = `${this.theme.fg(statusColor, statusIcon)} ${position}`;
 		const modelLabel = formatReadableModel(item.result.model, item.result.thinking);
 		const contextLabel = formatContextLabel(item.result.contextUsage);
 		const mode = item.result.mode ?? "ephemeral";
 		const titleSegments = selectTitleSegments(contentWidth, [
-			{ text: position, fixed: true },
+			{ text: statusPosition, fixed: true },
 			{ text: modelLabel, essential: true },
 			{ text: contextLabel },
 			{ text: mode },
-			{ text: this.theme.fg(statusColor, statusIcon), fixed: true },
 		]);
 		const teamContext = group.teamRunId
 			? [`${this.getTeamName(group.teamRunId) ?? "Team"} team`, item.result.role].filter(

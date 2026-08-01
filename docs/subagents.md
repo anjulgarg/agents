@@ -56,9 +56,9 @@ The F6 thread view is a strictly read-only viewer. It renders the child's active
 
 ### Header
 
-The header is provider-free and responsive. The wide title follows `Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent · ✓`: subagent position, a readable model label with thinking effort appended, true context occupancy, the mode, and an icon-only status. Provider prefixes are stripped and model IDs are normalized for reading; the stored model identity is never changed. Status is always icon-only (an animated frame such as `⠋` while running, `✗` on failure, `✓` on success); status words never appear next to the icon in the title.
+The header is provider-free and responsive. The wide title follows `✓ Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent`: an icon-only status directly prefixes the subagent position without a dot separator, followed by a readable model label with thinking effort appended, true context occupancy, and the mode. Provider prefixes are stripped and model IDs are normalized for reading; the stored model identity is never changed. Status uses a circular animation such as `◒` while running, `✗` on failure, and `✓` on success; status words never appear next to the icon in the title.
 
-At narrow widths the title keeps subagent position, readable model, and status icon, and moves context and mode into wrapped secondary metadata together with team role, workspace, session identity, token speed, and the status word. Secondary metadata wraps to the exact terminal width.
+At narrow widths the title keeps the prefixed status and subagent position plus the readable model, and moves context and mode into wrapped secondary metadata together with team role, workspace, session identity, token speed, and the status word. Secondary metadata wraps to the exact terminal width.
 
 ### Context occupancy
 

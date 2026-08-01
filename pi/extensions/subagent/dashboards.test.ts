@@ -7,7 +7,7 @@
  * stderr-bearing errors, unbroken long strings, and the narrow/wide split.
  *
  * The F6 thread suite also locks the F3 visual contract: the wide 120-column semantic
- * title, narrow 60/40 essentials with wrapped metadata, icon-only status, truthful
+ * title, responsive narrow essentials with wrapped metadata, icon-only status, truthful
  * context labels, history navigation hints, shared parent minimal tool grouping,
  * visible failures, generic fallback for unsupported tools, repeated-render
  * stability, tracker isolation across selected agents, and disposal.
@@ -285,8 +285,10 @@ function testSubagentDashboard(): void {
 	);
 	const threadTitle = stripAnsi(threadLines[0] ?? "");
 	check(
-		"subagent thread: running status is icon-only in the title",
-		threadTitle.includes("⠋") && !threadTitle.includes("RUNNING"),
+		"subagent thread: animated running status prefixes Subagent without a separator",
+		threadTitle.includes("◐ Subagent 1/1") &&
+			!threadTitle.includes("◐ · Subagent") &&
+			!threadTitle.includes("RUNNING"),
 		JSON.stringify(threadTitle),
 	);
 	check(
@@ -607,8 +609,22 @@ function testSubagentDashboard(): void {
 	const wideTitle = stripAnsi(wideLines[0] ?? "");
 	check(
 		"thread @120: exact semantic title",
-		wideTitle.includes("Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent · ✓"),
+		wideTitle.includes("✓ Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent"),
 		JSON.stringify(wideTitle),
+	);
+	check(
+		"thread @120: success icon replaces animation in the same prefix slot",
+		wideTitle.includes("✓ Subagent 1/1") && !wideTitle.includes("· ✓"),
+		JSON.stringify(wideTitle),
+	);
+	const failedTitle = stripAnsi(
+		makeThread([subagentTask({ done: true, status: "failed", error: "failed" })]).render(120)[0] ??
+			"",
+	);
+	check(
+		"thread @120: failure icon uses the same prefix slot",
+		failedTitle.includes("✗ Subagent 1/1") && !failedTitle.includes("· ✗"),
+		JSON.stringify(failedTitle),
 	);
 	check("thread @120: provider prefix absent", !wideTitle.includes("openai-codex/"));
 	check("thread @120: no delegation label", !wideTitle.includes("delegation"));
@@ -626,12 +642,12 @@ function testSubagentDashboard(): void {
 	);
 
 	// ---------- thread: narrow essentials and truthful fallback ----------
-	for (const width of [60, 40]) {
+	for (const width of [40]) {
 		const lines = makeThread([persistentTask]).render(width);
 		const title = stripAnsi(lines[0] ?? "");
 		check(
-			`thread @${width}: position, model, icon stay in title`,
-			title.includes(`Subagent 1/1 · gpt-5.6 luna max · ✓`),
+			`thread @${width}: prefixed icon, position, and model stay in title`,
+			title.includes(`✓ Subagent 1/1 · gpt-5.6 luna max`),
 			JSON.stringify(title),
 		);
 		check(
@@ -655,8 +671,8 @@ function testSubagentDashboard(): void {
 		const title = stripAnsi(lines[0] ?? "");
 		const output = lines.map(stripAnsi).join("\n");
 		check(
-			`thread @${width}: truncated model stays between position and icon`,
-			title.includes("Subagent 1/1 · g… · ✓") &&
+			`thread @${width}: truncated model stays after prefixed status and position`,
+			title.includes("✓ Subagent 1/1 · gpt-5.…") &&
 				!title.includes("gpt-5.6 luna max") &&
 				!title.includes("168k/258k") &&
 				!title.includes("persistent"),
@@ -672,15 +688,15 @@ function testSubagentDashboard(): void {
 			lines.every((line: string) => visibleWidth(line) === width),
 		);
 	}
-	const tinyThreadLines = belowThread.render(22);
+	const tinyThreadLines = belowThread.render(18);
 	const tinyThreadTitle = stripAnsi(tinyThreadLines[0] ?? "");
 	const tinyThreadOutput = tinyThreadLines.map(stripAnsi).join("\n");
 	check(
-		"thread: tiny widths keep position and icon with model in metadata",
-		tinyThreadTitle.includes("Subagent 1/1 · ✓") &&
+		"thread: tiny widths keep prefixed icon and position with model in metadata",
+		tinyThreadTitle.includes("✓ Subagent 1/1") &&
 			!tinyThreadTitle.includes("gpt-5.6 luna max") &&
 			tinyThreadOutput.includes("gpt-5.6 luna max") &&
-			tinyThreadLines.every((line: string) => visibleWidth(line) === 22),
+			tinyThreadLines.every((line: string) => visibleWidth(line) === 18),
 		JSON.stringify(tinyThreadTitle),
 	);
 
@@ -1054,21 +1070,20 @@ function testSubagentDashboard(): void {
 			"context unavailable",
 	);
 	const fiveSegments = [
-		{ text: "Subagent 1/1", fixed: true },
+		{ text: "✓ Subagent 1/1", fixed: true },
 		{ text: "gpt-5.6 luna max", essential: true },
 		{ text: "168k/258k" },
 		{ text: "persistent" },
-		{ text: "✓", fixed: true },
 	];
 	check(
 		"selectTitleSegments keeps the full sequence when it fits",
 		selectTitleSegments(120, fiveSegments).selected.join(" · ") ===
-			"Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent · ✓",
+			"✓ Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent",
 	);
 	const narrowSegments = selectTitleSegments(40, fiveSegments);
 	check(
-		"selectTitleSegments narrows to position, model, icon",
-		narrowSegments.selected.join(" · ") === "Subagent 1/1 · gpt-5.6 luna max · ✓",
+		"selectTitleSegments narrows to prefixed icon, position, and model",
+		narrowSegments.selected.join(" · ") === "✓ Subagent 1/1 · gpt-5.6 luna max",
 		JSON.stringify(narrowSegments.selected),
 	);
 	check(
@@ -1079,18 +1094,18 @@ function testSubagentDashboard(): void {
 	const truncatedSegments = selectTitleSegments(24, fiveSegments);
 	check(
 		"selectTitleSegments truncates the model below the essentials threshold",
-		truncatedSegments.selected.map(stripAnsi).join(" · ") === "Subagent 1/1 · g… · ✓" &&
+		truncatedSegments.selected.map(stripAnsi).join(" · ") === "✓ Subagent 1/1 · gpt-5.…" &&
 			truncatedSegments.dropped.map((segment) => segment.text).join(",") === "168k/258k,persistent",
 		JSON.stringify(truncatedSegments.selected),
 	);
 	check(
-		"selectTitleSegments keeps only position and icon at tiny widths",
-		selectTitleSegments(1, fiveSegments).selected.join(" · ") === "Subagent 1/1 · ✓",
+		"selectTitleSegments keeps only prefixed icon and position at tiny widths",
+		selectTitleSegments(1, fiveSegments).selected.join(" · ") === "✓ Subagent 1/1",
 		JSON.stringify(selectTitleSegments(1, fiveSegments).selected),
 	);
 	check(
 		"selectTitleSegments never throws at zero width",
-		selectTitleSegments(0, fiveSegments).selected.join(" · ") === "Subagent 1/1 · ✓",
+		selectTitleSegments(0, fiveSegments).selected.join(" · ") === "✓ Subagent 1/1",
 		JSON.stringify(selectTitleSegments(0, fiveSegments).selected),
 	);
 }
