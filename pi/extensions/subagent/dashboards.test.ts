@@ -174,11 +174,11 @@ function makeSubagentDashboard(runs: SubagentDetails[], tui = fakeTui): any {
 
 function makeThread(
 	results: SubagentResultView[],
-	options: { tui?: any; onDone?: () => void } = {},
+	options: { tui?: any; theme?: any; onDone?: () => void } = {},
 ): any {
 	return new SubagentThreadView(
 		options.tui ?? fakeTui,
-		fakeTheme,
+		options.theme ?? fakeTheme,
 		() => subagentRuns(results),
 		() => () => {},
 		options.onDone ?? (() => {}),
@@ -290,6 +290,19 @@ function testSubagentDashboard(): void {
 			!threadTitle.includes("◐ · Subagent") &&
 			!threadTitle.includes("RUNNING"),
 		JSON.stringify(threadTitle),
+	);
+	const ansiTheme = {
+		fg: (key: string, text: string) =>
+			`\x1b[${key === "warning" ? "33" : key === "accent" ? "35" : "37"}m${text}\x1b[0m`,
+		bg: (_key: string, text: string) => text,
+		bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
+	};
+	const coloredTitle = makeThread([subagentTask()], { theme: ansiTheme }).render(120)[0] ?? "";
+	check(
+		"subagent thread: status reset restores accent styling before Subagent",
+		coloredTitle.includes("\x1b[35m\x1b[1m Subagent 1/1") &&
+			!coloredTitle.includes("\x1b[0m Subagent 1/1"),
+		JSON.stringify(coloredTitle),
 	);
 	check(
 		"subagent thread: prompt has vertical padding",

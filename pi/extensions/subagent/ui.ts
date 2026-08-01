@@ -750,7 +750,7 @@ export class SubagentThreadView implements Component {
 				: "✓";
 		const statusColor = !item.result.done ? "warning" : item.result.error ? "error" : "success";
 		const position = `Subagent ${this.selection.selected + 1}/${group.items.length}`;
-		const statusPosition = `${this.theme.fg(statusColor, statusIcon)} ${position}`;
+		const statusPosition = `${statusIcon} ${position}`;
 		const modelLabel = formatReadableModel(item.result.model, item.result.thinking);
 		const contextLabel = formatContextLabel(item.result.contextUsage);
 		const mode = item.result.mode ?? "ephemeral";
@@ -782,7 +782,15 @@ export class SubagentThreadView implements Component {
 		if (!this.expanded && wrappedTask.length > 3 && taskTitle[2] !== undefined) {
 			taskTitle[2] = truncateToWidth(taskTitle[2], Math.max(1, contentWidth - 1), "") + "…";
 		}
-		const headerTitle = titleSegments.selected.join(TITLE_SEPARATOR);
+		const plainHeaderTitle = titleSegments.selected.join(TITLE_SEPARATOR);
+		// A nested status color emits an ANSI reset. Explicitly restyle the suffix
+		// so that reset cannot cancel the header's accent color after the icon.
+		const headerTitle = plainHeaderTitle.startsWith(statusIcon)
+			? `${this.theme.fg(statusColor, this.theme.bold(statusIcon))}${this.theme.fg(
+					"accent",
+					this.theme.bold(plainHeaderTitle.slice(statusIcon.length)),
+				)}`
+			: plainHeaderTitle;
 		const headerLines = [...metadataLines, "", ...taskTitle, ""];
 		const renderedHeader = renderHeader({
 			width,
