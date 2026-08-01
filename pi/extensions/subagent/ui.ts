@@ -53,6 +53,9 @@ const HEADER_PASTELS = {
 	mode: 222,
 	separator: 245,
 	worktree: 150,
+	usageTurns: 109,
+	usageTokens: 146,
+	usageCost: 180,
 } as const;
 const CHAT_PADDING = TOOL_CHAT_PADDING;
 
@@ -222,9 +225,237 @@ export class EmptySubagentRender implements Component {
 	invalidate(): void {}
 }
 
+export interface CompactUsageParts {
+	turns: string;
+	tokens: string;
+	cost: string;
+}
+
+function finiteUsageValue(value: number): number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0
+		? Math.min(value, Number.MAX_SAFE_INTEGER)
+		: 0;
+}
+
+/** Compact cumulative usage labels shared by running and completed threads. */
+export function formatCompactUsageParts(usage: UsageStats): CompactUsageParts {
+	const tokens = Math.min(
+		Number.MAX_SAFE_INTEGER,
+		finiteUsageValue(usage.input) +
+			finiteUsageValue(usage.output) +
+			finiteUsageValue(usage.cacheRead) +
+			finiteUsageValue(usage.cacheWrite),
+	);
+	const cost = finiteUsageValue(usage.cost);
+	return {
+		turns: `↻ ${Math.round(finiteUsageValue(usage.turns))}`,
+		tokens: `${Math.round(tokens / 1000)}k`,
+		cost: `$${cost.toFixed(4)}`,
+	};
+}
+
+/** Preserve the verbose dashboard detail summary for the parent view. */
 export function formatUsage(usage: UsageStats): string {
 	const tokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 	return `${usage.turns} turns, ${tokens} tokens, $${usage.cost.toFixed(4)}`;
+}
+
+export function formatCompactUsage(usage: UsageStats): string {
+	const parts = formatCompactUsageParts(usage);
+	return [parts.turns, parts.tokens, parts.cost].join(TITLE_SEPARATOR);
+}
+
+export interface CompactWorktreeUsageRow {
+	text: string;
+	/** The displayed branch, or undefined when the branch had to be omitted. */
+	branch?: string;
+	truncatedBranch: boolean;
+}
+
+function truncatePlainWithEllipsis(text: string, width: number): string {
+	const target = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
+	if (visibleWidth(text) <= target) return text;
+	const ellipsisWidth = visibleWidth("…");
+	if (target <= ellipsisWidth) return target > 0 ? "…" : "";
+	const contentWidth = target - ellipsisWidth;
+	let visible = "";
+	for (const character of text) {
+		const candidate = visible + character;
+		if (visibleWidth(candidate) > contentWidth) break;
+		visible = candidate;
+	}
+	return `${visible}…`;
+}
+
+/**
+ * Select one bounded worktree metadata row. The usage suffix is reserved before
+ * truncating a branch so a full branch wins whenever the complete row fits.
+ */
+export function selectWorktreeUsageRow(
+	width: number,
+	branch: string | undefined,
+	usage: UsageStats,
+): CompactWorktreeUsageRow {
+	const target = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
+	const usableBranch = typeof branch === "string" && branch.length > 0 ? branch : undefined;
+	const usageText = formatCompactUsage(usage);
+	const suffix = `${TITLE_SEPARATOR}${usageText}`;
+	const iconRow = `${WORKTREE_METADATA_ICON}${suffix}`;
+	const fullRow = usableBranch ? `${WORKTREE_METADATA_ICON} ${usableBranch}${suffix}` : iconRow;
+	if (visibleWidth(fullRow) <= target) {
+		return { text: fullRow, branch: usableBranch, truncatedBranch: false };
+	}
+
+	if (usableBranch) {
+		const branchWidth = target - visibleWidth(`${WORKTREE_METADATA_ICON} `) - visibleWidth(suffix);
+		if (branchWidth > 0) {
+			const displayedBranch = truncatePlainWithEllipsis(usableBranch, branchWidth);
+			const row = `${WORKTREE_METADATA_ICON} ${displayedBranch}${suffix}`;
+			if (visibleWidth(row) <= target) {
+				return {
+					text: row,
+					branch: displayedBranch,
+					truncatedBranch: displayedBranch !== usableBranch,
+				};
+			}
+		}
+	}
+
+	if (visibleWidth(iconRow) <= target) {
+		return { text: iconRow, truncatedBranch: Boolean(usableBranch) };
+	}
+	return {
+		text: truncateToWidth(usageText, target, ""),
+		truncatedBranch: Boolean(usableBranch),
+	};
+}
+
+function formatColoredUsage(usage: UsageStats): string {
+	const parts = formatCompactUsageParts(usage);
+	const separator = pastel(HEADER_PASTELS.separator, TITLE_SEPARATOR);
+	return [
+		pastel(HEADER_PASTELS.usageTurns, parts.turns),
+		pastel(HEADER_PASTELS.usageTokens, parts.tokens),
+		pastel(HEADER_PASTELS.usageCost, parts.cost),
+	].join(separator);
+}
+
+function renderSelectedWorktreeUsage(
+	selection: CompactWorktreeUsageRow,
+	usage: UsageStats,
+	width: number,
+): string {
+	const target = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
+	if (target === 0 || !selection.text) return "";
+	const coloredUsage = formatColoredUsage(usage);
+	const separator = pastel(HEADER_PASTELS.separator, TITLE_SEPARATOR);
+	const candidate = selection.branch
+		? `${pastel(HEADER_PASTELS.worktree, `${WORKTREE_METADATA_ICON} ${selection.branch}`)}${separator}${coloredUsage}`
+		: selection.text.startsWith(WORKTREE_METADATA_ICON)
+			? `${pastel(HEADER_PASTELS.worktree, WORKTREE_METADATA_ICON)}${separator}${coloredUsage}`
+			: coloredUsage;
+	return truncateToWidth(candidate, target, "");
+}
+
+type ThreadFooterHint = string | { key: string; label: string };
+
+interface ThreadFooterState {
+	width: number;
+	scrollable: boolean;
+	selectedRunning: boolean;
+	anyRunning: boolean;
+}
+
+interface ThreadFooterChoice {
+	id: string;
+	readable: Array<{ key: string; label: string }>;
+	compact: string;
+}
+
+function plainHintText(hints: readonly ThreadFooterHint[]): string {
+	return hints
+		.map((hint) => (typeof hint === "string" ? hint : `${hint.key} ${hint.label}`))
+		.join("  ");
+}
+
+function compactHintText(choices: readonly ThreadFooterChoice[], separator = " · "): string {
+	return choices.map((choice) => choice.compact).join(separator);
+}
+
+/** Select normal-mode hints that render as one bounded footer row. */
+export function selectThreadFooterHints(state: ThreadFooterState): ThreadFooterHint[] {
+	const width = Number.isFinite(state.width) ? Math.max(0, Math.floor(state.width)) : 0;
+	const choices: ThreadFooterChoice[] = [
+		{ id: "parent", readable: [{ key: "↑/Esc", label: "parent" }], compact: "Esc" },
+		{ id: "agent", readable: [{ key: "←/→", label: "agent" }], compact: "←→" },
+		{ id: "history", readable: [{ key: "Shift+←/→", label: "history" }], compact: "⇧←→" },
+		...(state.scrollable
+			? [{ id: "scroll", readable: [{ key: "PgUp/PgDn", label: "scroll" }], compact: "Pg/Dn" }]
+			: []),
+		{ id: "details", readable: [{ key: "Ctrl+O", label: "details" }], compact: "^O" },
+		...(state.selectedRunning || state.anyRunning
+			? [
+					{
+						id: "kill",
+						readable:
+							state.selectedRunning && state.anyRunning
+								? [
+										{ key: "k", label: "kill" },
+										{ key: "Shift+K", label: "kill all" },
+									]
+								: [
+										{
+											key: state.selectedRunning ? "k" : "Shift+K",
+											label: state.selectedRunning ? "kill" : "kill all",
+										},
+									],
+						compact:
+							state.selectedRunning && state.anyRunning ? "k/K" : state.selectedRunning ? "k" : "K",
+					},
+				]
+			: []),
+		{ id: "close", readable: [{ key: "F6", label: "close" }], compact: "F6" },
+	];
+	const readable = choices.flatMap((choice) => choice.readable);
+	if (visibleWidth(plainHintText(readable)) <= width) return readable;
+
+	let compact = [...choices];
+	for (const removable of ["details", "scroll", "kill"]) {
+		if (visibleWidth(compactHintText(compact)) <= width) return [compactHintText(compact)];
+		compact = compact.filter((choice) => choice.id !== removable);
+	}
+	if (visibleWidth(compactHintText(compact)) <= width) return [compactHintText(compact)];
+
+	const spaced = compactHintText(compact, " ");
+	if (visibleWidth(spaced) <= width) return [spaced];
+
+	const tinyEssentials = compact.map((choice) =>
+		choice.id === "parent"
+			? { ...choice, compact: "↑" }
+			: choice.id === "history"
+				? { ...choice, compact: "⇧" }
+				: choice,
+	);
+	const tinySpaced = compactHintText(tinyEssentials, " ");
+	if (visibleWidth(tinySpaced) <= width) return [tinySpaced];
+
+	const close = tinyEssentials.find((choice) => choice.id === "close");
+	const parent = tinyEssentials.find((choice) => choice.id === "parent");
+	const optionalEssentials = tinyEssentials.filter(
+		(choice) => choice.id === "agent" || choice.id === "history",
+	);
+	let fitted = close && visibleWidth(close.compact) <= width ? [close] : [];
+	if (parent) {
+		const candidate = fitted.length > 0 ? [parent, ...fitted] : [parent];
+		if (visibleWidth(compactHintText(candidate, " ")) <= width) fitted = candidate;
+	}
+	for (const choice of optionalEssentials) {
+		const closeIndex = fitted.findIndex((candidate) => candidate.id === "close");
+		const candidate = [...fitted];
+		candidate.splice(closeIndex >= 0 ? closeIndex : candidate.length, 0, choice);
+		if (visibleWidth(compactHintText(candidate, " ")) <= width) fitted = candidate;
+	}
+	return fitted.length > 0 ? [compactHintText(fitted, " ")] : [];
 }
 
 interface DashboardItem {
@@ -300,7 +531,7 @@ export class SubagentDashboard implements Component {
 		return lines;
 	}
 
-	private detailLines(item: DashboardItem | undefined, width: number, height: number): string[] {
+	private detailLines(item: DashboardItem | undefined, _width: number, height: number): string[] {
 		if (!item) {
 			this.transcript.update(0, height);
 			return [this.theme.fg("muted", "Select a subagent")];
@@ -686,7 +917,7 @@ export class SubagentThreadView implements Component {
 			lines.push("", ...new Text(this.theme.fg(color, notification.message), 1, 0).render(width));
 		}
 		const statuses = Object.entries(uiState?.statuses ?? {}).filter(
-			([key]) => key !== "working" && key !== TOKEN_SPEED_STATUS_KEY,
+			([key]) => key !== "working" && key !== TOKEN_SPEED_STATUS_KEY && key !== "mcp",
 		);
 		if (statuses.length) {
 			lines.push(
@@ -710,11 +941,16 @@ export class SubagentThreadView implements Component {
 						: "Working...";
 			const working = uiState?.statuses.working ?? fallback;
 			lines.push("", ` ${this.theme.fg("warning", frame)} ${working}`);
-		} else lines.push("", this.theme.fg("dim", ` ${formatUsage(item.result.usage)}`));
+		}
 		return lines;
 	}
 
-	private footerHints(): Array<{ key: string; label: string }> {
+	private footerHints(
+		width: number,
+		scrollable: boolean,
+		selectedRunning: boolean,
+		anyRunning: boolean,
+	): ThreadFooterHint[] {
 		if (this.killArmed === "all")
 			return [
 				{ key: "Shift+K", label: "again to KILL ALL agents" },
@@ -725,16 +961,12 @@ export class SubagentThreadView implements Component {
 				{ key: "k", label: "again to KILL this agent" },
 				{ key: "Esc", label: "cancel" },
 			];
-		return [
-			{ key: "↑/Esc", label: "parent" },
-			{ key: "←/→", label: "agent" },
-			{ key: "Shift+←/→", label: "history" },
-			{ key: "PgUp/PgDn", label: "scroll" },
-			{ key: "Ctrl+O", label: "details" },
-			{ key: "k", label: "kill" },
-			{ key: "Shift+K", label: "kill all" },
-			{ key: "F6", label: "close" },
-		];
+		return selectThreadFooterHints({
+			width: getContentWidth(width),
+			scrollable,
+			selectedRunning,
+			anyRunning,
+		});
 	}
 
 	render(width: number): string[] {
@@ -782,23 +1014,31 @@ export class SubagentThreadView implements Component {
 				)
 			: [];
 		const tokenSpeed = item.result.uiState?.statuses[TOKEN_SPEED_STATUS_KEY];
-		const sessionLabel = item.result.sessionId ? `session ${item.result.sessionId}` : undefined;
-		const workspaceSession =
+		const metadataWidth = Math.max(0, Math.floor(contentWidth));
+		const usageRow =
 			item.result.workspace === "worktree"
-				? pastel(
-						HEADER_PASTELS.worktree,
-						`${WORKTREE_METADATA_ICON}${sessionLabel ? ` ${sessionLabel}` : ""}`,
+				? renderSelectedWorktreeUsage(
+						selectWorktreeUsageRow(metadataWidth, item.result.worktree?.branch, item.result.usage),
+						item.result.usage,
+						metadataWidth,
 					)
-				: sessionLabel;
-		const metadataSegments = [
-			...teamContext,
-			workspaceSession,
-			...titleSegments.dropped.map((segment) => segment.text),
-			tokenSpeed,
-		].filter((value): value is string => Boolean(value));
-		const metadataLines = metadataSegments.length
-			? wrapTextWithAnsi(metadataSegments.join(TITLE_SEPARATOR), Math.max(1, contentWidth))
-			: [];
+				: metadataWidth > 0
+					? truncateToWidth(formatColoredUsage(item.result.usage), metadataWidth, "")
+					: "";
+		const metadataLines = [
+			...(teamContext.length
+				? wrapTextWithAnsi(teamContext.join(TITLE_SEPARATOR), Math.max(1, metadataWidth))
+				: []),
+			...(usageRow ? [usageRow] : []),
+			...(titleSegments.dropped.length || tokenSpeed
+				? wrapTextWithAnsi(
+						[...titleSegments.dropped.map((segment) => segment.text), tokenSpeed]
+							.filter((value): value is string => Boolean(value))
+							.join(TITLE_SEPARATOR),
+						Math.max(1, metadataWidth),
+					)
+				: []),
+		];
 		const wrappedTask = new Text(item.result.task, 0, 0).render(contentWidth);
 		const taskTitle = this.expanded ? wrappedTask : wrappedTask.slice(0, 3);
 		if (!this.expanded && wrappedTask.length > 3 && taskTitle[2] !== undefined) {
@@ -814,14 +1054,34 @@ export class SubagentThreadView implements Component {
 			lines: headerLines,
 			theme: this.theme,
 		});
+		const selectedRunning = !item.result.done;
+		const anyRunning = groups.some((candidate) =>
+			candidate.items.some((candidateItem) => !candidateItem.result.done),
+		);
+		const content = this.contentLines(item, width);
+		// Calculate scrollability from a no-scroll footer first. Normal hint
+		// selection is guaranteed to stay on one row, so this fixed ordering
+		// cannot oscillate when adding PgUp/PgDn changes the hint text.
+		const provisionalHints = this.footerHints(width, false, selectedRunning, anyRunning);
+		const provisionalFooter = renderFooter({
+			width,
+			hints: provisionalHints,
+			padding: 1,
+			theme: this.theme,
+		});
+		const provisionalBodyHeight = Math.max(
+			0,
+			height - renderedHeader.length - provisionalFooter.length,
+		);
+		const scrollable = content.length > provisionalBodyHeight;
+		const footerHints = this.footerHints(width, scrollable, selectedRunning, anyRunning);
 		const renderedFooter = renderFooter({
 			width,
-			hints: this.footerHints(),
+			hints: footerHints,
 			padding: 1,
 			theme: this.theme,
 		});
 		const bodyHeight = Math.max(0, height - renderedHeader.length - renderedFooter.length);
-		const content = this.contentLines(item, width);
 		this.transcript.update(content.length, bodyHeight);
 		if (this.followTail) this.transcript.end(true);
 		const range = this.transcript.range;
@@ -833,7 +1093,7 @@ export class SubagentThreadView implements Component {
 			headerLines,
 			body,
 			bodyPaddingX: 0,
-			keyHints: this.footerHints(),
+			keyHints: footerHints,
 			footerPadding: 1,
 			theme: this.theme,
 		});

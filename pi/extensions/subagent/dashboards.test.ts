@@ -65,8 +65,15 @@ const { initTheme } = await import("@earendil-works/pi-coding-agent");
 const { visibleWidth } = await import("@earendil-works/pi-tui");
 initTheme("dark");
 const { SubagentDashboard, SubagentThreadView } = await import("." + "/index.ts");
-const { buildThreadGroups, formatContextLabel, formatReadableModel, selectTitleSegments } =
-	await import("." + "/ui.ts");
+const {
+	buildThreadGroups,
+	formatCompactUsage,
+	formatContextLabel,
+	formatReadableModel,
+	selectThreadFooterHints,
+	selectTitleSegments,
+	selectWorktreeUsageRow,
+} = await import("." + "/ui.ts");
 const { TeamDashboard } = await import(".." + "/team/index.ts");
 type SubagentDetails = import("./index.ts").SubagentDetails;
 type SubagentResultView = import("./index.ts").SubagentResultView;
@@ -114,25 +121,6 @@ function renders(label: string, render: (width: number) => string[]): void {
 		} catch (error) {
 			check(
 				`${label} @${layout}(${width})`,
-				false,
-				`threw: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	}
-}
-
-/** F6 body lines use bodyPaddingX 0, so only exact visible width is contractual. */
-function rendersThread(label: string, render: (width: number) => string[]): void {
-	for (const width of [40, 60, 120]) {
-		try {
-			const lines = render(width);
-			const ok =
-				Array.isArray(lines) &&
-				lines.every((line) => typeof line === "string" && visibleWidth(line) === width);
-			check(`${label} @(${width})`, ok, `got ${JSON.stringify(lines?.slice(0, 1))}`);
-		} catch (error) {
-			check(
-				`${label} @(${width})`,
 				false,
 				`threw: ${error instanceof Error ? error.message : String(error)}`,
 			);
@@ -229,6 +217,14 @@ function toolCallPart(id: string, name: string, args: Record<string, unknown>): 
 // A startup-failed child produces exactly this: exit code + a long ANSI-stripped tail.
 const LONG_ERROR = `exited 1 (${"Error: Failed to load extension /home/u/.pi/agent/extensions/team/index.ts: does not export a valid factory function. ".repeat(5)})`;
 const LONG_UNBROKEN = "x".repeat(300);
+const COMPACT_USAGE = {
+	input: 100_000,
+	output: 100_000,
+	cacheRead: 100_000,
+	cacheWrite: 17_000,
+	cost: 0.0045,
+	turns: 18,
+};
 
 function testSubagentDashboard(): void {
 	renders("subagent: empty state", (w) => makeSubagentDashboard(subagentRuns([])).render(w));
@@ -376,9 +372,12 @@ function testSubagentDashboard(): void {
 		"subagent thread: prompt starts collapsed",
 		!collapsedPrompt.join("\n").includes("PROMPT_TAIL"),
 	);
+	const collapsedPromptTail = collapsedPrompt.findIndex((line: string) =>
+		stripAnsi(line).trimEnd().endsWith("…"),
+	);
 	check(
 		"subagent thread: collapsed prompt shows three lines",
-		collapsedPrompt[5]?.trimEnd().endsWith("…") === true && collapsedPrompt[6]?.trim() === "",
+		collapsedPromptTail >= 0 && collapsedPrompt[collapsedPromptTail + 1]?.trim() === "",
 	);
 	expandable.handleInput("\x0f");
 	check(
@@ -407,30 +406,44 @@ function testSubagentDashboard(): void {
 		toolThread.render(120).join("\n").includes("EXPANDED_TOOL_OUTPUT"),
 	);
 
-	// ---------- usage alignment ----------
+	// ---------- compact usage and padding alignment ----------
 	const alignLines = toolThread.render(120);
-	const alignUsage = alignLines.find((line: string) => line.includes("1 turn"));
+	const alignUsage = alignLines.find((line: string) => line.includes("↻ 1"));
 	check(
-		"thread: usage has one-space internal padding (not two)",
+		"thread: compact usage metadata has one-column padding",
 		!!alignUsage && alignUsage.startsWith(" ") && !alignUsage.startsWith("  "),
+	);
+	check(
+		"thread: completed usage is absent from the transcript body",
+		!alignLines.map(stripAnsi).join("\n").includes("1 turns, 2 tokens"),
 	);
 
 	// ---------- padding alignment ----------
 	const alignTitleLine = alignLines[0];
+	const alignWorktree = {
+		path: "/tmp/align-worktree",
+		branch: "feature/align-session",
+		repository: "/tmp/repository",
+	};
 	const alignMetaLine = makeThread([
-		subagentTask({ workspace: "worktree", sessionId: "align-session" }),
+		subagentTask({ workspace: "worktree", worktree: alignWorktree }),
 	])
 		.render(120)
-		.find((line: string) => stripAnsi(line).includes("󰙅 session align-session"));
+		.find((line: string) => stripAnsi(line).includes("󰙅 feature/align-session"));
 	const coloredWorktree = makeThread(
-		[subagentTask({ workspace: "worktree", sessionId: "accent-session" })],
+		[
+			subagentTask({
+				workspace: "worktree",
+				worktree: { ...alignWorktree, branch: "feature/accent" },
+			}),
+		],
 		{ theme: ansiTheme },
 	)
 		.render(120)
 		.join("\n");
 	check(
-		"thread: worktree session metadata uses the branch pastel color",
-		coloredWorktree.includes("\x1b[38;5;150m󰙅 session accent-session"),
+		"thread: worktree branch metadata uses the branch pastel color",
+		coloredWorktree.includes("\x1b[38;5;150m󰙅 feature/accent"),
 		JSON.stringify(coloredWorktree.slice(0, 300)),
 	);
 	const alignTaskHeaderLine = alignLines.find((l: string) => stripAnsi(l).includes("Do a thing"));
@@ -485,14 +498,14 @@ function testSubagentDashboard(): void {
 	);
 	const narrowThreadLines = narrowThread.render(40);
 	check(
-		"narrow thread: final transcript marker survives wrapped footer hints",
-		narrowThreadLines.some((line: string) => line.includes("1 turn")),
+		"narrow thread: compact usage metadata survives the adaptive footer",
+		narrowThreadLines.some((line: string) => line.includes("↻ 1")),
 	);
 
 	const narrowThreadWide = narrowThread.render(120);
 	check(
-		"narrow thread: final transcript marker remains visible at wide width",
-		narrowThreadWide.some((line: string) => line.includes("1 turn")),
+		"narrow thread: compact usage remains visible at wide width",
+		narrowThreadWide.some((line: string) => line.includes("↻ 1")),
 	);
 
 	// ---------- thread groups: persistent coalescing and navigation ----------
@@ -587,6 +600,7 @@ function testSubagentDashboard(): void {
 				statuses: {
 					working: "Inspecting project files...",
 					lint: "clean",
+					mcp: "MCP: 0/1 servers",
 					"token-speed": "40 tok/s",
 				},
 				widgets: { tasks: { lines: ["2 tasks remaining"], placement: "belowEditor" } },
@@ -618,11 +632,15 @@ function testSubagentDashboard(): void {
 	check("subagent thread: projects generic statuses", announcedOutput.includes("lint: clean"));
 	check(
 		"subagent thread: pins token speed in metadata",
-		announced.render(120)[1]?.includes("40 tok/s") === true,
+		announced.render(120).some((line: string) => line.includes("40 tok/s")),
 	);
 	check(
 		"subagent thread: does not duplicate token speed in the transcript",
 		!announcedOutput.includes("token-speed:"),
+	);
+	check(
+		"subagent thread: removes redundant MCP status projection",
+		!announcedOutput.includes("MCP: 0/1 servers") && !announcedOutput.includes("mcp:"),
 	);
 	check(
 		"subagent thread: announce tool stays visually hidden",
@@ -671,8 +689,9 @@ function testSubagentDashboard(): void {
 			!stripAnsi(wideLines[1] ?? "").includes("persistent"),
 	);
 	check(
-		"thread @120: shared workspace and redundant status stay hidden",
-		stripAnsi(wideLines[1] ?? "").includes("session sess-1") &&
+		"thread @120: shared usage is visible without workspace or session metadata",
+		stripAnsi(wideLines[1] ?? "").includes("↻ 1") &&
+			!wideLines.map(stripAnsi).join("\n").includes("sess-1") &&
 			!wideLines.map(stripAnsi).join("\n").includes("done · shared") &&
 			!wideLines.map(stripAnsi).join("\n").includes("󰙅"),
 	);
@@ -760,25 +779,220 @@ function testSubagentDashboard(): void {
 	);
 
 	// ---------- thread: wrapped long secondary metadata ----------
+	const longBranch = "feature/long-unbroken-branch-1234567890abcdef-xyz";
 	const longMetaTask = subagentTask({
 		workspace: "worktree",
-		sessionId: "session-abcdef-1234567890abcdef-xyz",
+		sessionId: "legacy-session-must-not-render",
+		worktree: {
+			path: "/tmp/long-worktree",
+			branch: longBranch,
+			repository: "/tmp/repository",
+		},
 		uiState: { statuses: { "token-speed": "1234 tok/s" } } as any,
 	});
 	for (const width of [40, 60]) {
 		const lines = makeThread([longMetaTask]).render(width);
 		const output = lines.map(stripAnsi).join("\n");
 		check(
-			`thread @${width}: worktree icon and long metadata wrap with exact width`,
+			`thread @${width}: worktree branch and usage stay bounded with exact width`,
 			lines.every((line: string) => visibleWidth(line) === width) &&
 				output.includes("1234") &&
 				output.includes("tok/s") &&
-				output.includes("󰙅 session") &&
-				output.includes("session-abcdef-1234567890abcdef-xyz") &&
+				output.includes("󰙅") &&
+				output.includes("↻ 1") &&
+				!output.includes("legacy-session-must-not-render") &&
+				!output.includes("session ") &&
 				!output.includes("worktree"),
 			JSON.stringify(lines.slice(0, 4)),
 		);
 	}
+
+	// ---------- compact usage, branch selection, and legacy metadata ----------
+	const expectedCompactUsage = "↻ 18 · 317k · $0.0045";
+	check(
+		"thread: compact formatter keeps cumulative token semantics and rounding",
+		formatCompactUsage(COMPACT_USAGE) === expectedCompactUsage,
+		formatCompactUsage(COMPACT_USAGE),
+	);
+	const overflowUsage = formatCompactUsage({
+		input: Number.MAX_VALUE,
+		output: Number.MAX_VALUE,
+		cacheRead: Number.MAX_VALUE,
+		cacheWrite: Number.MAX_VALUE,
+		cost: Number.MAX_VALUE,
+		turns: Number.MAX_VALUE,
+	});
+	check(
+		"thread: compact formatter never emits non-finite labels",
+		!overflowUsage.includes("Infinity") && !overflowUsage.includes("NaN"),
+		overflowUsage,
+	);
+	for (const done of [false, true]) {
+		const lines = makeThread([
+			subagentTask({ done, status: done ? "done" : "running", usage: COMPACT_USAGE }),
+		]).render(120);
+		const output = lines.map(stripAnsi).join("\n");
+		check(
+			`thread: ${done ? "completed" : "running"} usage is in header metadata`,
+			output.includes(expectedCompactUsage),
+			JSON.stringify(lines.slice(0, 4)),
+		);
+		if (done)
+			check(
+				"thread: completed compact usage has no transcript usage row",
+				!output.includes("18 turns, 317000 tokens"),
+			);
+	}
+	const fullBranch = "feature/full-fit-branch";
+	const fullRow = `󰙅 ${fullBranch} · ${expectedCompactUsage}`;
+	const fullFit = selectWorktreeUsageRow(visibleWidth(fullRow), fullBranch, COMPACT_USAGE);
+	const justOverThreshold = selectWorktreeUsageRow(
+		visibleWidth(fullRow) - 1,
+		fullBranch,
+		COMPACT_USAGE,
+	);
+	check(
+		"thread: worktree keeps the full branch when branch-plus-usage fits",
+		fullFit.text === fullRow && fullFit.branch === fullBranch && !fullFit.truncatedBranch,
+		JSON.stringify(fullFit),
+	);
+	check(
+		"thread: just-over-threshold worktree row reserves usage with a pastel-safe ellipsis",
+		justOverThreshold.truncatedBranch &&
+			justOverThreshold.branch?.endsWith("…") === true &&
+			!justOverThreshold.branch?.includes("\x1b") &&
+			justOverThreshold.text.endsWith(expectedCompactUsage) &&
+			visibleWidth(justOverThreshold.text) <= visibleWidth(fullRow) - 1,
+		JSON.stringify(justOverThreshold),
+	);
+	const longUnbrokenBranch = selectWorktreeUsageRow(28, "x".repeat(300), COMPACT_USAGE);
+	check(
+		"thread: long unbroken branch never overflows the selected row",
+		longUnbrokenBranch.truncatedBranch &&
+			longUnbrokenBranch.branch?.endsWith("…") === true &&
+			visibleWidth(longUnbrokenBranch.text) <= 28,
+		JSON.stringify(longUnbrokenBranch),
+	);
+	const branchRenderTask = subagentTask({
+		workspace: "worktree",
+		worktree: { path: "/tmp/branch", branch: "x".repeat(300), repository: "/tmp/repository" },
+		usage: COMPACT_USAGE,
+	});
+	for (const width of [1, 7, 18, 40, 60, 120]) {
+		const lines = makeThread([branchRenderTask]).render(width);
+		check(
+			`thread @${width}: long branch render remains exact-width and safe`,
+			lines.every((line: string) => visibleWidth(line) === width),
+			JSON.stringify(lines.slice(0, 3)),
+		);
+	}
+	const legacyWorktree = makeThread([
+		subagentTask({
+			workspace: "worktree",
+			sessionId: "legacy-session-hidden",
+			worktree: { path: "/tmp/legacy", repository: "/tmp/repository" } as any,
+			usage: COMPACT_USAGE,
+		}),
+	]);
+	const legacyOutput = legacyWorktree.render(60).map(stripAnsi).join("\n");
+	check(
+		"thread: legacy worktree metadata is readable without a fabricated session id",
+		legacyOutput.includes(`󰙅 · ${expectedCompactUsage}`) &&
+			!legacyOutput.includes("legacy-session-hidden") &&
+			!legacyOutput.includes("undefined"),
+		JSON.stringify(legacyOutput.slice(0, 300)),
+	);
+	const sharedUsageOutput = makeThread([
+		subagentTask({ workspace: "shared", sessionId: "shared-session-hidden", usage: COMPACT_USAGE }),
+	])
+		.render(60)
+		.map(stripAnsi)
+		.join("\n");
+	check(
+		"thread: shared metadata shows usage without workspace or session text",
+		sharedUsageOutput.includes(expectedCompactUsage) &&
+			!sharedUsageOutput.includes("shared") &&
+			!sharedUsageOutput.includes("shared-session-hidden"),
+	);
+
+	// ---------- adaptive footer and scrollability ----------
+	const mediumHintText = selectThreadFooterHints({
+		width: 58,
+		scrollable: true,
+		selectedRunning: true,
+		anyRunning: true,
+	});
+	check(
+		"thread: medium footer uses one compact adaptive hint row",
+		mediumHintText.length === 1 && mediumHintText[0] === "Esc · ←→ · ⇧←→ · Pg/Dn · ^O · k/K · F6",
+		JSON.stringify(mediumHintText),
+	);
+	const tinyHintText = selectThreadFooterHints({
+		width: 7,
+		scrollable: true,
+		selectedRunning: true,
+		anyRunning: true,
+	});
+	check(
+		"thread: tiny footer reserves the close affordance when it fits",
+		tinyHintText.length === 1 && tinyHintText[0] === "↑ ←→ F6",
+		JSON.stringify(tinyHintText),
+	);
+	const footerTui = {
+		terminal: { rows: 12, columns: 60 },
+		requestRender() {},
+		invalidate() {},
+	} as any;
+	const scrollableThread = makeThread(
+		[
+			subagentTask({
+				done: true,
+				status: "done",
+				output: Array.from({ length: 40 }, (_, index) => `Transcript line ${index + 1}`).join("\n"),
+			}),
+		],
+		{ tui: footerTui },
+	);
+	const scrollableFooter = scrollableThread.render(60).slice(-3).map(stripAnsi);
+	check(
+		"thread: scrollable footer shows Pg/Dn and exactly one hint row",
+		scrollableFooter[0]?.includes("─") === true &&
+			scrollableFooter[1]?.includes("Pg/Dn") === true &&
+			scrollableFooter[2]?.trim() === "",
+		JSON.stringify(scrollableFooter),
+	);
+	const nonScrollableFooter = makeThread([subagentTask()]).render(60).slice(-3).map(stripAnsi);
+	check(
+		"thread: non-scrollable footer omits Pg/Dn",
+		!nonScrollableFooter.join("\n").includes("Pg/Dn") &&
+			!nonScrollableFooter.join("\n").includes("PgUp/PgDn"),
+		JSON.stringify(nonScrollableFooter),
+	);
+	const completedFooter = makeThread([
+		subagentTask({ done: true, status: "done", output: "finished" }),
+	])
+		.render(120)
+		.slice(-3)
+		.map(stripAnsi)
+		.join("\n");
+	check(
+		"thread: completed selection hides kill affordances",
+		!completedFooter.includes("kill") && !completedFooter.includes("Shift+K"),
+		completedFooter,
+	);
+	const mixedFooter = makeThread([
+		subagentTask({ done: true, status: "done", output: "finished" }),
+		subagentTask({ taskId: "running", index: 1 }),
+	])
+		.render(120)
+		.slice(-3)
+		.map(stripAnsi)
+		.join("\n");
+	check(
+		"thread: mixed selection shows kill-all without selected-task kill",
+		mixedFooter.includes("Shift+K kill all") && !mixedFooter.includes(" k kill"),
+		mixedFooter,
+	);
 
 	// ---------- thread: history hint, no run counter ----------
 	const footerOutput = makeThread([subagentTask()]).render(120).map(stripAnsi).join("\n");
@@ -998,8 +1212,9 @@ function testSubagentDashboard(): void {
 		(mergedOutput.match(/Live partial response\.\.\./g) ?? []).length === 1,
 	);
 	check(
-		"thread: cumulative usage is untouched by context display",
-		mergedView.render(120).map(stripAnsi).join("\n").includes("1 turns, 2 tokens"),
+		"thread: compact cumulative usage is untouched by context display",
+		mergedView.render(120).map(stripAnsi).join("\n").includes("↻ 1 · 0k · $0.0100") &&
+			!mergedOutput.includes("1 turns, 2 tokens"),
 	);
 
 	// ---------- thread: disposal clears the animation timer ----------
@@ -1007,7 +1222,7 @@ function testSubagentDashboard(): void {
 	const clearedHandles: unknown[] = [];
 	(globalThis as any).clearInterval = (handle: unknown) => {
 		clearedHandles.push(handle);
-		originalClearInterval(handle);
+		originalClearInterval(handle as any);
 	};
 	const disposable = makeThread([subagentTask()]);
 	disposable.dispose();
@@ -1127,14 +1342,16 @@ function testSubagentDashboard(): void {
 	);
 	check(
 		"selectTitleSegments reports dropped context and mode",
-		narrowSegments.dropped.map((segment) => segment.text).join(",") === "168k/258k,persistent",
+		narrowSegments.dropped.map((segment: { text: string }) => segment.text).join(",") ===
+			"168k/258k,persistent",
 		JSON.stringify(narrowSegments.dropped),
 	);
 	const truncatedSegments = selectTitleSegments(24, fiveSegments);
 	check(
 		"selectTitleSegments truncates the model below the essentials threshold",
 		truncatedSegments.selected.map(stripAnsi).join(" · ") === "✓ Subagent 1/1 · gpt-5.…" &&
-			truncatedSegments.dropped.map((segment) => segment.text).join(",") === "168k/258k,persistent",
+			truncatedSegments.dropped.map((segment: { text: string }) => segment.text).join(",") ===
+				"168k/258k,persistent",
 		JSON.stringify(truncatedSegments.selected),
 	);
 	check(

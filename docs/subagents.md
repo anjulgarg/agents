@@ -58,17 +58,19 @@ The F6 thread view is a strictly read-only viewer. It renders the child's active
 
 The header is provider-free and responsive. The wide title follows `✓ Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent`: an icon-only status directly prefixes the subagent position without a dot separator, followed by a readable model label with thinking effort appended, true context occupancy, and the mode. The running loader and subagent identity share the parent activity indicator's red pastel; model, context, mode, and separators use distinct colors from the parent status-line palette. Provider prefixes are stripped and model IDs are normalized for reading; the stored model identity is never changed. Status uses the same semantic accent as the parent activity indicator while running, such as `◒`, then failure or success coloring for `✗` or `✓`; status words never appear next to the icon in the title.
 
-At narrow widths the title keeps the prefixed status and subagent position plus the readable model, and moves context and mode into wrapped secondary metadata together with team role, session identity, and token speed. Redundant status words and the default shared workspace are hidden. An isolated worktree is identified only by the status line's branch pastel on `󰙅`, directly joined to its session label as `󰙅 session abc123`. Secondary metadata wraps to the exact terminal width.
+At narrow widths the title keeps the prefixed status and subagent position plus the readable model, and moves context, mode, and compact cumulative usage into wrapped secondary metadata together with team role and token speed. Cumulative usage moves from the transcript bottom into this metadata and renders like `↻ 18 · 317k · $0.0045`. Persistent session IDs are hidden from the visual UI and remain programmatic control identifiers, not visual metadata. Shared workspace text is hidden. Worktree tasks show the real worktree branch as `󰙅 <branch>` followed by compact usage; the complete branch is shown whenever it fits, and only the branch is truncated with `…` when needed to preserve usage. Secondary metadata wraps to the exact terminal width. Static child `mcp` status is filtered while meaningful custom statuses remain.
 
 ### Context occupancy
 
-The context segment comes from the child's Pi `get_session_stats` RPC snapshot (`contextUsage`), never from cumulative billed input/output traffic. Known occupancy renders compactly as `168k/258k`; unknown tokens right after compaction render as `unknown/258k`; an absent or invalid snapshot renders `context unavailable`. Cumulative turns, tokens, and cost remain in the transcript footer summary and are unrelated to the context segment.
+The context segment comes from the child's Pi `get_session_stats` RPC snapshot (`contextUsage`), never from cumulative billed input/output traffic. Known occupancy renders compactly as `168k/258k`; unknown tokens right after compaction render as `unknown/258k`; an absent or invalid snapshot renders `context unavailable`. Cumulative turns, tokens, and cost are separate from the context segment and render as compact cumulative usage in secondary header metadata, not at the transcript bottom.
 
 ### Transcript and grouping
 
 Supported parent tools (read, find, grep, ls, edit) render with the same compact presentation and soft grouping as the parent minimal transcript. Consecutive calls collapse into one leader row, `announce_step` does not break an eligible streak, and visible prose or user content does. Successful results collapse; failures keep an explicit row; bash and write remain individually visible. Ctrl+O expands per-call details. Tools outside the shared set keep Pi's generic tool rendering.
 
-Historical run groups stay internal: Shift+Left and Shift+Right continue to move across them, and the footer labels that navigation `history` without exposing a run or delegation counter.
+### Footer
+
+The footer uses one adaptive hint row. It shows `PgUp/Dn` only when the thread is scrollable and `k/K` only while relevant agents are running. Optional guidance is compacted or dropped before wrapping, while essential navigation remains visible. Historical run groups stay internal: Shift+Left and Shift+Right continue to move across them, and the footer labels that navigation `history` without exposing a run or delegation counter.
 
 ## Ownership and branches
 

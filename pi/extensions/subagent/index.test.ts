@@ -1982,7 +1982,7 @@ async function testF6RetainsPersistentConversation(): Promise<void> {
 			component?.groups().length === 1 &&
 				rendered.includes("FIRST_PERSISTENT_ANSWER") &&
 				rendered.includes("SECOND_PERSISTENT_ANSWER") &&
-				rendered.includes("2 turns") &&
+				rendered.includes("↻ 2") &&
 				rendered.includes("$0.0400"),
 			JSON.stringify({ groups: component?.groups(), rendered }),
 		);
