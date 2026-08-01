@@ -132,6 +132,7 @@ assert(
 		execution.message.display === false &&
 		execution.options.triggerTurn === true &&
 		execution.options.deliverAs === "followUp" &&
+		executionText.includes("[BUILD MODE ACTIVE]") &&
 		executionText.includes("Validated implementation detail that must survive") &&
 		executionText.includes("Inspect the login flow") &&
 		executionText.includes("regression tests") &&
@@ -145,7 +146,8 @@ const executionContext = await handlers.get("before_agent_start")?.({}, context)
 assert(
 	"execution context remains independent from other task extensions",
 	!String(executionContext?.message?.content).toLowerCase().includes("todo") &&
-		String(executionContext?.message?.content).includes("task-management"),
+		String(executionContext?.message?.content).includes("task-management") &&
+		String(executionContext?.systemPrompt).includes("[BUILD MODE ACTIVE]"),
 	JSON.stringify(executionContext),
 );
 
@@ -156,7 +158,8 @@ assert(
 	"execution mode settles on the agent lifecycle without todo events",
 	settledEntry?.type === "plan-mode" &&
 		settledEntry.data.executing === false &&
-		postSettlementContext === undefined &&
+		String(postSettlementContext?.systemPrompt).includes("[BUILD MODE ACTIVE]") &&
+		!String(postSettlementContext?.systemPrompt).includes("[PLAN MODE ACTIVE]") &&
 		statusUpdates.at(-1)?.value === undefined &&
 		busListeners.length === 0 &&
 		busEmissions.every((event) => !event.startsWith("todo:")),
@@ -252,6 +255,39 @@ function createJobHarness(initialTools: string[]) {
 			harness.tools().includes("write") &&
 			harness.tools().join(",") === "read,bash,edit,write,job,grep",
 		harness.tools().join(","),
+	);
+
+	const buildContext = await harness.handlers.get("before_agent_start")?.(
+		{ systemPrompt: "base", systemPromptOptions: { skills: [] } },
+		harness.context,
+	);
+	assert(
+		"disabling plan mode gives the model authoritative build guidance",
+		String(buildContext?.systemPrompt).includes("[BUILD MODE ACTIVE]") &&
+			String(buildContext?.systemPrompt).includes("Full tool access is available") &&
+			!String(buildContext?.systemPrompt).includes("[PLAN MODE ACTIVE]"),
+		JSON.stringify(buildContext),
+	);
+
+	const filteredAfterSwitch = await harness.handlers.get("context")?.(
+		{
+			messages: [{ role: "custom", customType: "plan-mode-context", content: "old plan guidance" }],
+		},
+		harness.context,
+	);
+	assert(
+		"disabling plan mode removes the stale planning message before the request",
+		filteredAfterSwitch?.messages?.length === 0,
+		JSON.stringify(filteredAfterSwitch),
+	);
+	const repeatedBuildContext = await harness.handlers.get("before_agent_start")?.(
+		{ systemPrompt: "base", systemPromptOptions: { skills: [] } },
+		harness.context,
+	);
+	assert(
+		"build guidance is sent once per mode transition",
+		repeatedBuildContext === undefined,
+		JSON.stringify(repeatedBuildContext),
 	);
 }
 

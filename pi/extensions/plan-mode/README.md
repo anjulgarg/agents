@@ -35,6 +35,7 @@ Read-only exploration mode for safe code analysis.
 - Other active tools remain available
 - Bash commands filtered through allowlist
 - Active `foreman-plan` guidance is injected from Pi's discovered skill metadata
+- The current plan/build mode is reasserted as authoritative guidance after transitions and lifecycle boundaries so stale planning history cannot disable execution
 - Missing or unreadable guidance produces a warning and uses a safe approval-gated fallback
 - The plan remains in chat so repository files are not changed
 

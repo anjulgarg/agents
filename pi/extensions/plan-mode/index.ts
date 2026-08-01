@@ -37,6 +37,8 @@ const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "question"];
 const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["edit", "write", "job"]);
 const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
+const BUILD_MODE_GUIDANCE =
+	"[BUILD MODE ACTIVE]\nPlan-mode restrictions are disabled. Full tool access is available; do not claim that a build-mode switch is still required.";
 
 interface PlanModeState {
 	enabled: boolean;
@@ -57,6 +59,10 @@ function getTextContent(message: AssistantMessage): string {
 		.join("\n");
 }
 
+function appendSystemGuidance(systemPrompt: string | undefined, guidance: string): string {
+	return systemPrompt ? `${systemPrompt}\n\n${guidance}` : guidance;
+}
+
 function isPlanModeContextMessage(message: AgentMessage & { customType?: string }): boolean {
 	if (message.customType === "plan-mode-context") return true;
 	if (message.role !== "user") return false;
@@ -74,6 +80,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let cachedPlanningSkill: { filePath: string; content: string } | undefined;
 	let planningSkillWarningShown = false;
 	let planningGuidanceInjected = false;
+	let buildModeGuidancePending = false;
 
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration)",
@@ -130,9 +137,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	}
 
 	function togglePlanMode(ctx: ExtensionContext): void {
+		const wasPlanModeEnabled = planModeEnabled;
 		planModeEnabled = !planModeEnabled;
 		executionMode = false;
 		planningGuidanceInjected = false;
+		buildModeGuidancePending = wasPlanModeEnabled && !planModeEnabled;
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
@@ -257,6 +266,14 @@ capabilities available to you, and record each step immediately after its work i
 verified instead of batching progress updates at the end.`,
 					display: false,
 				},
+				systemPrompt: appendSystemGuidance(event.systemPrompt, BUILD_MODE_GUIDANCE),
+			};
+		}
+
+		if (buildModeGuidancePending) {
+			buildModeGuidancePending = false;
+			return {
+				systemPrompt: appendSystemGuidance(event.systemPrompt, BUILD_MODE_GUIDANCE),
 			};
 		}
 	});
@@ -265,6 +282,7 @@ verified instead of batching progress updates at the end.`,
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!executionMode) return;
 		executionMode = false;
+		buildModeGuidancePending = true;
 		updateStatus(ctx);
 		persistState();
 	});
@@ -295,16 +313,19 @@ verified instead of batching progress updates at the end.`,
 			planModeEnabled = false;
 			executionMode = true;
 			planningGuidanceInjected = false;
+			buildModeGuidancePending = false;
 			restoreNormalModeTools();
 			updateStatus(ctx);
 			persistState();
 
-			const execMessage = `Execute the user-approved plan below in order. Track progress with your available task-management capabilities and record each step immediately after verification instead of batching updates at the end.
+			const execMessage = `${BUILD_MODE_GUIDANCE}
+
+Execute the user-approved plan below in order. Track progress with your available task-management capabilities and record each step immediately after verification instead of batching updates at the end.
 
 Approved plan:
 ${approvedPlan}`;
 			pi.sendMessage(
-				{ content: execMessage, display: false },
+				{ content: execMessage, display: false } as Parameters<ExtensionAPI["sendMessage"]>[0],
 				{ triggerTurn: true, deliverAs: "followUp" },
 			);
 		} else if (choice === "Refine the plan") {
@@ -318,10 +339,12 @@ ${approvedPlan}`;
 
 	pi.on("session_compact", () => {
 		planningGuidanceInjected = false;
+		buildModeGuidancePending = !planModeEnabled;
 	});
 
 	pi.on("session_tree", () => {
 		planningGuidanceInjected = false;
+		buildModeGuidancePending = !planModeEnabled;
 	});
 
 	// Restore state on session start/resume
@@ -345,6 +368,7 @@ ${approvedPlan}`;
 			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
 		}
 
+		buildModeGuidancePending = !planModeEnabled && !executionMode;
 		if (planModeEnabled) {
 			enablePlanModeTools();
 		}
