@@ -271,7 +271,7 @@ export function formatCompactUsageParts(usage: UsageStats): CompactUsageParts {
 	const cost = finiteUsageValue(usage.cost);
 	return {
 		turns: `↻ ${Math.round(finiteUsageValue(usage.turns))}`,
-		tokens: formatCompactTokenCount(tokens),
+		tokens: `⇅ ${formatCompactTokenCount(tokens)}`,
 		cost: `$${cost.toFixed(4)}`,
 	};
 }

@@ -808,7 +808,7 @@ function testSubagentDashboard(): void {
 	}
 
 	// ---------- compact usage, branch selection, and legacy metadata ----------
-	const expectedCompactUsage = "↻ 18 · 317k · $0.0045";
+	const expectedCompactUsage = "↻ 18 · ⇅ 317k · $0.0045";
 	check(
 		"thread: compact formatter keeps cumulative token semantics and rounding",
 		formatCompactUsage(COMPACT_USAGE) === expectedCompactUsage,
@@ -823,7 +823,7 @@ function testSubagentDashboard(): void {
 	});
 	check(
 		"thread: compact formatter scales million-token totals",
-		millionScaleUsage.includes(" · 5.5m · ") && !millionScaleUsage.includes("5508k"),
+		millionScaleUsage.includes(" · ⇅ 5.5m · ") && !millionScaleUsage.includes("5508k"),
 		millionScaleUsage,
 	);
 	const overflowUsage = formatCompactUsage({
@@ -877,12 +877,12 @@ function testSubagentDashboard(): void {
 			visibleWidth(justOverThreshold.text) <= visibleWidth(fullRow) - 1,
 		JSON.stringify(justOverThreshold),
 	);
-	const longUnbrokenBranch = selectWorktreeUsageRow(28, "x".repeat(300), COMPACT_USAGE);
+	const longUnbrokenBranch = selectWorktreeUsageRow(32, "x".repeat(300), COMPACT_USAGE);
 	check(
 		"thread: long unbroken branch never overflows the selected row",
 		longUnbrokenBranch.truncatedBranch &&
 			longUnbrokenBranch.branch?.endsWith("…") === true &&
-			visibleWidth(longUnbrokenBranch.text) <= 28,
+			visibleWidth(longUnbrokenBranch.text) <= 32,
 		JSON.stringify(longUnbrokenBranch),
 	);
 	const branchRenderTask = subagentTask({
@@ -1225,7 +1225,7 @@ function testSubagentDashboard(): void {
 	);
 	check(
 		"thread: compact cumulative usage is untouched by context display",
-		mergedView.render(120).map(stripAnsi).join("\n").includes("↻ 1 · 2 · $0.0100") &&
+		mergedView.render(120).map(stripAnsi).join("\n").includes("↻ 1 · ⇅ 2 · $0.0100") &&
 			!mergedOutput.includes("1 turns, 2 tokens"),
 	);
 
