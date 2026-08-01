@@ -275,6 +275,7 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 				configured = undefined;
 				lastFallbackKey = undefined;
 				pi.appendEntry(COMPACTION_MODEL_ENTRY_TYPE, { clear: true });
+				ctx.ui.notify("Compaction model cleared. Using the active conversation model.", "info");
 				return;
 			}
 
@@ -304,6 +305,10 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 			// Persist only identifiers and the requested level. The model is resolved
 			// again when this session resumes and before each compaction.
 			pi.appendEntry(COMPACTION_MODEL_ENTRY_TYPE, configured);
+			ctx.ui.notify(
+				`Compaction model set to ${formatCompactionModel(model, thinkingLevel)}`,
+				"info",
+			);
 		},
 	});
 

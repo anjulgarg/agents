@@ -223,9 +223,12 @@ assert(
 	"persists identifiers and thinking level without requiring current auth",
 	entries.at(-1)?.customType === COMPACTION_MODEL_ENTRY_TYPE &&
 		entries.at(-1)?.data?.provider === "deepseek" &&
-		entries.at(-1)?.data?.thinkingLevel === "max",
-	JSON.stringify(entries.at(-1)),
+		entries.at(-1)?.data?.thinkingLevel === "max" &&
+		notices.at(-1)?.message === "Compaction model set to deepseek/deepseek-v4-flash max" &&
+		notices.at(-1)?.type === "info",
+	JSON.stringify({ entry: entries.at(-1), notice: notices.at(-1) }),
 );
+notices.length = 0;
 await command.handler("openai/gpt-4.1-mini", context);
 assert(
 	"defaults an implicit level to one supported by the selected model",
@@ -236,9 +239,11 @@ await command.handler("clear", context);
 assert(
 	"persists clearing the configured model",
 	entries.at(-1)?.customType === COMPACTION_MODEL_ENTRY_TYPE &&
-		entries.at(-1)?.data?.clear === true,
-	JSON.stringify(entries.at(-1)),
+		entries.at(-1)?.data?.clear === true &&
+		notices.at(-1)?.message === "Compaction model cleared. Using the active conversation model.",
+	JSON.stringify({ entry: entries.at(-1), notice: notices.at(-1) }),
 );
+notices.length = 0;
 
 const preparation = {
 	firstKeptEntryId: "kept-entry",
@@ -259,6 +264,7 @@ const compactEvent = (reason: "manual" | "threshold" | "overflow") => ({
 });
 
 await command.handler("deepseek/deepseek-v4-flash high", context);
+notices.length = 0;
 for (const reason of ["manual", "threshold", "overflow"] as const) {
 	const result = await handlers.get("session_before_compact")?.[0]?.(compactEvent(reason), context);
 	assert(
