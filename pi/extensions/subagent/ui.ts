@@ -46,7 +46,20 @@ import type {
 
 const THREAD_STATUS_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 const WORKTREE_METADATA_ICON = "󰙅";
+const RESET_FOREGROUND = "\x1b[39m";
+const HEADER_PASTELS = {
+	position: 150,
+	model: 183,
+	context: 117,
+	mode: 222,
+	separator: 245,
+	worktree: 150,
+} as const;
 const CHAT_PADDING = TOOL_CHAT_PADDING;
+
+function pastel(index: number, text: string): string {
+	return `\x1b[38;5;${index}m${text}${RESET_FOREGROUND}`;
+}
 
 /** Tools whose consecutive calls may soft-group, mirroring the parent minimal mode. */
 const GROUPED_TOOL_NAMES = ["read", "find", "grep", "ls", "edit"];
@@ -749,17 +762,20 @@ export class SubagentThreadView implements Component {
 			: item.result.error
 				? "✗"
 				: "✓";
-		const statusColor = !item.result.done ? "warning" : item.result.error ? "error" : "success";
+		const statusColor = !item.result.done ? "accent" : item.result.error ? "error" : "success";
 		const position = `Subagent ${this.selection.selected + 1}/${group.items.length}`;
-		const statusPosition = `${statusIcon} ${position}`;
+		const statusPosition = `${this.theme.fg(statusColor, this.theme.bold(statusIcon))} ${pastel(
+			HEADER_PASTELS.position,
+			this.theme.bold(position),
+		)}`;
 		const modelLabel = formatReadableModel(item.result.model, item.result.thinking);
 		const contextLabel = formatContextLabel(item.result.contextUsage);
 		const mode = item.result.mode ?? "ephemeral";
 		const titleSegments = selectTitleSegments(contentWidth, [
 			{ text: statusPosition, fixed: true },
-			{ text: modelLabel, essential: true },
-			{ text: contextLabel },
-			{ text: mode },
+			{ text: pastel(HEADER_PASTELS.model, this.theme.bold(modelLabel)), essential: true },
+			{ text: pastel(HEADER_PASTELS.context, this.theme.bold(contextLabel)) },
+			{ text: pastel(HEADER_PASTELS.mode, this.theme.bold(mode)) },
 		]);
 		const teamContext = group.teamRunId
 			? [`${this.getTeamName(group.teamRunId) ?? "Team"} team`, item.result.role].filter(
@@ -770,7 +786,10 @@ export class SubagentThreadView implements Component {
 		const sessionLabel = item.result.sessionId ? `session ${item.result.sessionId}` : undefined;
 		const workspaceSession =
 			item.result.workspace === "worktree"
-				? `${WORKTREE_METADATA_ICON}${sessionLabel ? ` ${sessionLabel}` : ""}`
+				? pastel(
+						HEADER_PASTELS.worktree,
+						`${WORKTREE_METADATA_ICON}${sessionLabel ? ` ${sessionLabel}` : ""}`,
+					)
 				: sessionLabel;
 		const metadataSegments = [
 			...teamContext,
@@ -786,15 +805,9 @@ export class SubagentThreadView implements Component {
 		if (!this.expanded && wrappedTask.length > 3 && taskTitle[2] !== undefined) {
 			taskTitle[2] = truncateToWidth(taskTitle[2], Math.max(1, contentWidth - 1), "") + "…";
 		}
-		const plainHeaderTitle = titleSegments.selected.join(TITLE_SEPARATOR);
-		// A nested status color emits an ANSI reset. Explicitly restyle the suffix
-		// so that reset cannot cancel the header's accent color after the icon.
-		const headerTitle = plainHeaderTitle.startsWith(statusIcon)
-			? `${this.theme.fg(statusColor, this.theme.bold(statusIcon))}${this.theme.fg(
-					"accent",
-					this.theme.bold(plainHeaderTitle.slice(statusIcon.length)),
-				)}`
-			: plainHeaderTitle;
+		const headerTitle = titleSegments.selected.join(
+			pastel(HEADER_PASTELS.separator, TITLE_SEPARATOR),
+		);
 		const headerLines = [...metadataLines, "", ...taskTitle, ""];
 		const renderedHeader = renderHeader({
 			width,

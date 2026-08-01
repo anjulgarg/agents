@@ -299,9 +299,13 @@ function testSubagentDashboard(): void {
 	};
 	const coloredTitle = makeThread([subagentTask()], { theme: ansiTheme }).render(120)[0] ?? "";
 	check(
-		"subagent thread: status reset restores accent styling before Subagent",
-		coloredTitle.includes("\x1b[35m\x1b[1m Subagent 1/1") &&
-			!coloredTitle.includes("\x1b[0m Subagent 1/1"),
+		"subagent thread: header attributes use distinct status-line pastel colors",
+		coloredTitle.includes("\x1b[35m\x1b[1m◐") &&
+			coloredTitle.includes("\x1b[38;5;150m\x1b[1mSubagent 1/1") &&
+			coloredTitle.includes("\x1b[38;5;183m\x1b[1mgpt-5.6 luna low") &&
+			coloredTitle.includes("\x1b[38;5;117m\x1b[1mcontext unavailable") &&
+			coloredTitle.includes("\x1b[38;5;222m\x1b[1mephemeral") &&
+			coloredTitle.includes("\x1b[38;5;245m · "),
 		JSON.stringify(coloredTitle),
 	);
 	const promptLine = threadLines.findIndex((line: string) => line.includes("Do a thing"));
@@ -418,6 +422,17 @@ function testSubagentDashboard(): void {
 	])
 		.render(120)
 		.find((line: string) => stripAnsi(line).includes("󰙅 session align-session"));
+	const coloredWorktree = makeThread(
+		[subagentTask({ workspace: "worktree", sessionId: "accent-session" })],
+		{ theme: ansiTheme },
+	)
+		.render(120)
+		.join("\n");
+	check(
+		"thread: worktree session metadata uses the branch pastel color",
+		coloredWorktree.includes("\x1b[38;5;150m󰙅 session accent-session"),
+		JSON.stringify(coloredWorktree.slice(0, 300)),
+	);
 	const alignTaskHeaderLine = alignLines.find((l: string) => stripAnsi(l).includes("Do a thing"));
 	const alignToolLine = alignLines.find((l: string) => stripAnsi(l).includes("read /tmp"));
 	const alignTaskLine = alignLines.find((l: string) =>
