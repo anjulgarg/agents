@@ -149,7 +149,8 @@ async function testPersistentMetadata(): Promise<void> {
 		assert(
 			`${name} (child options)`,
 			received?.persistentSession?.sessionId === "child-1" &&
-				received.persistentSession.sessionDir === "/tmp/child-1",
+				received.persistentSession.sessionDir === "/tmp/child-1" &&
+				received.disableMcp === true,
 			JSON.stringify(received),
 		);
 		children[0].settle("persistent result");
@@ -161,6 +162,15 @@ async function testPersistentMetadata(): Promise<void> {
 			JSON.stringify(completed),
 		);
 		void taskIds;
+
+		received = undefined;
+		supervisor.spawn([baseSpec({ tools: ["mcp"] })]);
+		assert(
+			`${name} (explicit MCP remains available)`,
+			received?.disableMcp === false,
+			JSON.stringify(received),
+		);
+		children[1].settle("explicit MCP result");
 	} finally {
 		supervisor.dispose();
 	}

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
@@ -117,6 +118,8 @@ export interface RpcChildOptions {
 	model: string;
 	thinking: ThinkingLevel;
 	tools: string[];
+	/** Replace the child Pi-global MCP config with an empty isolated config. */
+	disableMcp?: boolean;
 	systemPromptFile: string;
 	projectTrusted: boolean;
 	/** Optional exact native session identity. Both fields are required together. */
@@ -241,6 +244,7 @@ export class RpcChild {
 	private uiState = emptyChildUiSnapshot();
 	private nextId = 1;
 	private terminating?: Promise<boolean>;
+	private mcpConfigDir?: string;
 	/** Latest validated context snapshot; never the complete SessionStats response. */
 	private contextSnapshotValue?: ContextUsageSnapshot;
 	/** Generation of the last applied refresh outcome (stored value or explicit clear). */
@@ -256,6 +260,14 @@ export class RpcChild {
 		this.onExit = options.onExit;
 		this.onDialog = options.onDialog ?? (() => ({ cancelled: true }));
 
+		let mcpArguments: string[] = [];
+		if (options.disableMcp) {
+			this.mcpConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-mcp-disabled-"));
+			const mcpConfigFile = path.join(this.mcpConfigDir, "mcp.json");
+			fs.writeFileSync(mcpConfigFile, '{"mcpServers":{}}\n', { encoding: "utf8", mode: 0o600 });
+			mcpArguments = ["--mcp-config", mcpConfigFile];
+		}
+
 		const args = [
 			"--mode",
 			"rpc",
@@ -269,6 +281,7 @@ export class RpcChild {
 			"subagent",
 			"--append-system-prompt",
 			options.systemPromptFile,
+			...mcpArguments,
 			...getSessionArguments(options.persistentSession),
 			...(options.projectTrusted ? ["--approve"] : []),
 		];
@@ -458,6 +471,10 @@ export class RpcChild {
 	private finish(code: number): void {
 		if (this.exited) return;
 		this.exited = true;
+		if (this.mcpConfigDir) {
+			fs.rmSync(this.mcpConfigDir, { recursive: true, force: true });
+			this.mcpConfigDir = undefined;
+		}
 		this.exitCode = code;
 		for (const waiter of this.pending.values()) waiter.reject(new Error("Subagent process exited"));
 		this.pending.clear();

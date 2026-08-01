@@ -58,6 +58,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 const stubborn = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: "ignore" });
 writeFileSync(join(process.cwd(), "grandchild.pid"), String(stubborn.pid));
+writeFileSync(join(process.cwd(), "argv.json"), JSON.stringify(process.argv.slice(2)));
 let buffer = "";
 process.stdin.on("data", (chunk) => {
   buffer += chunk.toString();
@@ -90,6 +91,7 @@ const child = new RpcChild({
 	model: "test/model",
 	thinking: "off",
 	tools: ["read"],
+	disableMcp: true,
 	systemPromptFile: promptFile,
 	projectTrusted: false,
 	ownerToken: "owner-test-token",
@@ -104,6 +106,19 @@ try {
 	check("captures widget", ui.widgets.queue?.lines[0] === "2 remaining", JSON.stringify(ui));
 	check("captures notification", ui.notifications[0]?.type === "warning", JSON.stringify(ui));
 	check("passes ownership token", ui.statuses.owner === "owner-test-token", JSON.stringify(ui));
+	const childArgs = JSON.parse(
+		await fs.promises.readFile(path.join(dir, "argv.json"), "utf8"),
+	) as string[];
+	const mcpConfigIndex = childArgs.indexOf("--mcp-config");
+	const isolatedMcpConfig =
+		mcpConfigIndex >= 0
+			? JSON.parse(await fs.promises.readFile(childArgs[mcpConfigIndex + 1]!, "utf8"))
+			: undefined;
+	check(
+		"parent-disabled MCP uses an isolated empty child config",
+		mcpConfigIndex >= 0 && Object.keys(isolatedMcpConfig?.mcpServers ?? {}).length === 0,
+		JSON.stringify(childArgs),
+	);
 	const grandchildPid = Number(
 		await fs.promises.readFile(path.join(dir, "grandchild.pid"), "utf8"),
 	);

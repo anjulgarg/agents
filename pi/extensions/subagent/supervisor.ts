@@ -696,11 +696,13 @@ export class Supervisor {
 		task.lastEventAt = task.startedAt;
 		task.reaped = false;
 		try {
+			const childTools = spec.tools ?? this.defaultTools;
 			const child = this.createChild({
 				cwd: spec.cwd,
 				model: spec.model,
 				thinking: spec.thinking,
-				tools: spec.tools ?? this.defaultTools,
+				tools: childTools,
+				disableMcp: !childTools.includes("mcp"),
 				systemPromptFile: spec.systemPromptFile,
 				projectTrusted: spec.projectTrusted ?? false,
 				persistentSession: spec.persistentSession,

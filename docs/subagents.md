@@ -50,6 +50,8 @@ The F6 thread view reads that durable active branch, merges any live resumed eve
 
 A persistent child cannot invoke subagent or subagent-management tools. Dependency outputs may still be supplied through `inputFrom` when spawning or resuming.
 
+Children inherit the parent's active tool allowlist. When the parent MCP tool is inactive, the child uses an isolated empty Pi-global MCP config instead of re-enabling configured servers.
+
 ## F6 thread view
 
 The F6 thread view is a strictly read-only viewer. It renders the child's active branch merged with live events but offers no editor, child commands, steering, compaction controls, branch navigation, or model changes. Navigation, kill confirmation, parent return, and close behave as before.
