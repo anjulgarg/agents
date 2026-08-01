@@ -237,6 +237,28 @@ function finiteUsageValue(value: number): number {
 		: 0;
 }
 
+function formatCompactTokenCount(tokens: number): string {
+	const units = [
+		{ value: 1_000_000_000_000, suffix: "t" },
+		{ value: 1_000_000_000, suffix: "b" },
+		{ value: 1_000_000, suffix: "m" },
+		{ value: 1_000, suffix: "k" },
+	] as const;
+	for (const [index, unit] of units.entries()) {
+		if (tokens < unit.value) continue;
+		const scaled = tokens / unit.value;
+		const rounded = scaled < 10 ? Math.round(scaled * 10) / 10 : Math.round(scaled);
+		if (rounded >= 1000 && index > 0) {
+			const higher = units[index - 1]!;
+			const promoted = tokens / higher.value;
+			const promotedRounded = promoted < 10 ? Math.round(promoted * 10) / 10 : Math.round(promoted);
+			return `${promotedRounded}${higher.suffix}`;
+		}
+		return `${rounded}${unit.suffix}`;
+	}
+	return String(Math.round(tokens));
+}
+
 /** Compact cumulative usage labels shared by running and completed threads. */
 export function formatCompactUsageParts(usage: UsageStats): CompactUsageParts {
 	const tokens = Math.min(
@@ -249,7 +271,7 @@ export function formatCompactUsageParts(usage: UsageStats): CompactUsageParts {
 	const cost = finiteUsageValue(usage.cost);
 	return {
 		turns: `↻ ${Math.round(finiteUsageValue(usage.turns))}`,
-		tokens: `${Math.round(tokens / 1000)}k`,
+		tokens: formatCompactTokenCount(tokens),
 		cost: `$${cost.toFixed(4)}`,
 	};
 }

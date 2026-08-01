@@ -814,6 +814,18 @@ function testSubagentDashboard(): void {
 		formatCompactUsage(COMPACT_USAGE) === expectedCompactUsage,
 		formatCompactUsage(COMPACT_USAGE),
 	);
+	const millionScaleUsage = formatCompactUsage({
+		...COMPACT_USAGE,
+		input: 5_508_000,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+	});
+	check(
+		"thread: compact formatter scales million-token totals",
+		millionScaleUsage.includes(" · 5.5m · ") && !millionScaleUsage.includes("5508k"),
+		millionScaleUsage,
+	);
 	const overflowUsage = formatCompactUsage({
 		input: Number.MAX_VALUE,
 		output: Number.MAX_VALUE,
@@ -1213,7 +1225,7 @@ function testSubagentDashboard(): void {
 	);
 	check(
 		"thread: compact cumulative usage is untouched by context display",
-		mergedView.render(120).map(stripAnsi).join("\n").includes("↻ 1 · 0k · $0.0100") &&
+		mergedView.render(120).map(stripAnsi).join("\n").includes("↻ 1 · 2 · $0.0100") &&
 			!mergedOutput.includes("1 turns, 2 tokens"),
 	);
 
