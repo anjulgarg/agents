@@ -307,7 +307,6 @@ export class SubagentRuntime {
 	private readonly lastViewedTaskByGroup = new Map<string, string>();
 	private readonly approvedManualRetries = new Set<string>();
 	private activeTeamRunId: string | undefined;
-	private lastViewedGroupKey: string | undefined;
 	private activityContext: ExtensionContext | undefined;
 	private activityGroupKey: string | undefined;
 	private activityFrame = 0;
@@ -963,11 +962,7 @@ export class SubagentRuntime {
 			.reverse()
 			.find((group) => group.items.some((item) => !item.result.done));
 		const preferredGroup =
-			groups.find((group) => group.key === activeTeamKey) ??
-			newestRunning ??
-			groups.find((group) => group.key === this.lastViewedGroupKey) ??
-			groups.at(-1)!;
-		this.lastViewedGroupKey = preferredGroup.key;
+			groups.find((group) => group.key === activeTeamKey) ?? newestRunning ?? groups.at(-1)!;
 		let initialTaskId = this.lastViewedTaskByGroup.get(preferredGroup.key);
 		if (
 			!initialTaskId ||
@@ -992,9 +987,7 @@ export class SubagentRuntime {
 					},
 					preferredGroup.key,
 					(teamRunId) => this.teamNames.get(teamRunId),
-					(groupKey) => {
-						this.lastViewedGroupKey = groupKey;
-					},
+					undefined,
 					(runId, taskId) => {
 						this.killTaskManually(runId, taskId);
 					},

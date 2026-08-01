@@ -1767,6 +1767,78 @@ async function testF6PrefersActiveTeam(): Promise<void> {
 	}
 }
 
+async function testF6DefaultsToNewestCompletedGroup(): Promise<void> {
+	const pi = new FakePi();
+	const supervisor = install(pi, []);
+	let component: any;
+	const task = (taskId: string) => ({
+		taskId,
+		index: 0,
+		task: taskId,
+		status: "done",
+		model: "test/model",
+		thinking: "off",
+		workspace: "shared",
+		cwd: "/tmp",
+		output: "done",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+	});
+	const entries: any[] = [
+		{
+			type: "custom",
+			customType: "subagent-state",
+			data: { run: { runId: "old-run", startedAt: 1, tasks: [task("old-agent")] } },
+		},
+	];
+	const shortcut = pi.shortcuts.get("f6") as { handler: (ctx: any) => Promise<void> };
+	const open = async (): Promise<void> => {
+		await shortcut.handler(
+			fakeCtx({
+				mode: "tui",
+				sessionManager: { getEntries: () => entries },
+				ui: {
+					notify: () => {},
+					custom: async (factory: any) => {
+						component = factory(
+							{ terminal: { rows: 30, columns: 120 }, requestRender() {}, invalidate() {} },
+							{
+								fg: (_key: string, text: string) => text,
+								bg: (_key: string, text: string) => text,
+								bold: (text: string) => text,
+							},
+							{},
+							() => {},
+						);
+					},
+				},
+			}),
+		);
+	};
+	try {
+		await open();
+		assert(
+			"i. F6 initially selects the only completed group",
+			component?.selectedGroupKey === "run:old-run",
+			`selectedGroupKey=${component?.selectedGroupKey}`,
+		);
+		component?.dispose?.();
+		entries.push({
+			type: "custom",
+			customType: "subagent-state",
+			data: { run: { runId: "new-run", startedAt: 2, tasks: [task("new-agent")] } },
+		});
+		await open();
+		assert(
+			"i. F6 selects a newer completed group over the previously viewed group",
+			component?.selectedGroupKey === "run:new-run",
+			`selectedGroupKey=${component?.selectedGroupKey}`,
+		);
+	} finally {
+		component?.dispose?.();
+		supervisor.dispose();
+	}
+}
+
 async function testF6RetainsPersistentConversation(): Promise<void> {
 	const name = "i. F6 retains cumulative persistent conversation and cost";
 	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "subagent-f6-history-"));
@@ -2790,6 +2862,7 @@ async function main(): Promise<void> {
 	await testPersistedManagementAfterReload();
 	testF6ShortcutRegistered();
 	await testF6PrefersActiveTeam();
+	await testF6DefaultsToNewestCompletedGroup();
 	await testF6RetainsPersistentConversation();
 	testGenericChildUiReducer();
 	await testContextTelemetryEphemeralProjection();
