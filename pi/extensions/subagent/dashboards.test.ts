@@ -304,9 +304,12 @@ function testSubagentDashboard(): void {
 			!coloredTitle.includes("\x1b[0m Subagent 1/1"),
 		JSON.stringify(coloredTitle),
 	);
+	const promptLine = threadLines.findIndex((line: string) => line.includes("Do a thing"));
 	check(
 		"subagent thread: prompt has vertical padding",
-		threadLines[2]?.trim() === "" && threadLines[4]?.trim() === "",
+		promptLine > 0 &&
+			threadLines[promptLine - 1]?.trim() === "" &&
+			threadLines[promptLine + 1]?.trim() === "",
 	);
 	check(
 		"subagent thread: footer has exactly one trailing blank row",
@@ -410,7 +413,11 @@ function testSubagentDashboard(): void {
 
 	// ---------- padding alignment ----------
 	const alignTitleLine = alignLines[0];
-	const alignMetaLine = alignLines.find((l: string) => stripAnsi(l).includes("done · shared"));
+	const alignMetaLine = makeThread([
+		subagentTask({ workspace: "worktree", sessionId: "align-session" }),
+	])
+		.render(120)
+		.find((line: string) => stripAnsi(line).includes("󰙅 session align-session"));
 	const alignTaskHeaderLine = alignLines.find((l: string) => stripAnsi(l).includes("Do a thing"));
 	const alignToolLine = alignLines.find((l: string) => stripAnsi(l).includes("read /tmp"));
 	const alignTaskLine = alignLines.find((l: string) =>
@@ -649,9 +656,10 @@ function testSubagentDashboard(): void {
 			!stripAnsi(wideLines[1] ?? "").includes("persistent"),
 	);
 	check(
-		"thread @120: wrapped metadata keeps secondary fields",
-		stripAnsi(wideLines[1] ?? "").includes("done · shared") &&
-			stripAnsi(wideLines[1] ?? "").includes("session sess-1"),
+		"thread @120: shared workspace and redundant status stay hidden",
+		stripAnsi(wideLines[1] ?? "").includes("session sess-1") &&
+			!wideLines.map(stripAnsi).join("\n").includes("done · shared") &&
+			!wideLines.map(stripAnsi).join("\n").includes("󰙅"),
 	);
 
 	// ---------- thread: narrow essentials and truthful fallback ----------
@@ -746,10 +754,13 @@ function testSubagentDashboard(): void {
 		const lines = makeThread([longMetaTask]).render(width);
 		const output = lines.map(stripAnsi).join("\n");
 		check(
-			`thread @${width}: long metadata wraps with exact width`,
+			`thread @${width}: worktree icon and long metadata wrap with exact width`,
 			lines.every((line: string) => visibleWidth(line) === width) &&
-				output.includes("1234 tok/s") &&
-				output.includes("session-abcdef-1234567890abcdef-xyz"),
+				output.includes("1234") &&
+				output.includes("tok/s") &&
+				output.includes("󰙅 session") &&
+				output.includes("session-abcdef-1234567890abcdef-xyz") &&
+				!output.includes("worktree"),
 			JSON.stringify(lines.slice(0, 4)),
 		);
 	}

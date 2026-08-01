@@ -45,6 +45,7 @@ import type {
 } from "./contracts.ts";
 
 const THREAD_STATUS_FRAMES = ["◐", "◓", "◑", "◒"] as const;
+const WORKTREE_METADATA_ICON = "󰙅";
 const CHAT_PADDING = TOOL_CHAT_PADDING;
 
 /** Tools whose consecutive calls may soft-group, mirroring the parent minimal mode. */
@@ -766,12 +767,15 @@ export class SubagentThreadView implements Component {
 				)
 			: [];
 		const tokenSpeed = item.result.uiState?.statuses[TOKEN_SPEED_STATUS_KEY];
+		const sessionLabel = item.result.sessionId ? `session ${item.result.sessionId}` : undefined;
+		const workspaceSession =
+			item.result.workspace === "worktree"
+				? `${WORKTREE_METADATA_ICON}${sessionLabel ? ` ${sessionLabel}` : ""}`
+				: sessionLabel;
 		const metadataSegments = [
 			...teamContext,
-			item.result.status,
-			item.result.workspace,
+			workspaceSession,
 			...titleSegments.dropped.map((segment) => segment.text),
-			item.result.sessionId ? `session ${item.result.sessionId}` : undefined,
 			tokenSpeed,
 		].filter((value): value is string => Boolean(value));
 		const metadataLines = metadataSegments.length
