@@ -269,7 +269,7 @@ const otherComponents: ComponentDefinition[] = [
 		outputs: [
 			block(".codex/AGENTS.md"),
 			block(".config/opencode/AGENTS.md"),
-			block(".pi/agent/AGENTS.md"),
+			{ strategy: "copy", destination: ".pi/agent/AGENTS.md" },
 			{ strategy: "copy", destination: ".claude/AGENTS.md" },
 			block(".claude/CLAUDE.md", "@AGENTS.md"),
 			{ strategy: "copy", destination: ".cursor/AGENTS.md" },

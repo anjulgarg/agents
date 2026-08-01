@@ -63,6 +63,27 @@ const fixed = () => new Date("2026-01-01T00:00:00.000Z");
 
 // T1: complete profile, exact Pi package model, and idempotency.
 describe("transactional install", () => {
+	it("replaces Pi instructions instead of retaining duplicate managed blocks", async () => {
+		const target = await home();
+		const destination = join(target, ".pi/agent/AGENTS.md");
+		await mkdir(dirname(destination), { recursive: true });
+		await writeFile(
+			destination,
+			"<!-- agents:instructions:begin -->\nstale\n<!-- agents:instructions:end -->\n\n<!-- agents:instructions:begin -->\nstale\n<!-- agents:instructions:end -->\n",
+		);
+
+		await applyPlan(
+			{ home: target, sourceRoot },
+			await planInstall({ home: target, sourceRoot, now: fixed }, ["instructions:shared"]),
+		);
+
+		expect(await text(destination)).toBe(await text(join(sourceRoot, "pi/AGENTS.md")));
+		const second = await planInstall({ home: target, sourceRoot, now: fixed }, [
+			"instructions:shared",
+		]);
+		expect(second.changes).toEqual([]);
+	});
+
 	it("installs the default profile deterministically and is idempotent", async () => {
 		const target = await home();
 		const ids = resolveProfile("default");
