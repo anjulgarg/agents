@@ -8,6 +8,7 @@ const EXPECTED_EXTENSIONS = [
 	"pi/extensions/announce-step.ts",
 	"pi/extensions/branch.ts",
 	"pi/extensions/btw.ts",
+	"pi/extensions/changes.ts",
 	"pi/extensions/claude-code-ui.ts",
 	"pi/extensions/codex-usage.ts",
 	"pi/extensions/codex-web-search.ts",
@@ -199,7 +200,7 @@ async function validateManifest(root: string, files: readonly string[]): Promise
 	const themes = stringArray(manifest.pi?.themes);
 	if (!extensions || !equalSorted(extensions, EXPECTED_EXTENSIONS))
 		invalid(
-			"Pi extensions must be the exact 30 approved entrypoints",
+			`Pi extensions must be the exact ${EXPECTED_EXTENSIONS.length} approved entrypoints`,
 			"package.json#pi.extensions",
 		);
 	if (

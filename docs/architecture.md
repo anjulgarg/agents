@@ -18,7 +18,7 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | Category       | Installed role                                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `skill`        | Three shared skill directories under `~/.agents/skills`; each can be selected independently.                      |
-| `pi-extension` | Local-package filters for 30 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
+| `pi-extension` | Local-package filters for 31 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
 | `pi-config`    | Pi keybindings plus optional local-only model and MCP JSON pointers. Unowned keys remain local.                   |
 | `pi-package`   | The optional removable `npm:pi-mcp-adapter@2.15.0` Pi setting. It is referenced, not vendored.                    |
 | `pi-prompt`    | The `orchestrate` prompt through the local Pi package.                                                            |
@@ -27,6 +27,8 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | `instructions` | Managed instruction blocks or copies for Pi, Codex, OpenCode, Claude Code, and Cursor.                            |
 
 The compaction-model extension stores its global selection under `~/.pi/agent/state/compaction-model.json`; it is not tied to an individual session. During compaction it shows a live elapsed timer and adds the final duration to the persistent thread.
+
+The `/changes` extension is a read-only view of the union of uncommitted and unpushed Git files, with generated overall and per-file explanations in a shared full-screen TUI. It honors the configured compaction-model preference, using the active model when available and a deterministic fallback otherwise.
 
 Profiles combine these components: `default` selects the available catalog, `pi` selects Pi resources and shared instructions, and `skills` selects all shared skills. Local-only Pi configuration components appear only when their ignored files exist in the local checkout. Registry ordering is deterministic, so repeated installs are no-ops when outputs remain exact.
 

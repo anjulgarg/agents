@@ -731,9 +731,22 @@ export interface SubagentThreadGroup {
 	items: SubagentThreadItem[];
 }
 
+const ACTIVE_STANDALONE_GROUP_KEY = "standalone:active";
+
+function compareThreadItems(a: SubagentThreadItem, b: SubagentThreadItem): number {
+	return (
+		a.startedAt - b.startedAt ||
+		a.result.index - b.result.index ||
+		a.runId.localeCompare(b.runId) ||
+		a.result.taskId.localeCompare(b.result.taskId)
+	);
+}
+
 export function buildThreadGroups(runs: SubagentDetails[]): SubagentThreadGroup[] {
 	const groups = new Map<string, SubagentThreadGroup>();
-	for (const run of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
+	for (const run of [...runs].sort(
+		(a, b) => a.startedAt - b.startedAt || a.runId.localeCompare(b.runId),
+	)) {
 		for (const result of run.results) {
 			const persistentSessionId =
 				result.mode === "persistent" && result.sessionId ? result.sessionId : undefined;
@@ -755,14 +768,25 @@ export function buildThreadGroups(runs: SubagentDetails[]): SubagentThreadGroup[
 			else group.items.push(item);
 		}
 	}
+
+	const activeStandaloneGroups = [...groups.values()].filter(
+		(group) => group.key.startsWith("run:") && group.items.some((item) => !item.result.done),
+	);
+	if (activeStandaloneGroups.length >= 2) {
+		for (const group of activeStandaloneGroups) groups.delete(group.key);
+		groups.set(ACTIVE_STANDALONE_GROUP_KEY, {
+			key: ACTIVE_STANDALONE_GROUP_KEY,
+			startedAt: Math.min(...activeStandaloneGroups.map((group) => group.startedAt)),
+			items: activeStandaloneGroups.flatMap((group) => group.items),
+		});
+	}
+
 	return [...groups.values()]
 		.map((group) => ({
 			...group,
-			items: group.items.sort(
-				(a, b) => a.startedAt - b.startedAt || a.result.index - b.result.index,
-			),
+			items: group.items.sort(compareThreadItems),
 		}))
-		.sort((a, b) => a.startedAt - b.startedAt);
+		.sort((a, b) => a.startedAt - b.startedAt || a.key.localeCompare(b.key));
 }
 
 function messageText(message: Message): string {

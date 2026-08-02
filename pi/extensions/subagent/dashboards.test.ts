@@ -77,6 +77,7 @@ const {
 const { TeamDashboard } = await import(".." + "/team/index.ts");
 type SubagentDetails = import("./index.ts").SubagentDetails;
 type SubagentResultView = import("./index.ts").SubagentResultView;
+type SubagentThreadGroup = import("./ui.ts").SubagentThreadGroup;
 type TeamRun = import("../team/index.ts").TeamRun;
 type TeamTask = import("../team/index.ts").TeamTask;
 
@@ -170,6 +171,28 @@ function makeThread(
 		() => subagentRuns(results),
 		() => () => {},
 		options.onDone ?? (() => {}),
+	);
+}
+
+function makeThreadFromRuns(
+	runs: SubagentDetails[],
+	options: {
+		tui?: any;
+		theme?: any;
+		onDone?: () => void;
+		initialTaskId?: string;
+		initialGroupKey?: string;
+	} = {},
+): any {
+	return new SubagentThreadView(
+		options.tui ?? fakeTui,
+		options.theme ?? fakeTheme,
+		() => runs,
+		() => () => {},
+		options.onDone ?? (() => {}),
+		options.initialTaskId,
+		undefined,
+		options.initialGroupKey,
 	);
 }
 
@@ -563,6 +586,88 @@ function testSubagentDashboard(): void {
 			persistentGroups[0]?.items[0]?.result.taskId === "persistent-task-2",
 		JSON.stringify(persistentGroups),
 	);
+
+	const concurrentStandaloneRuns: SubagentDetails[] = [
+		{
+			runId: "terminal-history",
+			startedAt: 1,
+			results: [subagentTask({ taskId: "history-task", done: true, status: "done" })],
+		},
+		{
+			runId: "active-first",
+			startedAt: 10,
+			results: [subagentTask({ taskId: "active-first-task" })],
+		},
+		{
+			runId: "active-second",
+			startedAt: 20,
+			results: [subagentTask({ taskId: "active-second-task" })],
+		},
+	];
+	const concurrentGroups: SubagentThreadGroup[] = buildThreadGroups(concurrentStandaloneRuns);
+	const activeStandaloneGroup = concurrentGroups.find((group) => group.key === "standalone:active");
+	check(
+		"subagent thread: concurrent standalone runs form one active group",
+		activeStandaloneGroup?.items.map((item) => item.result.taskId).join(",") ===
+			"active-first-task,active-second-task" &&
+			!concurrentGroups.some(
+				(group) => group.key === "run:active-first" || group.key === "run:active-second",
+			),
+		JSON.stringify(concurrentGroups),
+	);
+	check(
+		"subagent thread: terminal standalone run remains history",
+		concurrentGroups.some(
+			(group) =>
+				group.key === "run:terminal-history" &&
+				group.items.length === 1 &&
+				group.items[0]?.result.taskId === "history-task",
+		),
+		JSON.stringify(concurrentGroups),
+	);
+	const concurrentView = makeThreadFromRuns(concurrentStandaloneRuns, {
+		initialTaskId: "active-first-task",
+		initialGroupKey: activeStandaloneGroup?.key,
+	});
+	check(
+		"subagent thread: concurrent standalone view starts at 1/2",
+		concurrentView.render(120)[0]?.includes("Subagent 1/2") === true,
+	);
+	concurrentView.handleInput("\x1b[C");
+	check(
+		"subagent thread: right advances within concurrent standalone group",
+		concurrentView.render(120)[0]?.includes("Subagent 2/2") === true,
+	);
+	concurrentView.handleInput("\x1b[1;2D");
+	check(
+		"subagent thread: shift+left reaches terminal standalone history",
+		concurrentView.render(120)[0]?.includes("Subagent 1/1") === true,
+	);
+
+	const mixedActiveGroups: SubagentThreadGroup[] = buildThreadGroups([
+		{
+			runId: "mixed-active",
+			startedAt: 30,
+			results: [
+				subagentTask({ taskId: "mixed-done", index: 0, done: true, status: "done" }),
+				subagentTask({ taskId: "mixed-running", index: 1 }),
+			],
+		},
+		{
+			runId: "other-active",
+			startedAt: 40,
+			results: [subagentTask({ taskId: "other-running" })],
+		},
+	]);
+	const mixedActiveGroup = mixedActiveGroups.find((group) => group.key === "standalone:active");
+	check(
+		"subagent thread: mixed active run keeps completed tasks in aggregate",
+		mixedActiveGroup?.items.map((item) => item.result.taskId).join(",") ===
+			"mixed-done,mixed-running,other-running" &&
+			!mixedActiveGroups.some((group) => group.key === "run:mixed-active"),
+		JSON.stringify(mixedActiveGroups),
+	);
+
 	const grouped = new SubagentThreadView(
 		fakeTui,
 		fakeTheme,

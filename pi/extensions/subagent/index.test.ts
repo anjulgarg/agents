@@ -1326,6 +1326,50 @@ async function testParentActivityWidget(): Promise<void> {
 	}
 }
 
+async function testParentActivityWidgetAggregatesStandaloneRuns(): Promise<void> {
+	const name = "c. parent activity widget aggregates concurrent standalone invocations";
+	const pi = new FakePi();
+	const children: FakeChild[] = [];
+	const supervisor = install(pi, children);
+	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-test-"));
+	const widgets = new Map<string, string[] | undefined>();
+	const ctx = fakeCtx({
+		cwd: promptRoot,
+		mode: "tui",
+		ui: {
+			notify: () => {},
+			custom: async () => {},
+			theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+			setWidget: (key: string, content: string[] | undefined) => {
+				widgets.set(key, content);
+			},
+		},
+	});
+	try {
+		await pi.emit("session_start", {}, ctx);
+		await callTool(pi, "subagent", { task: "first standalone task" }, ctx);
+		await callTool(pi, "subagent", { task: "second standalone task" }, ctx);
+		const running = widgets.get("subagent-activity")?.[0] ?? "";
+		children[0].settle("first done");
+		const partial = widgets.get("subagent-activity")?.[0] ?? "";
+		children[1].settle("second done");
+		const completed = widgets.get("subagent-activity")?.[0] ?? "";
+		assert(
+			name,
+			children.length === 2 &&
+				running.includes("2 active") &&
+				partial.includes("1 active") &&
+				completed.includes("✓") &&
+				!completed.includes("active"),
+			`running=${running} partial=${partial} completed=${completed}`,
+		);
+	} finally {
+		await pi.emit("session_shutdown");
+		supervisor.dispose();
+		await fs.promises.rm(promptRoot, { recursive: true, force: true });
+	}
+}
+
 async function testRoleInstructionsInChildSystemPrompt(): Promise<void> {
 	const name = "b. roleInstructions append to child system prompt only for team roles";
 	const pi = new FakePi();
@@ -2847,6 +2891,7 @@ async function main(): Promise<void> {
 	await testQueuedCancellationRemovesUnusedWorktree();
 	await testManualKillBlocksDirectRetry();
 	await testParentActivityWidget();
+	await testParentActivityWidgetAggregatesStandaloneRuns();
 	await testSubagentUpdateShape();
 	await testGetScopedExport();
 	await testSteerRefusesWedged();

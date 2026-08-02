@@ -26,6 +26,7 @@ const extensions = [
 	["announce-step", "announce-step.ts"],
 	["branch", "branch.ts"],
 	["btw", "btw.ts"],
+	["changes", "changes.ts"],
 	["claude-code-ui", "claude-code-ui.ts"],
 	["codex-usage", "codex-usage.ts"],
 	["codex-web-search", "codex-web-search.ts"],

@@ -58,6 +58,7 @@
       "pi/extensions/announce-step.ts",
       "pi/extensions/branch.ts",
       "pi/extensions/btw.ts",
+      "pi/extensions/changes.ts",
       "pi/extensions/claude-code-ui.ts",
       "pi/extensions/codex-usage.ts",
       "pi/extensions/codex-web-search.ts",
