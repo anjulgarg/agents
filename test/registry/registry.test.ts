@@ -81,7 +81,6 @@ describe("component registry", () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
 		expect(components.length).toBe(
 			32 +
-				(localPiConfigFiles.settings ? 1 : 0) +
 				(localPiConfigFiles.models ? 1 : 0) +
 				1 +
 				(localPiConfigFiles.mcp ? 2 : 0) +
@@ -94,7 +93,6 @@ describe("component registry", () => {
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
 		expect(components.slice(33).map(({ id }) => id)).toEqual([
-			...(localPiConfigFiles.settings ? ["pi-config:settings"] : []),
 			...(localPiConfigFiles.models ? ["pi-config:models"] : []),
 			"pi-config:keybindings",
 			...(localPiConfigFiles.mcp ? ["pi-package:mcp-adapter", "pi-config:mcp-sentry"] : []),
@@ -142,12 +140,6 @@ describe("component registry", () => {
 			expect(resolveSelection(["pi-config:mcp-sentry"])).toEqual([
 				"pi-config:mcp-sentry",
 				"pi-package:mcp-adapter",
-			]);
-		}
-		if (localPiConfigFiles.settings) {
-			expect(resolveSelection(["pi-config:settings"])).toEqual([
-				"pi-config:settings",
-				"pi-theme:claude-code",
 			]);
 		}
 	});

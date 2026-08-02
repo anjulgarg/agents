@@ -18,8 +18,8 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | Category       | Installed role                                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `skill`        | Three shared skill directories under `~/.agents/skills`; each can be selected independently.                      |
-| `pi-extension` | Local-package filters for 28 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
-| `pi-config`    | Pi keybindings plus optional local-only settings, model, and MCP JSON pointers. Unowned keys remain local.        |
+| `pi-extension` | Local-package filters for 30 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
+| `pi-config`    | Pi keybindings plus optional local-only model and MCP JSON pointers. Unowned keys remain local.                   |
 | `pi-package`   | The optional removable `npm:pi-mcp-adapter@2.15.0` Pi setting. It is referenced, not vendored.                    |
 | `pi-prompt`    | The `orchestrate` prompt through the local Pi package.                                                            |
 | `pi-theme`     | The `claude-code` theme through the local Pi package.                                                             |

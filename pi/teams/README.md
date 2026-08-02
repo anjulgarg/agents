@@ -4,7 +4,7 @@ Teams are declarative multi-agent workflows layered on the subagent extension. A
 manager model, defines assignable roles, requires a dependency-aware plan, delegates approved
 tasks, and tracks review and verification before completion.
 
-- [Pi operational handbook](../README.md)
+- [Foreman Stack README](../../README.md)
 - [Current product team](product.json)
 
 ## Working With Teams

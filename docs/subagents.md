@@ -56,7 +56,7 @@ Children inherit the parent's active tool allowlist. When the parent MCP tool is
 
 Pi's native retry policy is enabled by default. The subagent lifecycle adds two delayed recovery turns after native retries are exhausted, preserving the current session context instead of treating a failed assistant response as successful or immediately killing the child. Operators may raise the native budget in their local Pi settings with `retry.maxRetries` and `retry.provider.maxRetries`; personal settings remain outside this repository.
 
-The recovery classifier retries transient HTTP, upstream connection, socket, timeout, overload, rate-limit, and unstructured Responses API failures such as `Unknown error (no error details in response)`. Authentication, quota, invalid-request, content-policy, and context failures remain fail-fast. Recovery stops after its bounded budget and reports the final provider diagnostic to the parent.
+The recovery classifier retries transient HTTP, upstream connection, socket, timeout, overload, rate-limit, and unstructured Responses API failures such as `Unknown error (no error details in response)`. Authentication, quota, invalid-request, content-policy, and context failures remain fail-fast. Recovery stops after its bounded budget, opens a per-model circuit breaker to prevent repeated retry spam during a sustained outage, and reports the final provider diagnostic to the parent. A successful turn, model change, or new session resets the breaker.
 
 ## F6 thread view
 

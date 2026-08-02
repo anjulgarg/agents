@@ -9,16 +9,8 @@ The stack is designed for real enterprise engineering environments, but it is no
 company standard. Treat it as an inspectable toolkit: understand the local repository, adapt the
 resources and workflow to its constraints, and keep the quality and safety guarantees intact.
 
-## Working agreement
-
-- Define the requested outcome and the checks that will prove it before editing.
-- Inspect the smallest relevant files first, then expand only when dependencies or risk require it.
-- Prefer the smallest maintainable change and avoid unrelated refactoring or new dependencies.
-- Make plans, progress, decisions, and failures legible to the operator.
-- Delegate only with bounded ownership, sufficient context, and explicit verification criteria.
-- Follow existing naming, module, test, formatting, and documentation conventions.
-- Do not overwrite or discard unrelated working-tree changes.
-- Update documentation when behavior, commands, configuration, or recovery steps change.
+Pi-wide operating and communication behavior is defined by `pi/AGENTS.md`; this file contains
+repository-specific constraints and development guidance.
 
 ## Safety boundaries
 
@@ -57,8 +49,4 @@ Run the narrowest relevant test while iterating. Before handing off a code chang
 `npm run check`. For packaging changes, also run `npm run pack:check`. End-to-end tests must run
 offline in isolated temporary homes.
 
-## Completion
-
-Before declaring work complete, report the changed behavior, the verification performed, and any
-remaining risk or follow-up. Do not claim completion when required checks are failing or were not
-run.
+Update repository documentation when behavior, commands, configuration, or recovery steps change.

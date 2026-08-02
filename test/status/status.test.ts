@@ -7,7 +7,7 @@ import type {
 	OutputDefinition,
 	ReadOnlyFileSystem,
 } from "../../src/domain/contracts.ts";
-import { components, localPiConfigFiles } from "../../src/registry/catalog.ts";
+import { components } from "../../src/registry/catalog.ts";
 import { resolveContainedPath, resolveSource } from "../../src/registry/destinations.ts";
 import { inspectSystem, inspectionPathIsProtected } from "../../src/status/inspect.ts";
 import { readReceipt } from "../../src/status/receipt.ts";
@@ -162,13 +162,6 @@ describe("read-only system status", () => {
 			"drifted",
 		);
 
-		if (localPiConfigFiles.settings) {
-			await writeJson(join(home, ".pi/agent/settings.json"), { defaultModel: "changed" });
-			expect(find(await inspectSystem({ home, sourceRoot }), "pi-config:settings").status).toBe(
-				"drifted",
-			);
-		}
-
 		await mkdir(join(home, ".claude"), { recursive: true });
 		await cp(join(sourceRoot, "pi/AGENTS.md"), join(home, ".claude/AGENTS.md"), {
 			recursive: true,
@@ -176,13 +169,6 @@ describe("read-only system status", () => {
 		expect(find(await inspectSystem({ home, sourceRoot }), "instructions:shared").status).toBe(
 			"partial",
 		);
-
-		if (localPiConfigFiles.settings) {
-			await writeFile(join(home, ".pi/agent/settings.json"), "not json");
-			expect(find(await inspectSystem({ home, sourceRoot }), "pi-config:settings").status).toBe(
-				"unavailable",
-			);
-		}
 	});
 
 	it("recognizes filtered local Pi resources", async () => {

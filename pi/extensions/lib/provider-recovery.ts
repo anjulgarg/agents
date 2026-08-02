@@ -24,6 +24,8 @@ interface RecoveryState {
 	attempts: number;
 	timer?: ReturnType<typeof setTimeout>;
 	queuedRecovery: boolean;
+	circuitOpen: boolean;
+	circuitModelKey?: string;
 	closed: boolean;
 }
 
@@ -47,10 +49,17 @@ function latestAssistantMessage(ctx: ExtensionContext):
 	}
 }
 
+function modelKey(ctx: ExtensionContext): string {
+	const model = ctx.model;
+	return model ? `${model.provider}/${model.id}` : "unknown";
+}
+
 /**
  * Keep a settled parent session alive after the native retry budget is exhausted.
  * Pi's core handles ordinary transient failures first; this is the bounded outer
- * guard for providers that return an unstructured failure response.
+ * guard for providers that return an unstructured failure response. Once
+ * exhausted, a per-model circuit breaker prevents every later user turn from
+ * replaying the same hidden recovery sequence during a sustained outage.
  */
 export function registerProviderRecovery(
 	pi: ExtensionAPI,
@@ -66,7 +75,12 @@ export function registerProviderRecovery(
 		baseDelayMs,
 		boundedInteger(options.maxDelayMs, DEFAULT_PROVIDER_RECOVERY_MAX_DELAY_MS, 0),
 	);
-	const state: RecoveryState = { attempts: 0, queuedRecovery: false, closed: false };
+	const state: RecoveryState = {
+		attempts: 0,
+		queuedRecovery: false,
+		circuitOpen: false,
+		closed: false,
+	};
 
 	const clearTimer = (): void => {
 		if (!state.timer) return;
@@ -78,6 +92,8 @@ export function registerProviderRecovery(
 		clearTimer();
 		state.attempts = 0;
 		state.queuedRecovery = false;
+		state.circuitOpen = false;
+		state.circuitModelKey = undefined;
 	};
 
 	pi.on("session_start", () => {
@@ -98,14 +114,35 @@ export function registerProviderRecovery(
 	pi.on("message_end", (event) => {
 		if (event.message.role === "assistant" && event.message.stopReason !== "error") {
 			state.attempts = 0;
+			state.circuitOpen = false;
+			state.circuitModelKey = undefined;
 		}
+	});
+
+	pi.on("model_select", () => {
+		reset();
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
 		if (state.closed || state.timer || maxRetries === 0) return;
 		const failure = latestAssistantMessage(ctx);
 		if (!failure || !isTransientProviderFailure(failure)) return;
-		if (state.attempts >= maxRetries) return;
+		const failedModelKey = modelKey(ctx);
+		if (state.circuitOpen) {
+			if (state.circuitModelKey === failedModelKey) return;
+			state.circuitOpen = false;
+			state.circuitModelKey = undefined;
+			state.attempts = 0;
+		}
+		if (state.attempts >= maxRetries) {
+			state.circuitOpen = true;
+			state.circuitModelKey = failedModelKey;
+			ctx.ui?.notify(
+				`Automatic provider recovery paused for ${failedModelKey}; switch models or retry manually.`,
+				"warning",
+			);
+			return;
+		}
 
 		const attempt = ++state.attempts;
 		const delayMs = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));

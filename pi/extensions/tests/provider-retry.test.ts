@@ -126,12 +126,24 @@ void (async () => {
 	await wait(5);
 	check("recovery stops after the bounded retry budget", pi.sent.length === 2);
 
+	started({}, ctx);
+	settled({}, ctx);
+	await wait(5);
+	check("circuit breaker suppresses retries on the same failed model", pi.sent.length === 2);
+
+	pi.handlers.get("model_select")!({}, ctx);
+	started({}, ctx);
+	settled({}, ctx);
+	await wait(10);
+	check("model changes reopen bounded recovery", pi.sent.length === 3);
+
+	started({}, ctx);
 	messageEnd({ message: { role: "assistant", stopReason: "stop" } }, ctx);
 	leaf.message = { role: "assistant", ...resetFailure };
 	started({}, ctx);
 	settled({}, ctx);
 	await wait(10);
-	check("a successful assistant turn resets the recovery budget", pi.sent.length === 3);
+	check("a successful assistant turn resets the recovery budget", pi.sent.length === 4);
 
 	dispose();
 	if (failed > 0) {

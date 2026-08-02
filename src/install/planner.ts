@@ -273,7 +273,12 @@ async function buildPlan(
 		});
 	});
 	const state = await loadState(roots.home);
-	const existing = new Set<ComponentId>(Object.keys(state?.components ?? {}) as ComponentId[]);
+	const knownComponentIds = new Set(components.map(({ id }) => id));
+	const existing = new Set<ComponentId>(
+		(Object.keys(state?.components ?? {}) as ComponentId[]).filter((id) =>
+			knownComponentIds.has(id),
+		),
+	);
 	const selected = new Set(resolved);
 	const managed = new Set(existing);
 	for (const id of resolved) {

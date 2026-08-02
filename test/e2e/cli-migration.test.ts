@@ -109,25 +109,6 @@ describe("temporary-home CLI parity", () => {
 		});
 	});
 
-	it.skipIf(!localPiConfigFiles.settings)(
-		"T2 refuses malformed configuration without changing one byte",
-		async () => {
-			const { home } = await fixtureHome();
-			await mkdir(join(home, ".pi/agent"), { recursive: true });
-			await writeFile(join(home, ".pi/agent/settings.json"), "{ malformed\n");
-			const before = await inventory(home);
-			const result = await runAgents(home, [
-				"install",
-				"--component",
-				"pi-config:settings",
-				"--yes",
-			]);
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("ERROR [malformed-config]");
-			expect(await inventory(home)).toEqual(before);
-		},
-	);
-
 	it("T2 rolls an injected mid-transaction failure back byte-for-byte", async () => {
 		const { home } = await fixtureHome();
 		await mkdir(home, { recursive: true });

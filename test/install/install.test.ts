@@ -136,6 +136,42 @@ describe("transactional install", () => {
 		expect(receipt.components["skill:foreman-plan"].outputs[0].sha256).toMatch(/^[a-f0-9]{64}$/);
 	});
 
+	it("retires the old settings component without changing user settings", async () => {
+		const target = await home();
+		await mkdir(join(target, ".pi/agent"), { recursive: true });
+		await mkdir(join(target, ".agents"), { recursive: true });
+		await writeFile(
+			join(target, ".pi/agent/settings.json"),
+			JSON.stringify({ defaultProvider: "user", packages: ["npm:other@1"] }),
+		);
+		await writeFile(
+			join(target, ".agents/anjulgarg-agents.json"),
+			JSON.stringify({
+				schemaVersion: 1,
+				source: { kind: "local", root: sourceRoot, revision: null },
+				components: {
+					"pi-config:settings": {
+						installedAt: "2026-01-01T00:00:00Z",
+						sourceDigest: "retired",
+						outputs: [],
+					},
+				},
+			}),
+		);
+
+		await applyPlan(
+			{ home: target, sourceRoot },
+			await planInstall({ home: target, sourceRoot, now: fixed }, ["skill:foreman-plan"]),
+		);
+
+		const settings = await object(join(target, ".pi/agent/settings.json"));
+		const receipt = await object(join(target, ".agents/anjulgarg-agents.json"));
+		expect(settings.defaultProvider).toBe("user");
+		expect(settings.packages).toEqual(["npm:other@1"]);
+		expect(receipt.components["pi-config:settings"]).toBeUndefined();
+		expect(receipt.components["skill:foreman-plan"]).toBeDefined();
+	});
+
 	it.skipIf(!localPiConfigFiles.models || !localPiConfigFiles.mcp)(
 		"preserves unknown JSON, hooks, blocks, skills, and files",
 		async () => {
@@ -245,13 +281,6 @@ describe("transactional install", () => {
 			planInstall({ home: join(sourceRoot, "nested-home"), sourceRoot }, ["skill:foreman-plan"]),
 		).rejects.toMatchObject({ code: "unsafe-path" });
 		await mkdir(join(target, ".pi/agent"), { recursive: true });
-		if (localPiConfigFiles.settings) {
-			await writeFile(join(target, ".pi/agent/settings.json"), "[]");
-			await expect(
-				planInstall({ home: target, sourceRoot }, ["pi-config:settings"]),
-			).rejects.toMatchObject({ code: "malformed-config" });
-			await rm(join(target, ".pi"), { recursive: true });
-		}
 		await mkdir(join(target, ".agents"), { recursive: true });
 		await writeFile(
 			join(target, ".agents/anjulgarg-agents.json"),
