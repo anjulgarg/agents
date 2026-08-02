@@ -42,7 +42,16 @@ interface TodoSnapshot {
 }
 
 type TodoAction =
-	"list" | "add" | "edit" | "move" | "remove" | "start" | "complete" | "reopen" | "replace";
+	| "list"
+	| "add"
+	| "edit"
+	| "move"
+	| "remove"
+	| "start"
+	| "complete"
+	| "reopen"
+	| "replace"
+	| "update";
 
 interface TodoDetails {
 	action: TodoAction;
@@ -51,14 +60,16 @@ interface TodoDetails {
 	error?: string;
 }
 
+interface TodoStatusUpdate {
+	id: number;
+	status: TodoStatus;
+}
+
 const TODO_RECONCILIATION_TYPE = "todo-reconciliation";
 const TODO_RECONCILIATION_GUIDANCE = [
 	"[INTERNAL TODO RECONCILIATION EVENT, NOT USER INPUT]",
-	"Treat open and in-progress todo items as the active work queue.",
-	"Review them against work already verified and mark each verified item complete with the todo tool one at a time now.",
-	"Mark the item you are actively working on as in_progress with todo start.",
-	"After the current user request is complete, autonomously start the next unverified open item without waiting for user confirmation.",
-	"Preserve the current user request's priority and ask only if an open item materially requires user input.",
+	"Reconcile the open todo queue against verified work and continue autonomously.",
+	"Use atomic status updates when several items are known; ask only for material user input.",
 	"Do not narrate routine todo management to the user.",
 ].join("\n");
 
@@ -73,10 +84,24 @@ const TodoParams = Type.Object({
 		"complete",
 		"reopen",
 		"replace",
+		"update",
 	] as const),
 	text: Type.Optional(Type.String({ description: "Todo text (for add or edit)" })),
 	items: Type.Optional(
 		Type.Array(Type.String(), { description: "Todo texts (for add or replace)" }),
+	),
+	updates: Type.Optional(
+		Type.Array(
+			Type.Object({
+				id: Type.Integer({ minimum: 1, description: "Todo ID to update" }),
+				status: StringEnum(["open", "in_progress", "done"] as const),
+			}),
+			{
+				minItems: 1,
+				maxItems: 64,
+				description: "Atomic todo status updates; IDs must be unique",
+			},
+		),
 	),
 	id: Type.Optional(
 		Type.Integer({ minimum: 1, description: "Todo ID for an item-specific action" }),
@@ -135,18 +160,6 @@ function colorTodoGlyph(theme: Theme, status: TodoStatus): string {
 
 function formatTodoLine(todo: Todo): string {
 	return `[${todoStatusMarker(todo.status)}] #${todo.id}: ${todo.text}`;
-}
-
-function formatActiveSummary(todos: Todo[]): string {
-	const active = todos.filter(isActiveTodo);
-	if (active.length === 0) return "Open todos: none";
-	return `Open todos: ${active
-		.map((todo) =>
-			todo.status === "in_progress"
-				? `#${todo.id} [in progress]: ${todo.text}`
-				: `#${todo.id}: ${todo.text}`,
-		)
-		.join("; ")}`;
 }
 
 function formatActiveChecklist(todos: Todo[]): string {
@@ -348,6 +361,7 @@ export default function todoExtension(pi: ExtensionAPI) {
 	let reconciliationQueued = false;
 	let reconciliationTurn = false;
 	let parentTurnAborted = false;
+	let settlementHandled = false;
 
 	const cloneTodos = (items: Todo[]): Todo[] => items.map((todo) => ({ ...todo }));
 	const stateDetails = (action: TodoDetails["action"], error?: string): TodoDetails => ({
@@ -360,9 +374,12 @@ export default function todoExtension(pi: ExtensionAPI) {
 		content: [{ type: "text" as const, text }],
 		details: stateDetails(action, error),
 	});
-	const openTodoSummary = (): string => formatActiveSummary(todos);
+	const activeTodoReceipt = (): string => {
+		const active = todos.find((todo) => todo.status === "in_progress");
+		return active ? `; active #${active.id}` : "";
+	};
 	const mutationResult = (action: TodoDetails["action"], text: string) =>
-		toolResult(action, `${text}\n${openTodoSummary()}`);
+		toolResult(action, `${text}${activeTodoReceipt()}`);
 
 	const snapshot = (): TodoSnapshot => ({ todos: cloneTodos(todos), nextId });
 
@@ -412,6 +429,84 @@ export default function todoExtension(pi: ExtensionAPI) {
 		return added;
 	};
 
+	const normalizeLifecycle = (
+		candidate: Todo[],
+		previous: Todo[],
+		options: { startFirstOpen?: boolean; completedId?: number } = {},
+	): void => {
+		if (options.startFirstOpen && !candidate.some((todo) => todo.status === "in_progress")) {
+			const firstOpen = candidate.find((todo) => todo.status === "open");
+			if (firstOpen) firstOpen.status = "in_progress";
+		}
+
+		if (options.completedId === undefined) return;
+		const previousInProgress = previous.filter((todo) => todo.status === "in_progress");
+		const completedBefore = previous.find((todo) => todo.id === options.completedId);
+		const completedAfter = candidate.find((todo) => todo.id === options.completedId);
+		if (
+			previousInProgress.length !== 1 ||
+			completedBefore?.status !== "in_progress" ||
+			completedAfter?.status !== "done" ||
+			candidate.some((todo) => todo.status === "in_progress")
+		)
+			return;
+
+		const completedIndex = candidate.findIndex((todo) => todo.id === options.completedId);
+		const following =
+			completedIndex >= 0
+				? [...candidate.slice(completedIndex + 1), ...candidate.slice(0, completedIndex)]
+				: candidate;
+		const nextOpen = following.find((todo) => todo.status === "open");
+		if (nextOpen) nextOpen.status = "in_progress";
+	};
+
+	const sameTodoState = (left: Todo[], right: Todo[]): boolean =>
+		left.length === right.length &&
+		left.every(
+			(todo, index) =>
+				todo.id === right[index]?.id &&
+				todo.text === right[index]?.text &&
+				todo.status === right[index]?.status,
+		);
+
+	const commitTodos = (candidate: Todo[], ctx: ExtensionContext): boolean => {
+		if (sameTodoState(candidate, todos)) return false;
+		todos = candidate;
+		afterMutation(ctx);
+		return true;
+	};
+
+	const validateBatchUpdates = (
+		rawUpdates: unknown,
+	): { updates?: TodoStatusUpdate[]; error?: string } => {
+		if (!Array.isArray(rawUpdates) || rawUpdates.length === 0) {
+			return { error: "updates requires at least one item" };
+		}
+		if (rawUpdates.length > 64) return { error: "updates supports at most 64 items" };
+
+		const seen = new Set<number>();
+		const updates: TodoStatusUpdate[] = [];
+		for (const [index, rawUpdate] of rawUpdates.entries()) {
+			if (!rawUpdate || typeof rawUpdate !== "object") {
+				return { error: `updates[${index}] must be an object` };
+			}
+			const update = rawUpdate as { id?: unknown; status?: unknown };
+			if (typeof update.id !== "number" || !Number.isInteger(update.id) || update.id < 1) {
+				return { error: `updates[${index}] requires a positive integer id` };
+			}
+			if (!isTodoStatus(update.status)) {
+				return { error: `updates[${index}] has invalid status` };
+			}
+			if (seen.has(update.id)) return { error: `updates contains duplicate ID #${update.id}` };
+			seen.add(update.id);
+			if (!todos.some((todo) => todo.id === update.id)) {
+				return { error: `Todo #${update.id} not found` };
+			}
+			updates.push({ id: update.id, status: update.status });
+		}
+		return { updates };
+	};
+
 	const setTodoStatus = (
 		id: number,
 		status: TodoStatus,
@@ -424,8 +519,13 @@ export default function todoExtension(pi: ExtensionAPI) {
 			return toolResult(action, `Todo #${id} not found`, error);
 		}
 		if (todo.status !== status) {
-			todo.status = status;
-			afterMutation(ctx);
+			const previous = cloneTodos(todos);
+			const candidate = cloneTodos(todos);
+			candidate.find((item) => item.id === id)!.status = status;
+			normalizeLifecycle(candidate, previous, {
+				completedId: status === "done" ? id : undefined,
+			});
+			commitTodos(candidate, ctx);
 		}
 		const label =
 			status === "done" ? "completed" : status === "in_progress" ? "started" : "reopened";
@@ -434,18 +534,25 @@ export default function todoExtension(pi: ExtensionAPI) {
 
 	/** Queue at most one automatic turn to work through the latest open list. */
 	const queueReconciliation = (): void => {
-		if (reconciliationQueued) return;
+		if (reconciliationQueued || reconciliationTurn) return;
 		const checklist = formatActiveChecklist(todos);
 		if (!checklist) return;
 		reconciliationQueued = true;
 		pi.sendMessage(
 			{
 				customType: TODO_RECONCILIATION_TYPE,
-				content: `${TODO_RECONCILIATION_GUIDANCE}\n\nOpen todos:\n${checklist}`,
+				content: `${TODO_RECONCILIATION_GUIDANCE}\n\nOpen work:\n${checklist}`,
 				display: false,
 			},
 			{ deliverAs: "followUp", triggerTurn: true },
 		);
+	};
+
+	const resetReconciliationState = (): void => {
+		reconciliationQueued = false;
+		reconciliationTurn = false;
+		parentTurnAborted = false;
+		settlementHandled = false;
 	};
 
 	/** Rebuild state from the latest todo snapshot on the current branch. */
@@ -469,11 +576,13 @@ export default function todoExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx;
+		resetReconciliationState();
 		reconstruct(ctx);
 		updateWidget(ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => {
 		currentCtx = ctx;
+		resetReconciliationState();
 		reconstruct(ctx);
 		updateWidget(ctx);
 	});
@@ -482,19 +591,17 @@ export default function todoExtension(pi: ExtensionAPI) {
 		parentTurnAborted = false;
 		reconciliationTurn = reconciliationQueued;
 		reconciliationQueued = false;
+		settlementHandled = false;
 		const checklist = formatActiveChecklist(todos);
 		if (!checklist) return;
 		return {
 			systemPrompt:
 				event.systemPrompt +
-				"\n\n[Hidden Todo Enforcement]\n" +
+				"\n\n[Hidden Todo Queue]\n" +
 				"The following todo items are open or in progress and form the active work queue:\n" +
 				checklist +
-				"\nYou are the parent agent. Mark the item you are actively working on with todo start. " +
-				"Complete each item immediately after its work is verified, including work performed through " +
-				"delegation. Mark items complete with the todo tool one at a time; do not batch completions. " +
-				"After the current user request is complete, autonomously start the next unverified item " +
-				"without waiting for user confirmation, unless it conflicts or requires material input.",
+				"\nReflect verified progress with todo status updates, using one atomic update for related changes when useful. " +
+				"Continue the next unverified item autonomously unless it conflicts or requires material input.",
 		};
 	});
 
@@ -506,6 +613,8 @@ export default function todoExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_settled", () => {
+		if (settlementHandled) return;
+		settlementHandled = true;
 		if (parentTurnAborted) {
 			parentTurnAborted = false;
 			reconciliationQueued = false;
@@ -524,15 +633,14 @@ export default function todoExtension(pi: ExtensionAPI) {
 		label: "Todo",
 		renderShell: "self",
 		description:
-			"Manage the standalone todo list. Actions: list, add, edit, move, remove, start, complete, reopen, replace.",
+			"Manage the standalone todo list. Actions: list, add, edit, move, remove, start, complete, reopen, replace, update.",
 		promptSnippet: "Track and maintain multi-step work as a todo list",
 		promptGuidelines: [
-			"Use todo to track multi-step work: add each step, start the active one, then complete it immediately after its work is verified.",
-			"Todo status is open (○), in_progress (◐), or done (✓). Use start, complete, and reopen by ID; these actions are idempotent.",
+			"Use todo to track multi-step work: add each step, start the active one, then complete it after its work is verified.",
+			"Todo status is open (○), in_progress (◐), or done (✓). Use update for atomic status changes; start, complete, and reopen by ID are idempotent.",
 			"Use todo edit, move, or remove by ID when the user requests list maintenance; move positions are one-based.",
-			"Complete or reopen a todo by its ID. Complete items one at a time instead of batching updates at the end.",
 			"When executing a user-approved plan, replace the todo list with its steps before starting; Todo confirms before discarding open work.",
-			"Use replace rather than add to start a fresh list when beginning unrelated work. The widget auto-hides when all items are complete.",
+			"Use replace rather than add to start a fresh list when beginning unrelated work. The first replacement item starts automatically when no item is active, and the widget auto-hides when all items are complete.",
 		],
 		parameters: TodoParams,
 		executionMode: "sequential",
@@ -643,6 +751,33 @@ export default function todoExtension(pi: ExtensionAPI) {
 					return setTodoStatus(params.id, status, params.action, ctx);
 				}
 
+				case "update": {
+					const validation = validateBatchUpdates(params.updates);
+					if (!validation.updates) {
+						const error = validation.error ?? "invalid updates";
+						return toolResult("update", `Error: ${error}`, error);
+					}
+
+					const previous = cloneTodos(todos);
+					const candidate = cloneTodos(todos);
+					for (const update of validation.updates) {
+						const todo = candidate.find((item) => item.id === update.id);
+						if (todo) todo.status = update.status;
+					}
+					const currentInProgress = previous.filter((todo) => todo.status === "in_progress");
+					const completedId =
+						currentInProgress.length === 1 &&
+						validation.updates.some(
+							(update) => update.id === currentInProgress[0]!.id && update.status === "done",
+						)
+							? currentInProgress[0]!.id
+							: undefined;
+					normalizeLifecycle(candidate, previous, { completedId });
+					commitTodos(candidate, ctx);
+					const count = validation.updates.length;
+					return mutationResult("update", `Updated ${count} todo${count === 1 ? "" : "s"}`);
+				}
+
 				case "replace": {
 					if (params.items === undefined) {
 						return toolResult("replace", "Error: items required for replace", "items required");
@@ -668,7 +803,13 @@ export default function todoExtension(pi: ExtensionAPI) {
 							return toolResult("replace", `Error: ${error}`, error);
 						}
 					}
-					todos = texts.map((text) => ({ id: nextId++, text, status: "open" as const }));
+					const replacement = texts.map((text) => ({
+						id: nextId++,
+						text,
+						status: "open" as const,
+					}));
+					normalizeLifecycle(replacement, todos, { startFirstOpen: true });
+					todos = replacement;
 					afterMutation(ctx);
 					return mutationResult("replace", `Replaced todo list with ${todos.length} todos`);
 				}

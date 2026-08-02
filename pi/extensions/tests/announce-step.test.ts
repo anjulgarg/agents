@@ -1,377 +1,438 @@
-import announceStep, { ANNOUNCEMENT_GUIDANCE, formatSlice } from "../announce-step.ts";
+import announceStep, {
+	ACTIVITY_ENTRY_TYPE,
+	ACTIVITY_PHASES,
+	classifyCommand,
+	classifyTool,
+	formatSlice,
+} from "../announce-step.ts";
 
 function assert(name: string, condition: boolean, details: string): void {
 	if (!condition) throw new Error(`FAIL: ${name}\n${details}`);
 	console.log(`PASS: ${name}`);
 }
 
-assert(
-	"completed announcement omits a prefix",
-	formatSlice("Verify output", 22_000, 698).startsWith("Verify output..."),
-	formatSlice("Verify output", 22_000, 698),
-);
+type Handler = (event: any, context: any) => unknown;
 
-const entryRenderers = new Map<string, (entry: any, options: any, theme: any) => any>();
-let registeredTool: any;
-const handlers = new Map<string, (event: any, context?: any) => any>();
-const appendedEntries: Array<{ type: string; data: any }> = [];
-const pi = new Proxy(
-	{
+interface Harness {
+	handlers: Map<string, Handler>;
+	renderers: Map<string, (entry: any, options: any, theme: any) => any>;
+	appended: Array<{ type: string; data: any }>;
+	registerToolCalls: number;
+	activeToolReads: number;
+	emit(event: string, payload?: any, context?: any): unknown;
+}
+
+function createContext(mode: "tui" | "rpc" | "print" | "json", entries: unknown[] = []) {
+	const workingMessages: Array<string | undefined> = [];
+	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
+	const context = {
+		mode,
+		ui: {
+			theme: { fg: (_color: string, text: string) => text },
+			setWorkingMessage: (message?: string) => workingMessages.push(message),
+			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
+			setWorkingVisible: () => undefined,
+			setWorkingIndicator: () => undefined,
+		},
+		sessionManager: { getEntries: () => entries },
+	};
+	return { context, workingMessages, statusCalls };
+}
+
+function createHarness(): Harness {
+	const handlers = new Map<string, Handler>();
+	const renderers = new Map<string, (entry: any, options: any, theme: any) => any>();
+	const appended: Array<{ type: string; data: any }> = [];
+	const state = { registerToolCalls: 0, activeToolReads: 0 };
+	const pi = {
 		registerEntryRenderer: (
 			type: string,
 			renderer: (entry: any, options: any, theme: any) => any,
-		) => {
-			entryRenderers.set(type, renderer);
+		) => renderers.set(type, renderer),
+		registerTool: () => {
+			state.registerToolCalls++;
 		},
-		registerTool: (tool: any) => {
-			registeredTool = tool;
+		on: (event: string, handler: Handler) => handlers.set(event, handler),
+		appendEntry: (type: string, data: any) => appended.push({ type, data }),
+		getActiveTools: () => {
+			state.activeToolReads++;
+			return [];
 		},
-		on: (event: string, handler: (event: any, context?: any) => void) => {
-			handlers.set(event, handler);
+		setActiveTools: () => undefined,
+	};
+	announceStep(pi as any);
+	return {
+		handlers,
+		renderers,
+		appended,
+		get registerToolCalls() {
+			return state.registerToolCalls;
 		},
-		appendEntry: (type: string, data: any) => appendedEntries.push({ type, data }),
-		getActiveTools: () => ["announce_step"],
+		get activeToolReads() {
+			return state.activeToolReads;
+		},
+		emit(event, payload = {}, context = undefined) {
+			return handlers.get(event)?.(payload, context);
+		},
+	};
+}
+
+const realDateNow = Date.now;
+let now = 10_000;
+Date.now = () => now;
+
+const harness = createHarness();
+const fixtureEntries = [
+	{
+		type: "custom",
+		customType: "announce-step-duration",
+		data: { runId: "legacy-run", step: "Legacy work", durationMs: 100, completed: false },
 	},
 	{
-		get(target, property) {
-			return property in target ? target[property as keyof typeof target] : () => undefined;
+		type: "custom",
+		customType: "announce-step-duration-update",
+		data: {
+			runId: "legacy-run",
+			durationMs: 700,
+			completed: true,
+			receivedTokens: 42,
+			toolCount: 2,
+			changedFiles: ["src/legacy.ts"],
 		},
 	},
-);
-announceStep(pi as any);
-const promptUpdate = handlers.get("before_agent_start")?.({ systemPrompt: "base" });
-const duplicatePromptUpdate = handlers.get("before_agent_start")?.({
-	systemPrompt: `base\n\n${ANNOUNCEMENT_GUIDANCE}`,
-});
+];
+const tui = createContext("tui", fixtureEntries);
+
+harness.emit("session_start", { type: "session_start", reason: "resume" }, tui.context);
 assert(
-	"announcement guidance tracks meaningful activity without tool coupling",
-	registeredTool.description === "Set the live announcement for the current meaningful activity." &&
-		registeredTool.promptGuidelines.length === 1 &&
-		registeredTool.promptGuidelines[0] === ANNOUNCEMENT_GUIDANCE &&
-		promptUpdate?.systemPrompt === `base\n\n${ANNOUNCEMENT_GUIDANCE}` &&
-		ANNOUNCEMENT_GUIDANCE.includes("before each meaningful work slice") &&
-		ANNOUNCEMENT_GUIDANCE.includes("one or two short sentences") &&
-		ANNOUNCEMENT_GUIDANCE.includes("objective, approach, or planned task") &&
-		registeredTool.parameters.properties.message.minLength === 1 &&
-		!registeredTool.parameters.required.includes("message") &&
-		!ANNOUNCEMENT_GUIDANCE.includes("work phase") &&
-		!ANNOUNCEMENT_GUIDANCE.includes("skip unchanged phases"),
+	"passive registration has no model tool or prompt hook",
+	harness.registerToolCalls === 0 &&
+		harness.activeToolReads === 0 &&
+		!harness.handlers.has("before_agent_start") &&
+		ACTIVITY_PHASES.length === 5 &&
+		!harness.handlers.has("promptGuidelines"),
 	JSON.stringify({
-		description: registeredTool.description,
-		guidance: registeredTool.promptGuidelines,
-		promptUpdate,
+		handlers: [...harness.handlers.keys()],
+		registerToolCalls: harness.registerToolCalls,
 	}),
 );
 assert(
-	"announcement guidance is not appended when already present",
-	duplicatePromptUpdate === undefined,
-	JSON.stringify({ duplicatePromptUpdate }),
-);
-const rendererTheme = {
-	fg: (_color: string, text: string) => text,
-	bold: (text: string) => text,
-};
-const progressMessage = "I found the source. Next I’ll add coverage.";
-const renderedMessage = registeredTool
-	.renderCall({ step: "Add progress notes", message: progressMessage }, rendererTheme, {
-		expanded: false,
-		isError: false,
-	})
-	.render(80)
-	.join("\n");
-assert(
-	"announcement messages render persistently at the tool call position",
-	renderedMessage.includes(progressMessage),
-	JSON.stringify({ renderedMessage }),
-);
-const compatibleCall = registeredTool
-	.renderCall({ step: "Add progress notes" }, rendererTheme, { expanded: false, isError: false })
-	.render(80)
-	.join("\n");
-assert(
-	"legacy announcement calls remain valid without duplicate-message retries",
-	compatibleCall === "" && !registeredTool.parameters.required.includes("message"),
-	JSON.stringify({ compatibleCall, required: registeredTool.parameters.required }),
-);
-const hiddenSuccess = registeredTool
-	.renderResult(
-		{ content: [{ type: "text", text: "Step announced." }] },
-		{ expanded: true, isPartial: false },
-		rendererTheme,
-		{ expanded: true, isError: false },
-	)
-	.render(80)
-	.join("\n");
-const visibleFailure = registeredTool
-	.renderResult(
-		{ content: [{ type: "text", text: "Step announcement failed" }] },
-		{ expanded: false, isPartial: false },
-		rendererTheme,
-		{ expanded: false, isError: true },
-	)
-	.render(80)
-	.join("\n");
-assert(
-	"announcement tool stays aggregated on success but exposes failures",
-	hiddenSuccess === "" && visibleFailure.includes("Step announcement failed"),
-	JSON.stringify({ hiddenSuccess, visibleFailure }),
-);
-const rendered = entryRenderers
-	.get("announce-step-duration")?.(
-		{ data: { step: "Verify output", durationMs: 22_000, receivedTokens: 698 } },
-		{},
-		{ fg: (_color: string, text: string) => text },
-	)
-	.render(80) as string[];
-assert(
-	"completed announcement uses chat padding",
-	rendered[0].startsWith(" Verify output..."),
-	JSON.stringify(rendered),
+	"legacy announcement entries reconstruct after resume",
+	fixtureEntries[0].data.completed === true &&
+		harness.renderers.has("announce-step-duration") &&
+		harness.renderers.has("announce-step-duration-update"),
+	JSON.stringify(fixtureEntries),
 );
 
-let workingMessage: string | undefined = "";
-const workingVisibilityCalls: boolean[] = [];
-const context = {
-	mode: "tui",
-	ui: {
-		setStatus: () => undefined,
-		setWorkingMessage: (message?: string) => {
-			workingMessage = message;
-		},
-		setWorkingVisible: (visible: boolean) => {
-			workingVisibilityCalls.push(visible);
-		},
+const theme = { fg: (_color: string, text: string) => text };
+const legacyRendered = harness.renderers
+	.get("announce-step-duration")?.({ data: fixtureEntries[0].data }, {}, theme)
+	.render(80) as string[];
+assert(
+	"legacy announcement entries retain their chat rendering",
+	legacyRendered.join("\n").includes("Legacy work") &&
+		legacyRendered[0]?.startsWith(" Legacy work"),
+	JSON.stringify(legacyRendered),
+);
+
+harness.emit("agent_start", { type: "agent_start" }, tui.context);
+now += 1_234;
+harness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "read-1",
+		toolName: "read",
+		args: { path: "src/example.ts" },
 	},
-};
-void registeredTool.execute(
-	"announce-1",
-	{ step: "Implement summaries" },
-	undefined,
-	undefined,
-	context,
+	tui.context,
 );
-handlers.get("tool_execution_start")?.({
-	toolCallId: "edit-1",
-	toolName: "edit",
-	args: { path: "src/example.ts" },
-});
-assert(
-	"live announcements show the current tool count",
-	workingMessage.includes("1 tool"),
-	JSON.stringify(workingMessage),
+harness.emit(
+	"tool_execution_end",
+	{
+		type: "tool_execution_end",
+		toolCallId: "read-1",
+		toolName: "read",
+		result: {},
+		isError: false,
+	},
+	tui.context,
 );
-handlers.get("tool_execution_end")?.({ toolCallId: "edit-1", toolName: "edit", isError: false });
-handlers.get("tool_execution_start")?.({
-	toolCallId: "check-1",
-	toolName: "bash",
-	args: { command: "npm test" },
-});
-handlers.get("tool_execution_end")?.({ toolCallId: "check-1", toolName: "bash", isError: false });
-handlers.get("tool_execution_start")?.({
-	toolCallId: "read-1",
-	toolName: "read",
-	args: { path: "src/example.ts" },
-});
-handlers.get("tool_execution_end")?.({ toolCallId: "read-1", toolName: "read", isError: false });
-void registeredTool.execute(
-	"announce-2",
-	{ step: "Install summaries" },
-	undefined,
-	undefined,
-	context,
+harness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "grep-1",
+		toolName: "grep",
+		args: { pattern: "needle", path: "src" },
+	},
+	tui.context,
 );
-assert(
-	"the aggregate announcement is inserted before phase work",
-	appendedEntries.length === 1 && appendedEntries[0].type === "announce-step-duration",
-	JSON.stringify(appendedEntries),
+harness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "edit-1",
+		toolName: "edit",
+		args: { path: "src/example.ts" },
+	},
+	tui.context,
 );
-const activeAnnouncement = entryRenderers
-	.get("announce-step-duration")?.(
-		{ data: appendedEntries[0].data },
-		{},
-		{ fg: (_color: string, text: string) => text },
-	)
-	.render(80) as string[];
-assert(
-	"the transcript announcement stays hidden while the live indicator is active",
-	activeAnnouncement.length === 0,
-	JSON.stringify(activeAnnouncement),
-);
-handlers.get("tool_execution_start")?.({
-	toolCallId: "write-1",
-	toolName: "write",
-	args: { path: "src/other.ts" },
-});
-handlers.get("tool_execution_end")?.({ toolCallId: "write-1", toolName: "write", isError: false });
-handlers.get("tool_execution_start")?.({
-	toolCallId: "read-2",
-	toolName: "read",
-	args: { path: "missing.ts" },
-});
-handlers.get("tool_execution_end")?.({ toolCallId: "read-2", toolName: "read", isError: true });
-handlers.get("agent_settled")?.({}, context);
-
-const summary = appendedEntries[0].data;
-const persistedUpdate = appendedEntries[1];
-assert(
-	"settled turns update the earlier announcement and append only a hidden persistence entry",
-	appendedEntries.length === 2 &&
-		persistedUpdate.type === "announce-step-duration-update" &&
-		summary.step === "Implement summaries" &&
-		summary.toolCount === 5 &&
-		summary.changedFiles.length === 2 &&
-		summary.checkCount === undefined &&
-		summary.recoveredFailures === undefined &&
-		summary.completed === true,
-	JSON.stringify(appendedEntries),
+harness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "write-1",
+		toolName: "write",
+		args: { path: "src/other.ts" },
+	},
+	tui.context,
 );
 assert(
-	"settling restores Pi's default message without controlling visibility",
-	workingMessage === undefined && workingVisibilityCalls.length === 0,
-	JSON.stringify({ workingMessage, workingVisibilityCalls }),
-);
-const completedAnnouncement = entryRenderers
-	.get("announce-step-duration")?.(
-		{ data: summary },
-		{},
-		{ fg: (_color: string, text: string) => text },
-	)
-	.render(80) as string[];
-assert(
-	"the transcript announcement appears after the live indicator stops",
-	completedAnnouncement.join("").includes("Implement summaries"),
-	JSON.stringify(completedAnnouncement),
-);
-const summaryText = formatSlice(summary.step, summary.durationMs, summary.receivedTokens, summary);
-assert(
-	"turn summaries report only aggregate tools and files",
-	summaryText.includes("5 tools") &&
-		summaryText.includes("2 files") &&
-		!summaryText.includes("checks") &&
-		!summaryText.includes("failure"),
-	summaryText,
-);
-handlers.get("session_shutdown")?.({}, context);
-
-type LifecycleHandler = (event: any, context: any) => unknown | Promise<unknown>;
-
-function createLifecycleHarness() {
-	const lifecycleHandlers = new Map<string, LifecycleHandler>();
-	const workingMessages: Array<string | undefined> = [];
-	const visibilityCalls: boolean[] = [];
-	const indicatorCalls: unknown[] = [];
-	let lifecycleTool: any;
-
-	const lifecycleContext = {
-		mode: "tui",
-		sessionManager: { getEntries: () => [] },
-		ui: {
-			setStatus: () => undefined,
-			setWorkingMessage: (message?: string) => workingMessages.push(message),
-			setWorkingVisible: (visible: boolean) => visibilityCalls.push(visible),
-			setWorkingIndicator: (options?: unknown) => indicatorCalls.push(options),
-		},
-	};
-	const lifecyclePi = new Proxy(
-		{
-			registerEntryRenderer: () => undefined,
-			registerTool: (tool: any) => {
-				lifecycleTool = tool;
-			},
-			on: (event: string, handler: LifecycleHandler) => {
-				lifecycleHandlers.set(event, handler);
-			},
-			appendEntry: () => undefined,
-			getActiveTools: () => ["announce_step"],
-		},
-		{
-			get(target, property) {
-				return property in target ? target[property as keyof typeof target] : () => undefined;
-			},
-		},
-	);
-	announceStep(lifecyclePi as any);
-
-	return {
-		workingMessages,
-		visibilityCalls,
-		indicatorCalls,
-		emit: async (event: string, payload: any = {}) => {
-			await lifecycleHandlers.get(event)?.(payload, lifecycleContext);
-		},
-		start: async (step: string) => {
-			await lifecycleHandlers.get("agent_start")?.({}, lifecycleContext);
-			await lifecycleTool.execute(
-				`announce-${step}`,
-				{ step },
-				undefined,
-				undefined,
-				lifecycleContext,
-			);
-		},
-	};
-}
-
-const reloadLifecycle = createLifecycleHarness();
-await reloadLifecycle.emit("session_start", { reason: "startup" });
-await reloadLifecycle.emit("session_shutdown", { reason: "reload" });
-await reloadLifecycle.emit("session_start", { reason: "reload" });
-assert(
-	"reloads leave Pi's working animation and default message untouched",
-	reloadLifecycle.workingMessages.length === 0 &&
-		reloadLifecycle.visibilityCalls.length === 0 &&
-		reloadLifecycle.indicatorCalls.length === 0,
-	JSON.stringify(reloadLifecycle),
+	"file lifecycle events show inspection and editing with deduplicated counts",
+	tui.workingMessages.some((message) => message?.startsWith("Inspecting...")) &&
+		tui.workingMessages.at(-1)?.includes("Editing...") === true &&
+		tui.workingMessages.at(-1)?.includes("4 tools") === true &&
+		tui.workingMessages.at(-1)?.includes("2 files") === true,
+	JSON.stringify(tui.workingMessages),
 );
 
-async function assertContinuationLifecycle(
-	name: string,
-	intermediateEvents: Array<{ type: string; payload?: any }>,
-): Promise<void> {
-	const lifecycle = createLifecycleHarness();
-	await lifecycle.emit("session_start", { reason: "startup" });
-	await lifecycle.start(name);
-	for (const event of intermediateEvents) await lifecycle.emit(event.type, event.payload);
-	const resetsBeforeSettle = lifecycle.workingMessages.filter(
-		(message) => message === undefined,
-	).length;
-	await lifecycle.emit("agent_settled");
-	const resetCount = lifecycle.workingMessages.filter((message) => message === undefined).length;
+harness.emit(
+	"message_update",
+	{
+		type: "message_update",
+		message: { role: "assistant", usage: { output: 88 } },
+	},
+	tui.context,
+);
+now += 2_000;
+harness.emit(
+	"tool_execution_end",
+	{
+		type: "tool_execution_end",
+		toolCallId: "grep-1",
+		toolName: "grep",
+		result: {},
+		isError: false,
+	},
+	tui.context,
+);
+harness.emit(
+	"tool_execution_end",
+	{
+		type: "tool_execution_end",
+		toolCallId: "edit-1",
+		toolName: "edit",
+		result: {},
+		isError: false,
+	},
+	tui.context,
+);
+harness.emit(
+	"tool_execution_end",
+	{
+		type: "tool_execution_end",
+		toolCallId: "write-1",
+		toolName: "write",
+		result: {},
+		isError: false,
+	},
+	tui.context,
+);
+harness.emit("agent_settled", { type: "agent_settled" }, tui.context);
+
+const completedActivity = harness.appended.at(-1);
+assert(
+	"settlement appends one context-free activity receipt",
+	completedActivity?.type === ACTIVITY_ENTRY_TYPE &&
+		completedActivity.data.phase === "Editing" &&
+		completedActivity.data.durationMs === 3_234 &&
+		completedActivity.data.receivedTokens === 88 &&
+		completedActivity.data.toolCount === 4 &&
+		completedActivity.data.changedFiles.length === 2 &&
+		completedActivity.data.status === "completed" &&
+		tui.workingMessages.at(-1) === undefined,
+	JSON.stringify({ completedActivity, workingMessages: tui.workingMessages }),
+);
+const activityRendered = harness.renderers
+	.get(ACTIVITY_ENTRY_TYPE)?.({ data: completedActivity?.data }, {}, theme)
+	.render(100) as string[];
+assert(
+	"activity receipts render without entering model context",
+	activityRendered.join("\n").includes("Editing") &&
+		activityRendered.join("\n").includes("4 tools") &&
+		!harness.handlers.has("context"),
+	JSON.stringify({ activityRendered, handlers: [...harness.handlers.keys()] }),
+);
+
+const commandCases: Array<[string, string]> = [
+	["npm test", "Running tests"],
+	["npm run check", "Running tests"],
+	["pytest -q", "Running tests"],
+	["cargo test --workspace", "Running tests"],
+	["npm run build", "Building"],
+	["tsc -p tsconfig.json", "Building"],
+	["printf 'nothing'", "Running command"],
+];
+for (const [command, expected] of commandCases) {
 	assert(
-		name,
-		resetsBeforeSettle === 0 &&
-			resetCount === 1 &&
-			lifecycle.workingMessages.at(-1) === undefined &&
-			lifecycle.visibilityCalls.length === 0 &&
-			lifecycle.indicatorCalls.length === 0,
-		JSON.stringify({
-			workingMessages: lifecycle.workingMessages,
-			visibilityCalls: lifecycle.visibilityCalls,
-			indicatorCalls: lifecycle.indicatorCalls,
-		}),
+		`command classification: ${command}`,
+		classifyCommand(command) === expected,
+		classifyCommand(command),
 	);
 }
+assert(
+	"command checks use standalone tokens and deterministic test-first ordering",
+	classifyCommand("echo contest") === "Running command" &&
+		classifyCommand("echo buildable") === "Running command" &&
+		classifyCommand("npm run build && npm test") === "Running tests" &&
+		classifyTool("bash", { command: "npm run build" }) === "Building" &&
+		classifyTool("job", { command: "cargo test" }) === "Running tests" &&
+		classifyTool("read", {}) === "Inspecting" &&
+		classifyTool("edit", {}) === "Editing",
+	JSON.stringify({
+		contest: classifyCommand("echo contest"),
+		buildable: classifyCommand("echo buildable"),
+		mixed: classifyCommand("npm run build && npm test"),
+	}),
+);
+assert(
+	"unknown tool arguments fall back to the approved command phase",
+	classifyTool("unknown-tool", { value: "safe fallback" }) === "Running command" &&
+		formatSlice("Running command", 1_500, 0, {
+			toolCount: 1,
+			changedFiles: [],
+		}).includes("1 tool"),
+	formatSlice("Running command", 1_500, 0, { toolCount: 1, changedFiles: [] }),
+);
 
-await assertContinuationLifecycle("queued continuations stay active until settlement", [
-	{ type: "agent_end" },
-	{ type: "agent_start" },
-]);
-await assertContinuationLifecycle("multiple turns preserve Pi-owned activity", [
-	{ type: "turn_start", payload: { turnIndex: 0 } },
-	{ type: "turn_end", payload: { turnIndex: 0 } },
-	{ type: "turn_start", payload: { turnIndex: 1 } },
-	{ type: "turn_end", payload: { turnIndex: 1 } },
-	{ type: "agent_end" },
-]);
-await assertContinuationLifecycle("compaction preserves Pi-owned activity", [
-	{ type: "agent_end" },
-	{ type: "session_before_compact", payload: { reason: "overflow", willRetry: true } },
-	{ type: "session_compact", payload: { reason: "overflow", willRetry: true } },
-	{ type: "agent_start" },
-	{ type: "agent_end" },
-]);
-await assertContinuationLifecycle("retries preserve Pi-owned activity", [
-	{ type: "agent_end", payload: { error: new Error("retry") } },
-	{ type: "agent_start" },
-	{ type: "agent_end" },
-]);
+const failureHarness = createHarness();
+const failureContext = createContext("tui");
+failureHarness.emit("agent_start", { type: "agent_start" }, failureContext.context);
+failureHarness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "failed-check",
+		toolName: "bash",
+		args: { command: "npm test" },
+	},
+	failureContext.context,
+);
+failureHarness.emit(
+	"tool_execution_end",
+	{
+		type: "tool_execution_end",
+		toolCallId: "failed-check",
+		toolName: "bash",
+		result: { content: [{ type: "text", text: "failed" }] },
+		isError: true,
+	},
+	failureContext.context,
+);
+assert(
+	"tool failures remain visible without changing tool results",
+	failureContext.workingMessages.at(-1)?.includes("Running tests") === true &&
+		failureContext.workingMessages.at(-1)?.includes("failed") === true,
+	JSON.stringify(failureContext.workingMessages),
+);
+failureHarness.emit("agent_settled", { type: "agent_settled" }, failureContext.context);
+assert(
+	"failed activity settles without a continuation",
+	failureHarness.appended.at(-1)?.data.status === "failed" &&
+		failureHarness.appended.length === 1 &&
+		failureHarness.handlers.get("agent_settled") !== undefined,
+	JSON.stringify(failureHarness.appended),
+);
+
+failureHarness.emit("agent_start", { type: "agent_start" }, failureContext.context);
+failureHarness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "aborted-run",
+		toolName: "read",
+		args: { path: "src/abort.ts" },
+	},
+	failureContext.context,
+);
+failureHarness.emit(
+	"agent_end",
+	{
+		type: "agent_end",
+		messages: [
+			{
+				role: "assistant",
+				stopReason: "aborted",
+				usage: { output: 0 },
+			},
+		],
+	},
+	failureContext.context,
+);
+assert(
+	"abort state is visible before settlement",
+	failureContext.workingMessages.at(-1)?.includes("aborted") === true,
+	JSON.stringify(failureContext.workingMessages),
+);
+failureHarness.emit("agent_settled", { type: "agent_settled" }, failureContext.context);
+assert(
+	"abort settlement clears the timer-owned working message",
+	failureHarness.appended.at(-1)?.data.status === "aborted" &&
+		failureContext.workingMessages.at(-1) === undefined,
+	JSON.stringify({ appended: failureHarness.appended, working: failureContext.workingMessages }),
+);
+
+const rpcHarness = createHarness();
+const rpc = createContext("rpc");
+rpcHarness.emit("agent_start", { type: "agent_start" }, rpc.context);
+rpcHarness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "rpc-build",
+		toolName: "bash",
+		args: { command: "npm run build" },
+	},
+	rpc.context,
+);
+assert(
+	"RPC mode uses status updates",
+	rpc.statusCalls.some(({ key, text }) => key === "working" && text?.includes("Building")),
+	JSON.stringify(rpc.statusCalls),
+);
+rpcHarness.emit("agent_settled", { type: "agent_settled" }, rpc.context);
+assert(
+	"RPC settlement clears only the activity status",
+	rpc.statusCalls.at(-1)?.key === "working" && rpc.statusCalls.at(-1)?.text === undefined,
+	JSON.stringify(rpc.statusCalls),
+);
+
+const printHarness = createHarness();
+const print = createContext("print");
+printHarness.emit("agent_start", { type: "agent_start" }, print.context);
+printHarness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "print-read",
+		toolName: "read",
+		args: { path: "src/print.ts" },
+	},
+	print.context,
+);
+printHarness.emit("agent_settled", { type: "agent_settled" }, print.context);
+assert(
+	"print mode avoids UI-only operations while retaining the receipt",
+	print.workingMessages.length === 0 &&
+		print.statusCalls.length === 0 &&
+		printHarness.appended[0]?.type === ACTIVITY_ENTRY_TYPE,
+	JSON.stringify({
+		working: print.workingMessages,
+		status: print.statusCalls,
+		appended: printHarness.appended,
+	}),
+);
+
+Date.now = realDateNow;
+console.log("All announce-step passive activity tests passed.");

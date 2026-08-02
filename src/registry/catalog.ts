@@ -53,6 +53,7 @@ const extensions = [
 	["team", "team/index.ts"],
 	["todo", "todo.ts"],
 	["token-speed", "token-speed.ts"],
+	["tool-loader", "tool-loader.ts"],
 	["worktree", "worktree.ts"],
 ] as const;
 

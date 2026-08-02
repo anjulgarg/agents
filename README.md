@@ -88,6 +88,7 @@ The catalog covers `skill`, `pi-extension`, `pi-config`, `pi-package`, `pi-promp
 - [Architecture and component catalog](docs/architecture.md)
 - [Migration and recovery](docs/migration-and-recovery.md)
 - [Pi resources](pi/)
+- [Pi context efficiency](docs/pi-efficiency.md)
 - [Subagent sessions](docs/subagents.md)
 - [Skills](skills/)
 - [Prompts](pi/prompts/)

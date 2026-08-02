@@ -35,6 +35,7 @@ const EXPECTED_EXTENSIONS = [
 	"pi/extensions/team/index.ts",
 	"pi/extensions/todo.ts",
 	"pi/extensions/token-speed.ts",
+	"pi/extensions/tool-loader.ts",
 	"pi/extensions/worktree.ts",
 ] as const;
 

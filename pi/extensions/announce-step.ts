@@ -4,37 +4,49 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 
 export const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const WORKING_FRAME_INTERVAL_MS = 120;
-export const ANNOUNCEMENT_GUIDANCE =
-	"Use announce_step before each meaningful work slice. Include a brief user-facing " +
-	"message of one or two short sentences explaining what you are doing and what you " +
-	"plan to do next. The message is rendered in the chat, so do not repeat it as " +
-	"separate assistant text. Keep announce_step aligned with the current meaningful " +
-	"activity. Update it whenever the immediate objective, approach, or planned task " +
-	"materially changes. Group consecutive actions serving the same objective and " +
-	"approach; do not repeat an unchanged announcement.";
-const ANNOUNCEMENT_ENTRY_TYPE = "announce-step-duration";
-const ANNOUNCEMENT_UPDATE_ENTRY_TYPE = "announce-step-duration-update";
+
+export const ACTIVITY_ENTRY_TYPE = "announce-step-activity";
+export const ACTIVITY_PHASES = [
+	"Inspecting",
+	"Editing",
+	"Running tests",
+	"Building",
+	"Running command",
+] as const;
+
+export type ActivityPhase = (typeof ACTIVITY_PHASES)[number];
+export type ActivityStatus = "completed" | "failed" | "aborted";
+
+type ActivePhaseStatus = "running" | "failed" | "aborted";
+
+const LEGACY_ANNOUNCEMENT_ENTRY_TYPE = "announce-step-duration";
+const LEGACY_ANNOUNCEMENT_UPDATE_ENTRY_TYPE = "announce-step-duration-update";
+const ACTIVITY_STATUS_KEY = "working";
 const CHAT_PADDING = 1;
+const ACTIVITY_TIMER_INTERVAL_MS = 1000;
+const MAX_CHANGED_FILES = 64;
+const MAX_PATH_LENGTH = 240;
+const MAX_TOOL_COUNT = 100_000;
+
+const TEST_COMMAND_TOKEN =
+	/(?:^|[^A-Za-z0-9_])(?:test|tests|check|checks|pytest)(?:$|[^A-Za-z0-9_])/i;
+const BUILD_COMMAND_TOKEN = /(?:^|[^A-Za-z0-9_])(?:build|compile|tsc)(?:$|[^A-Za-z0-9_])/i;
+
+const INSPECTION_TOOLS = new Set(["read", "grep", "find", "ls", "lsp"]);
+const EDITING_TOOLS = new Set(["edit", "write"]);
 
 interface TokenCounters {
 	receivedTokens: number;
 	currentReceivedEstimate: number;
 }
 
-interface PhaseActivity {
-	toolCount: number;
-	changedFiles: Set<string>;
-}
-
-interface ActiveRun extends TokenCounters, PhaseActivity {
-	summaryStep: string;
-	currentStep: string;
-	startedAt: number;
-	entry: AnnouncementEntry;
+interface SliceActivity {
+	toolCount?: number;
+	changedFiles?: string[];
+	status?: ActivePhaseStatus | ActivityStatus;
 }
 
 interface AnnouncementEntry {
@@ -47,16 +59,34 @@ interface AnnouncementEntry {
 	changedFiles?: string[];
 }
 
-function normalizeStep(step: string): string {
-	return step.trim();
+export interface ActivityEntry {
+	phase: ActivityPhase;
+	durationMs: number;
+	status: ActivityStatus;
+	receivedTokens: number;
+	toolCount: number;
+	changedFiles: string[];
+}
+
+interface ActiveRun extends TokenCounters {
+	startedAt: number;
+	phase: ActivityPhase;
+	phaseStatus: ActivePhaseStatus;
+	toolCount: number;
+	changedFiles: Set<string>;
+	activeTools: Map<string, ActivityPhase>;
+	toolFailure: boolean;
+	assistantFailure: boolean;
+	aborted: boolean;
 }
 
 function displayStep(step: string): string {
-	return `${step.replace(/[.!?…]+$/, "")}...`;
+	return `${step.trim().replace(/[.!?…]+$/, "")}...`;
 }
 
 function formatDuration(durationMs: number): string {
-	const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+	const safeDuration = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+	const totalSeconds = Math.floor(safeDuration / 1000);
 	if (totalSeconds < 60) return `${totalSeconds}s`;
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
@@ -64,53 +94,89 @@ function formatDuration(durationMs: number): string {
 }
 
 function formatTokenCount(tokens: number): string {
-	const rounded = Math.max(0, Math.round(tokens));
+	const rounded = Math.max(0, Math.round(Number.isFinite(tokens) ? tokens : 0));
 	if (rounded < 1000) return String(rounded);
 	if (rounded < 10_000) return `${(rounded / 1000).toFixed(1).replace(/\.0$/, "")}k`;
 	return `${Math.round(rounded / 1000)}k`;
+}
+
+function countLabel(count: number, singular: string, plural: string): string {
+	return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function formatLiveSlice(
 	step: string,
 	durationMs: number,
 	receivedTokens?: number,
-	activity?: Omit<AnnouncementEntry, "runId" | "step" | "durationMs" | "receivedTokens">,
+	activity?: SliceActivity,
 ): string {
 	const details = [formatDuration(durationMs)];
-	if (activity?.toolCount) {
-		details.push(`${activity.toolCount} ${activity.toolCount === 1 ? "tool" : "tools"}`);
+	if (activity?.toolCount !== undefined) {
+		details.push(countLabel(Math.max(0, activity.toolCount), "tool", "tools"));
 	}
-	if (activity?.changedFiles?.length) {
-		details.push(
-			`${activity.changedFiles.length} ${activity.changedFiles.length === 1 ? "file" : "files"}`,
-		);
+	if (activity?.changedFiles !== undefined) {
+		details.push(countLabel(activity.changedFiles.length, "file", "files"));
 	}
 	if (receivedTokens !== undefined && receivedTokens > 0) {
 		details.push(`↓ ${formatTokenCount(receivedTokens)} tokens`);
 	}
+	if (activity?.status === "failed" || activity?.status === "aborted") {
+		details.push(activity.status);
+	}
 	return `${displayStep(step)} (${details.join(" · ")})`;
 }
 
+/** Format a compact activity line, retaining the legacy rendering shape. */
 export function formatSlice(
 	step: string,
 	durationMs: number,
 	receivedTokens?: number,
-	activity?: Omit<AnnouncementEntry, "runId" | "step" | "durationMs" | "receivedTokens">,
+	activity?: SliceActivity,
 ): string {
 	return formatLiveSlice(step, durationMs, receivedTokens, activity);
 }
 
-function createTokenCounters(): TokenCounters {
-	return {
-		receivedTokens: 0,
-		currentReceivedEstimate: 0,
-	};
+/** Classify a shell command using the fixed, ordered passive checks. */
+export function classifyCommand(command: unknown): ActivityPhase {
+	if (typeof command !== "string") return "Running command";
+	if (TEST_COMMAND_TOKEN.test(command)) return "Running tests";
+	if (BUILD_COMMAND_TOKEN.test(command)) return "Building";
+	return "Running command";
 }
 
-function createPhaseActivity(): PhaseActivity {
+/** Classify a tool event without inspecting its output or inventing task semantics. */
+export function classifyTool(toolName: unknown, args?: unknown): ActivityPhase {
+	if (typeof toolName !== "string") return "Running command";
+	if (INSPECTION_TOOLS.has(toolName)) return "Inspecting";
+	if (EDITING_TOOLS.has(toolName)) return "Editing";
+	if (toolName === "bash" || toolName === "job") {
+		const command =
+			args &&
+			typeof args === "object" &&
+			typeof (args as { command?: unknown }).command === "string"
+				? (args as { command: string }).command
+				: undefined;
+		return classifyCommand(command);
+	}
+	return "Running command";
+}
+
+function createTokenCounters(): TokenCounters {
+	return { receivedTokens: 0, currentReceivedEstimate: 0 };
+}
+
+function createActiveRun(startedAt: number): ActiveRun {
 	return {
+		startedAt,
+		phase: "Running command",
+		phaseStatus: "running",
 		toolCount: 0,
 		changedFiles: new Set(),
+		activeTools: new Map(),
+		toolFailure: false,
+		assistantFailure: false,
+		aborted: false,
+		...createTokenCounters(),
 	};
 }
 
@@ -118,63 +184,253 @@ function tokenTotal(counters: TokenCounters): number {
 	return counters.receivedTokens + counters.currentReceivedEstimate;
 }
 
-export default function announceStepExtension(pi: ExtensionAPI) {
+function safeNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function messageOutputTokens(message: unknown): number | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const usage = (message as { usage?: { output?: unknown } }).usage;
+	return safeNumber(usage?.output);
+}
+
+function estimateMessageTokens(message: unknown): number {
+	try {
+		const estimated = estimateTokens(message as never);
+		return safeNumber(estimated) ?? 0;
+	} catch {
+		return 0;
+	}
+}
+
+function boundedPath(path: unknown): string | undefined {
+	if (typeof path !== "string") return undefined;
+	const normalized = path.trim();
+	if (!normalized) return undefined;
+	return normalized.slice(0, MAX_PATH_LENGTH);
+}
+
+function pathFromToolEvent(toolName: unknown, args: unknown): string | undefined {
+	if (!EDITING_TOOLS.has(typeof toolName === "string" ? toolName : "")) return undefined;
+	if (!args || typeof args !== "object") return undefined;
+	return boundedPath((args as { path?: unknown }).path);
+}
+
+function isAssistantFailure(message: unknown): "aborted" | "failed" | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const stopReason = (message as { stopReason?: unknown }).stopReason;
+	if (stopReason === "aborted") return "aborted";
+	if (stopReason === "error") return "failed";
+	return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object";
+}
+
+function safeWorkingMessage(context: ExtensionContext | undefined, message: string): void {
+	if (!context || (context.mode !== "tui" && context.mode !== "rpc")) return;
+	try {
+		const themed = context.ui.theme?.fg("toolTitle", message) ?? message;
+		if (context.mode === "tui") context.ui.setWorkingMessage(themed);
+		else context.ui.setStatus(ACTIVITY_STATUS_KEY, themed);
+	} catch {
+		// Activity visibility must never interrupt the agent lifecycle.
+	}
+}
+
+function clearWorkingMessage(context: ExtensionContext | undefined): void {
+	if (!context || (context.mode !== "tui" && context.mode !== "rpc")) return;
+	try {
+		if (context.mode === "tui") context.ui.setWorkingMessage();
+		else context.ui.setStatus(ACTIVITY_STATUS_KEY, undefined);
+	} catch {
+		// Stale or limited UI contexts are safe no-ops for passive activity.
+	}
+}
+
+function legacyEntryData(entry: unknown): AnnouncementEntry | undefined {
+	if (!isRecord(entry) || !isRecord(entry.data)) return undefined;
+	return entry.data as unknown as AnnouncementEntry;
+}
+
+function activityEntryData(entry: unknown): ActivityEntry | undefined {
+	if (!isRecord(entry) || !isRecord(entry.data)) return undefined;
+	const data = entry.data as Record<string, unknown>;
+	if (
+		typeof data.phase !== "string" ||
+		!ACTIVITY_PHASES.includes(data.phase as ActivityPhase) ||
+		typeof data.durationMs !== "number" ||
+		typeof data.status !== "string" ||
+		!(["completed", "failed", "aborted"] as string[]).includes(data.status) ||
+		typeof data.toolCount !== "number" ||
+		!Array.isArray(data.changedFiles)
+	)
+		return undefined;
+	return {
+		phase: data.phase as ActivityPhase,
+		durationMs: Math.max(0, data.durationMs),
+		status: data.status as ActivityStatus,
+		receivedTokens: safeNumber(data.receivedTokens) ?? 0,
+		toolCount: Math.max(0, data.toolCount),
+		changedFiles: data.changedFiles.filter((path): path is string => typeof path === "string"),
+	};
+}
+
+function sessionEntries(ctx: ExtensionContext): unknown[] {
+	const manager = ctx.sessionManager as unknown as {
+		getBranch?: () => unknown[];
+		getEntries?: () => unknown[];
+	};
+	const entries = manager.getBranch?.() ?? manager.getEntries?.() ?? [];
+	return Array.isArray(entries) ? entries : [];
+}
+
+function reconcileLegacyEntries(ctx: ExtensionContext): void {
+	const entries = sessionEntries(ctx);
+	const updates = new Map<string, AnnouncementEntry>();
+	for (const entry of entries) {
+		if (!isRecord(entry) || entry.type !== "custom") continue;
+		if (entry.customType !== LEGACY_ANNOUNCEMENT_UPDATE_ENTRY_TYPE) continue;
+		const data = legacyEntryData(entry);
+		if (data?.runId) updates.set(data.runId, data);
+	}
+	for (const entry of entries) {
+		if (!isRecord(entry) || entry.type !== "custom") continue;
+		if (entry.customType !== LEGACY_ANNOUNCEMENT_ENTRY_TYPE) continue;
+		const data = legacyEntryData(entry);
+		const update = data?.runId ? updates.get(data.runId) : undefined;
+		if (!data || !update) continue;
+		try {
+			Object.assign(data, update);
+		} catch {
+			// A malformed or frozen historical entry should remain renderable as-is.
+		}
+	}
+}
+
+export default function announceStepExtension(pi: ExtensionAPI): void {
 	let activeRun: ActiveRun | undefined;
-	let runStartedAt: number | undefined;
 	let sliceTimer: ReturnType<typeof setInterval> | undefined;
 	let workingContext: ExtensionContext | undefined;
-	let fallbackCounters = createTokenCounters();
-
-	const currentCounters = (): TokenCounters => activeRun ?? fallbackCounters;
-
-	const updateWorkingLine = (now = Date.now()): void => {
-		if (!workingContext) return;
-		const step = activeRun?.currentStep ?? "Working";
-		const startedAt = activeRun?.startedAt ?? runStartedAt ?? now;
-		const receivedTokens = runStartedAt === undefined ? undefined : tokenTotal(currentCounters());
-		const activity = activeRun ? { toolCount: activeRun.toolCount } : undefined;
-		const liveMessage = formatLiveSlice(step, now - startedAt, receivedTokens, activity);
-		const message = workingContext.ui.theme?.fg("toolTitle", liveMessage) ?? liveMessage;
-		if (workingContext.mode === "tui") workingContext.ui.setWorkingMessage(message);
-		else if (workingContext.mode === "rpc") workingContext.ui.setStatus("working", message);
-	};
 
 	const stopSliceTimer = (): void => {
-		if (sliceTimer) clearInterval(sliceTimer);
+		if (sliceTimer !== undefined) clearInterval(sliceTimer);
 		sliceTimer = undefined;
 	};
 
+	const updateWorkingLine = (now = Date.now()): void => {
+		if (!activeRun) return;
+		const details: SliceActivity = {
+			toolCount: activeRun.toolCount,
+			changedFiles: [...activeRun.changedFiles],
+			status: activeRun.phaseStatus,
+		};
+		safeWorkingMessage(
+			workingContext,
+			formatLiveSlice(
+				activeRun.phase,
+				Math.max(0, now - activeRun.startedAt),
+				tokenTotal(activeRun),
+				details,
+			),
+		);
+	};
+
 	const startSliceTimer = (): void => {
-		if ((workingContext?.mode === "tui" || workingContext?.mode === "rpc") && !sliceTimer) {
-			sliceTimer = setInterval(() => updateWorkingLine(), 1000);
+		if (
+			sliceTimer !== undefined ||
+			!activeRun ||
+			!workingContext ||
+			(workingContext.mode !== "tui" && workingContext.mode !== "rpc")
+		)
+			return;
+		sliceTimer = setInterval(() => {
+			try {
+				updateWorkingLine();
+			} catch {
+				// Timer updates are best-effort and must not surface as agent errors.
+			}
+		}, ACTIVITY_TIMER_INTERVAL_MS);
+	};
+
+	const ensureRun = (now: number): ActiveRun => {
+		if (!activeRun) activeRun = createActiveRun(now);
+		return activeRun;
+	};
+
+	const appendActivity = (run: ActiveRun, completedAt: number, status: ActivityStatus): void => {
+		const entry: ActivityEntry = {
+			phase: run.phase,
+			durationMs: Math.max(0, completedAt - run.startedAt),
+			status,
+			receivedTokens: tokenTotal(run),
+			toolCount: run.toolCount,
+			changedFiles: [...run.changedFiles],
+		};
+		try {
+			pi.appendEntry<ActivityEntry>(ACTIVITY_ENTRY_TYPE, entry);
+		} catch {
+			// A persistence failure must not turn passive tracking into a run failure.
 		}
 	};
 
-	const completeActiveRun = (completedAt = Date.now()): void => {
+	const finishActiveRun = (statusOverride?: ActivityStatus, completedAt = Date.now()): void => {
 		if (!activeRun) return;
 		const completed = activeRun;
 		activeRun = undefined;
-		Object.assign(completed.entry, {
-			completed: true,
-			durationMs: Math.max(0, completedAt - completed.startedAt),
-			receivedTokens: tokenTotal(completed),
-			toolCount: completed.toolCount,
-			changedFiles: [...completed.changedFiles],
-		});
-		pi.appendEntry<AnnouncementEntry>(ANNOUNCEMENT_UPDATE_ENTRY_TYPE, { ...completed.entry });
+		completed.activeTools.clear();
+		const status =
+			statusOverride ??
+			(completed.aborted
+				? "aborted"
+				: completed.toolFailure || completed.assistantFailure
+					? "failed"
+					: "completed");
+		appendActivity(completed, completedAt, status);
 	};
 
-	pi.registerEntryRenderer<AnnouncementEntry>(ANNOUNCEMENT_ENTRY_TYPE, (entry, _options, theme) => {
-		const data = entry.data;
-		if (!data || typeof data.step !== "string" || typeof data.durationMs !== "number")
-			return undefined;
+	const clearRuntime = (statusOverride?: ActivityStatus): void => {
+		const context = workingContext;
+		finishActiveRun(statusOverride);
+		stopSliceTimer();
+		clearWorkingMessage(context);
+		workingContext = undefined;
+	};
+
+	pi.registerEntryRenderer<AnnouncementEntry>(
+		LEGACY_ANNOUNCEMENT_ENTRY_TYPE,
+		(entry, _options, theme) => {
+			const data = entry.data;
+			if (!data || typeof data.step !== "string" || typeof data.durationMs !== "number")
+				return undefined;
+			return {
+				render(width: number): string[] {
+					if (data.completed === false) return [];
+					const receivedTokens =
+						typeof data.receivedTokens === "number" ? data.receivedTokens : undefined;
+					return new Text(
+						theme.fg("muted", formatSlice(data.step, data.durationMs, receivedTokens, data)),
+						CHAT_PADDING,
+						0,
+					).render(width);
+				},
+				invalidate() {},
+			};
+		},
+	);
+	pi.registerEntryRenderer<AnnouncementEntry>(
+		LEGACY_ANNOUNCEMENT_UPDATE_ENTRY_TYPE,
+		() => new Container(),
+	);
+	pi.registerEntryRenderer<ActivityEntry>(ACTIVITY_ENTRY_TYPE, (entry, _options, theme) => {
+		const data = activityEntryData(entry);
+		if (!data) return undefined;
 		return {
 			render(width: number): string[] {
-				if (data.completed === false) return [];
-				const receivedTokens =
-					typeof data.receivedTokens === "number" ? data.receivedTokens : undefined;
+				const color = data.status === "completed" ? "muted" : "error";
 				return new Text(
-					theme.fg("muted", formatSlice(data.step, data.durationMs, receivedTokens, data)),
+					theme.fg(color, formatSlice(data.phase, data.durationMs, data.receivedTokens, data)),
 					CHAT_PADDING,
 					0,
 				).render(width);
@@ -182,167 +438,125 @@ export default function announceStepExtension(pi: ExtensionAPI) {
 			invalidate() {},
 		};
 	});
-	pi.registerEntryRenderer<AnnouncementEntry>(
-		ANNOUNCEMENT_UPDATE_ENTRY_TYPE,
-		() => new Container(),
-	);
 
-	pi.on("tool_execution_start", (event) => {
-		if (!activeRun || event.toolName === "announce_step") return;
-		activeRun.toolCount++;
-		if (
-			(event.toolName === "edit" || event.toolName === "write") &&
-			typeof event.args?.path === "string"
-		) {
-			activeRun.changedFiles.add(event.args.path);
+	pi.on("tool_execution_start", (event, ctx) => {
+		if (ctx) workingContext = ctx;
+		const run = ensureRun(Date.now());
+		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+		if (toolCallId && run.activeTools.has(toolCallId)) return;
+		const phase = classifyTool(event.toolName, event.args);
+		run.phase = phase;
+		run.phaseStatus = "running";
+		run.toolCount = Math.min(MAX_TOOL_COUNT, run.toolCount + 1);
+		const path = pathFromToolEvent(event.toolName, event.args);
+		if (path && run.changedFiles.size < MAX_CHANGED_FILES) run.changedFiles.add(path);
+		if (toolCallId) run.activeTools.set(toolCallId, phase);
+		updateWorkingLine();
+		startSliceTimer();
+	});
+
+	pi.on("tool_execution_end", (event, ctx) => {
+		if (!activeRun) return;
+		if (ctx) workingContext = ctx;
+		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+		if (toolCallId) activeRun.activeTools.delete(toolCallId);
+		if (event.isError) {
+			activeRun.toolFailure = true;
+			activeRun.phaseStatus = "failed";
 		}
 		updateWorkingLine();
 	});
 
-	pi.on("before_provider_request", () => {
-		if (runStartedAt === undefined) return;
-		currentCounters().currentReceivedEstimate = 0;
+	pi.on("before_provider_request", (_event, ctx) => {
+		if (!activeRun) return;
+		if (ctx) workingContext = ctx;
+		activeRun.currentReceivedEstimate = 0;
 		updateWorkingLine();
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
 		workingContext = ctx;
-		if (runStartedAt === undefined) {
-			runStartedAt = Date.now();
-			fallbackCounters = createTokenCounters();
-		}
+		const run = ensureRun(Date.now());
+		// A retry or queued continuation starts a fresh assistant cycle without
+		// losing the aggregate tool/file counts for the settled run.
+		run.assistantFailure = false;
+		run.aborted = false;
+		run.phaseStatus = "running";
 		updateWorkingLine();
 		startSliceTimer();
 	});
 
-	pi.on("message_update", (event) => {
-		if (runStartedAt === undefined || event.message.role !== "assistant") return;
-		const counters = currentCounters();
-		counters.currentReceivedEstimate = Math.max(
-			counters.currentReceivedEstimate,
-			event.message.usage.output || estimateTokens(event.message),
+	pi.on("message_update", (event, ctx) => {
+		if (!activeRun || event.message.role !== "assistant") return;
+		if (ctx) workingContext = ctx;
+		const estimate = Math.max(
+			activeRun.currentReceivedEstimate,
+			messageOutputTokens(event.message) ?? estimateMessageTokens(event.message),
 		);
-	});
-
-	pi.on("message_end", (event) => {
-		if (runStartedAt === undefined || event.message.role !== "assistant") return;
-		const counters = currentCounters();
-		const usage = event.message.usage;
-		counters.receivedTokens +=
-			usage.output || Math.max(counters.currentReceivedEstimate, estimateTokens(event.message));
-		counters.currentReceivedEstimate = 0;
+		activeRun.currentReceivedEstimate = estimate;
 		updateWorkingLine();
 	});
 
-	pi.on("agent_settled", () => {
-		completeActiveRun();
-		stopSliceTimer();
-		runStartedAt = undefined;
-		fallbackCounters = createTokenCounters();
-		if (workingContext?.mode === "rpc") workingContext.ui.setStatus("working", undefined);
-		if (workingContext?.mode === "tui") workingContext.ui.setWorkingMessage();
-		workingContext = undefined;
+	pi.on("message_end", (event, ctx) => {
+		if (!activeRun || event.message.role !== "assistant") return;
+		if (ctx) workingContext = ctx;
+		const outcome = isAssistantFailure(event.message);
+		if (outcome === "aborted") {
+			activeRun.aborted = true;
+			activeRun.phaseStatus = "aborted";
+		} else if (outcome === "failed") {
+			activeRun.assistantFailure = true;
+			activeRun.phaseStatus = "failed";
+		}
+		const output = messageOutputTokens(event.message);
+		activeRun.receivedTokens +=
+			output ?? Math.max(activeRun.currentReceivedEstimate, estimateMessageTokens(event.message));
+		activeRun.currentReceivedEstimate = 0;
+		updateWorkingLine();
 	});
 
-	pi.registerTool({
-		name: "announce_step",
-		label: "Announce Step",
-		description: "Set the live announcement for the current meaningful activity.",
-		promptGuidelines: [ANNOUNCEMENT_GUIDANCE],
-		parameters: Type.Object({
-			step: Type.String({ description: "Specific 3-5-word current activity title" }),
-			message: Type.Optional(
-				Type.String({
-					description: "One or two short sentences explaining the current work and next action",
-					minLength: 1,
-				}),
-			),
-		}),
-		renderShell: "self",
-		async execute(toolCallId, { step }, _signal, _onUpdate, ctx) {
-			const announcement = normalizeStep(step);
-			if (!announcement) throw new Error("Step announcement cannot be empty");
-			const now = Date.now();
-			workingContext = ctx;
-			runStartedAt ??= now;
-			if (activeRun) {
-				activeRun.currentStep = announcement;
-			} else {
-				const entry: AnnouncementEntry = {
-					runId: toolCallId,
-					step: announcement,
-					durationMs: Math.max(0, now - runStartedAt),
-					completed: false,
-				};
-				pi.appendEntry<AnnouncementEntry>(ANNOUNCEMENT_ENTRY_TYPE, entry);
-				activeRun = {
-					summaryStep: announcement,
-					currentStep: announcement,
-					startedAt: runStartedAt,
-					entry,
-					...createTokenCounters(),
-					...createPhaseActivity(),
-				};
-			}
-			updateWorkingLine(now);
-			startSliceTimer();
-			return {
-				content: [{ type: "text", text: "Step announced." }],
-				details: { step: announcement },
-			};
-		},
-		renderCall(args, theme, context) {
-			const message = args.message?.trim();
-			if (message) return new Text(theme.fg("text", message), CHAT_PADDING, 0);
-			if (!context.isError) return new Container();
-			return new Text(
-				theme.fg("toolTitle", theme.bold("announce step ")) + theme.fg("muted", args.step ?? ""),
-				CHAT_PADDING,
-				0,
-			);
-		},
-		renderResult(result, _options, theme, context) {
-			if (!context.isError) return new Container();
-			const message =
-				result.content.find((part) => part.type === "text")?.text ?? "Step announcement failed";
-			return new Text(theme.fg("error", message), 1, 0);
-		},
+	pi.on("agent_end", (event, ctx) => {
+		if (!activeRun) return;
+		if (ctx) workingContext = ctx;
+		const eventRecord = event as unknown as Record<string, unknown>;
+		const messages = Array.isArray(eventRecord.messages) ? eventRecord.messages : [];
+		const assistant = [...messages]
+			.reverse()
+			.find((message) => isRecord(message) && message.role === "assistant");
+		const outcome = isAssistantFailure(assistant);
+		if (eventRecord.aborted === true || outcome === "aborted") {
+			activeRun.aborted = true;
+			activeRun.phaseStatus = "aborted";
+		} else if (eventRecord.isError === true || outcome === "failed") {
+			activeRun.assistantFailure = true;
+			activeRun.phaseStatus = "failed";
+		}
+		updateWorkingLine();
 	});
 
-	pi.on("before_agent_start", (event) => {
-		if (!pi.getActiveTools().includes("announce_step")) return;
-		if (event.systemPrompt.includes(ANNOUNCEMENT_GUIDANCE)) return;
-		return {
-			systemPrompt: `${event.systemPrompt}\n\n${ANNOUNCEMENT_GUIDANCE}`,
-		};
+	pi.on("agent_settled", (event, ctx) => {
+		if (ctx) workingContext = ctx;
+		const eventRecord = event as unknown as Record<string, unknown>;
+		if (activeRun && eventRecord.aborted === true) {
+			activeRun.aborted = true;
+			activeRun.phaseStatus = "aborted";
+		}
+		if (activeRun && eventRecord.isError === true) {
+			activeRun.assistantFailure = true;
+			activeRun.phaseStatus = "failed";
+		}
+		clearRuntime();
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		const entries = ctx.sessionManager.getEntries();
-		const updates = new Map<string, AnnouncementEntry>();
-		for (const entry of entries) {
-			if (entry.type !== "custom" || entry.customType !== ANNOUNCEMENT_UPDATE_ENTRY_TYPE) continue;
-			const data = entry.data as AnnouncementEntry | undefined;
-			if (data?.runId) updates.set(data.runId, data);
-		}
-		for (const entry of entries) {
-			if (entry.type !== "custom" || entry.customType !== ANNOUNCEMENT_ENTRY_TYPE) continue;
-			const data = entry.data as AnnouncementEntry | undefined;
-			const update = data?.runId ? updates.get(data.runId) : undefined;
-			if (data && update) Object.assign(data, update);
-		}
-
-		const activeTools = pi.getActiveTools();
-		if (!activeTools.includes("announce_step")) {
-			pi.setActiveTools([...activeTools, "announce_step"]);
-		}
+		// Normally session_shutdown has already run. This guard also makes a
+		// direct replacement event safe and prevents a stale timer from surviving.
+		if (activeRun || sliceTimer !== undefined || workingContext) clearRuntime("aborted");
+		reconcileLegacyEntries(ctx);
 	});
 
-	pi.on("session_shutdown", () => {
-		stopSliceTimer();
-		activeRun = undefined;
-		runStartedAt = undefined;
-		fallbackCounters = createTokenCounters();
-		workingContext = undefined;
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (ctx) workingContext = ctx;
+		clearRuntime("aborted");
 	});
 }

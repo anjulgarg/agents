@@ -127,9 +127,7 @@ async function ensureRipgrep(warmUp: () => Promise<unknown>): Promise<string> {
 export default function (pi: ExtensionAPI) {
 	const bashDurations = new Map<string, number>();
 	const presentation: MinimalToolPresentationBundle = createMinimalToolPresentations();
-	bindSoftGroupTracker(pi as any, presentation.tracker, ["read", "find", "grep", "ls", "edit"], {
-		nonBreakingToolNames: ["announce_step"],
-	});
+	bindSoftGroupTracker(pi as any, presentation.tracker, ["read", "find", "grep", "ls", "edit"]);
 	pi.on("session_start", () => presentation.reset());
 
 	pi.on("tool_result", (event) => {

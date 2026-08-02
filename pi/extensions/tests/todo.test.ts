@@ -206,14 +206,17 @@ const added = await run("add", { items: [" First ", "Second", "Third"] });
 let listed = await run("list");
 assert(
 	"add and list expose lifecycle IDs and trimmed text",
-	added.content[0].text.includes("Open todos: #1: First; #2: Second; #3: Third") &&
+	added.content[0].text === "Added 3 todos: #1, #2, #3" &&
+		!added.content[0].text.includes("Open todos:") &&
 		listed.content[0].text === "[ ] #1: First\n[ ] #2: Second\n[ ] #3: Third",
 	JSON.stringify({ added, listed }),
 );
 const openWidget = widgetFactory(undefined, theme).render(80) as string[];
 assert(
 	"todo widget leaves one blank line above the input",
-	openWidget.length === 4 && openWidget.at(-1) === "" && openWidget.at(-2)?.includes("Third"),
+	openWidget.length === 4 &&
+		openWidget.at(-1) === "" &&
+		openWidget.at(-2)?.includes("Third") === true,
 	JSON.stringify(openWidget),
 );
 
@@ -234,9 +237,10 @@ assert(
 	prompt.systemPrompt.includes("#1: First") &&
 		prompt.systemPrompt.includes("#2: Second") &&
 		prompt.systemPrompt.includes("active work queue") &&
-		prompt.systemPrompt.includes("including work performed through delegation") &&
-		prompt.systemPrompt.includes("autonomously start the next unverified item") &&
-		prompt.systemPrompt.includes("do not batch completions"),
+		prompt.systemPrompt.includes("atomic update") &&
+		prompt.systemPrompt.includes("Continue the next unverified item autonomously") &&
+		!prompt.systemPrompt.includes("one at a time") &&
+		!prompt.systemPrompt.includes("do not batch completions"),
 	prompt.systemPrompt,
 );
 
@@ -254,8 +258,9 @@ assert(
 );
 await handlers.get("before_agent_start")?.({ systemPrompt: "base system" }, context());
 await handlers.get("agent_settled")?.({}, context());
+await handlers.get("agent_settled")?.({}, context());
 assert(
-	"the reconciliation turn does not queue itself repeatedly",
+	"the reconciliation turn and duplicate settlement do not queue themselves repeatedly",
 	sentMessages.length === 1,
 	JSON.stringify(sentMessages),
 );
@@ -290,17 +295,16 @@ assert(
 await run("complete", { id: 1 });
 let reopened = await run("reopen", { id: 1 });
 assert(
-	"reopen changes a completed todo back to open",
-	reopened.content[0].text.includes("Todo #1 reopened") &&
-		reopened.content[0].text.includes("Open todos: #1: First") &&
+	"reopen changes a completed todo back to open with a compact receipt",
+	reopened.content[0].text === "Todo #1 reopened" &&
+		!reopened.content[0].text.includes("Open todos:") &&
 		reopened.details.todos[0].status === "open",
 	JSON.stringify(reopened),
 );
 const started = await run("start", { id: 1 });
 assert(
-	"start marks a todo in progress and keeps it in the active summary",
-	started.content[0].text.includes("Todo #1 started") &&
-		started.content[0].text.includes("Open todos: #1 [in progress]: First") &&
+	"start marks a todo in progress and reports only its active ID",
+	started.content[0].text === "Todo #1 started; active #1" &&
 		started.details.todos[0].status === "in_progress" &&
 		(widgetFactory(undefined, theme).render(80) as string[]).some((line) => line.includes("◐")),
 	JSON.stringify(started),
@@ -321,8 +325,11 @@ await run("complete", { id: 1 });
 await run("complete", { id: 2 });
 const finalCompletion = await run("complete", { id: 3 });
 assert(
-	"completion returns remaining IDs and the widget auto-hides when none remain",
-	finalCompletion.content[0].text.includes("Open todos: none") && widgetFactory === undefined,
+	"completion advances the active queue and the widget auto-hides when none remain",
+	finalCompletion.content[0].text === "Todo #3 completed" &&
+		!finalCompletion.content[0].text.includes("Open todos:") &&
+		finalCompletion.details.todos.every((todo: any) => todo.status === "done") &&
+		widgetFactory === undefined,
 	JSON.stringify({ finalCompletion, widgetFactory }),
 );
 
@@ -366,13 +373,22 @@ const replacementResult = await run("replace", {
 });
 const replaced = await run("list");
 assert(
-	"replace confirms open-list replacement, returns IDs, and allocates them monotonically",
+	"replace confirms open-list replacement, auto-starts its first item, and allocates IDs monotonically",
 	confirmCalls === 1 &&
 		firstReplacementId === 4 &&
-		replacementResult.content[0].text.includes("#5: Open replacement") &&
-		replacementResult.content[0].text.includes("#6: Another replacement") &&
-		replaced.content[0].text === "[ ] #5: Open replacement\n[ ] #6: Another replacement",
+		replacementResult.content[0].text === "Replaced todo list with 2 todos; active #5" &&
+		replacementResult.details.todos[0].status === "in_progress" &&
+		replaced.content[0].text === "[~] #5: Open replacement\n[ ] #6: Another replacement",
 	JSON.stringify({ confirmCalls, replacementResult, replaced }),
+);
+
+const advancedReplacement = await run("complete", { id: 5 });
+assert(
+	"completing the current replacement auto-starts the next open item",
+	advancedReplacement.content[0].text === "Todo #5 completed; active #6" &&
+		advancedReplacement.details.todos.find((todo: any) => todo.id === 5)?.status === "done" &&
+		advancedReplacement.details.todos.find((todo: any) => todo.id === 6)?.status === "in_progress",
+	JSON.stringify(advancedReplacement),
 );
 
 const callsBeforeEmptyReplace = confirmCalls;
@@ -578,6 +594,64 @@ assert(
 		unchangedMove,
 		missingRemove,
 	}),
+);
+
+const batchSnapshotBefore = entries.length;
+const batchUpdate = await run("update", {
+	updates: [
+		{ id: gammaId, status: "in_progress" },
+		{ id: betaId, status: "done" },
+	],
+});
+assert(
+	"update applies mixed statuses atomically with one compact receipt and complete details",
+	entries.length === batchSnapshotBefore + 1 &&
+		batchUpdate.content[0].text === `Updated 2 todos; active #${gammaId}` &&
+		!batchUpdate.content[0].text.includes("Gamma") &&
+		batchUpdate.details.todos.length === 2 &&
+		batchUpdate.details.todos.find((todo: any) => todo.id === gammaId)?.status === "in_progress" &&
+		batchUpdate.details.todos.find((todo: any) => todo.id === betaId)?.status === "done" &&
+		(widgetFactory(undefined, theme).render(80) as string[]).some((line) =>
+			line.includes("Edited beta"),
+		),
+	JSON.stringify({ batchUpdate, latest: entries.at(-1) }),
+);
+
+const invalidBatchSnapshotCount = entries.length;
+const invalidBatch = await run("update", {
+	updates: [
+		{ id: gammaId, status: "done" },
+		{ id: 999, status: "open" },
+	],
+});
+assert(
+	"update validates every entry before mutation or persistence",
+	entries.length === invalidBatchSnapshotCount &&
+		invalidBatch.details.error === "Todo #999 not found" &&
+		invalidBatch.details.todos.find((todo: any) => todo.id === gammaId)?.status === "in_progress" &&
+		invalidBatch.details.todos.find((todo: any) => todo.id === betaId)?.status === "done",
+	JSON.stringify({ invalidBatch, latest: entries.at(-1) }),
+);
+
+await run("add", { text: "Delta" });
+const deltaId = (await run("list")).details.todos.find((todo: any) => todo.text === "Delta").id;
+await run("update", { updates: [{ id: betaId, status: "in_progress" }] });
+const multipleActiveCompletion = await run("complete", { id: gammaId });
+assert(
+	"completing one of multiple active items does not advance another open item",
+	multipleActiveCompletion.details.todos.find((todo: any) => todo.id === betaId)?.status ===
+		"in_progress" &&
+		multipleActiveCompletion.details.todos.find((todo: any) => todo.id === deltaId)?.status ===
+			"open",
+	JSON.stringify(multipleActiveCompletion),
+);
+const updateCompletion = await run("update", { updates: [{ id: betaId, status: "done" }] });
+assert(
+	"update completion shares active-item auto-advancement",
+	updateCompletion.content[0].text === `Updated 1 todo; active #${deltaId}` &&
+		updateCompletion.details.todos.find((todo: any) => todo.id === deltaId)?.status ===
+			"in_progress",
+	JSON.stringify(updateCompletion),
 );
 
 assert(

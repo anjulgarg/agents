@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupFixtures, fixtureHome, sourceRoot } from "./helpers.ts";
+import { cleanupFixtures, fixtureHome, runAgents, sourceRoot } from "./helpers.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,6 +53,7 @@ describe("package and repository safety", () => {
 			"dist/cli.js",
 			"pi/config/keybindings.json",
 			"pi/extensions/question.ts",
+			"pi/extensions/tool-loader.ts",
 			"pi/extensions/team/index.ts",
 			"pi/AGENTS.md",
 			"pi/prompts/orchestrate.md",
@@ -79,6 +80,34 @@ describe("package and repository safety", () => {
 		);
 		expect(files).not.toContainEqual(expect.stringMatching(/\.(?:smoke|e2e|test)\.ts$/));
 		expect(packed.unpackedSize).toBeLessThanOrEqual(2.5 * 1024 * 1024);
+	});
+
+	it("T6 installs the loader once and preserves unrelated Pi settings", async () => {
+		const { home } = await fixtureHome();
+		const settingsPath = join(home, ".pi/agent/settings.json");
+		await mkdir(join(home, ".pi/agent"), { recursive: true });
+		await writeFile(
+			settingsPath,
+			JSON.stringify({ custom: { keep: true }, packages: ["npm:other@1"] }),
+		);
+
+		const result = await runAgents(home, ["install", "--profile", "pi", "--yes", "--json"]);
+		expect(result, result.stderr).toMatchObject({ code: 0, stderr: "" });
+		const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+			custom: { keep: boolean };
+			packages: unknown[];
+		};
+		const localPackages = settings.packages.filter(
+			(entry): entry is { source: string; extensions?: string[] } =>
+				typeof entry === "object" && entry !== null && "source" in entry,
+		);
+		const loaderFilters = localPackages.flatMap((entry) =>
+			(entry.extensions ?? []).filter((filter) => filter === "+pi/extensions/tool-loader.ts"),
+		);
+		expect(settings.custom).toEqual({ keep: true });
+		expect(settings.packages).toContain("npm:other@1");
+		expect(localPackages).toHaveLength(1);
+		expect(loaderFilters).toEqual(["+pi/extensions/tool-loader.ts"]);
 	});
 
 	it("T7 remains npm-private, unpublished, and excludes live model calls", async () => {

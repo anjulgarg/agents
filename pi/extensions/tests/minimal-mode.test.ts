@@ -115,15 +115,15 @@ emit("session_start");
 const batchReadArgs = { path: "src/batch.ts" };
 const followupReadArgs = { path: "src/followup.ts" };
 readTool.renderCall?.(batchReadArgs, theme, renderContext("read-batch", batchReadArgs)).render(80);
-emit("tool_execution_start", { toolName: "announce_step", toolCallId: "announce-between" });
+emit("tool_execution_start", { toolName: "activity-boundary", toolCallId: "activity-between" });
 const crossBatchReads =
 	readTool
 		.renderCall?.(followupReadArgs, theme, renderContext("read-followup", followupReadArgs))
 		.render(80) ?? [];
 assert(
-	"read batches stay grouped across hidden progress announcements",
-	crossBatchReads.join("").includes("├─ src/batch.ts") &&
-		crossBatchReads.join("").includes("└─ src/followup.ts"),
+	"passive activity boundaries do not preserve obsolete announcement grouping",
+	crossBatchReads.join("").includes("read src/followup.ts") &&
+		!crossBatchReads.join("").includes("src/batch.ts"),
 	JSON.stringify(crossBatchReads),
 );
 
