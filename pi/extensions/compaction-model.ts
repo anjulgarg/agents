@@ -15,7 +15,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 
 export const COMPACTION_MODEL_ENTRY_TYPE = "compaction-model";
 export const GLOBAL_COMPACTION_MODEL_PATH = join(getAgentDir(), "state", "compaction-model.json");
@@ -28,8 +28,29 @@ export const COMPACTION_MODEL_LEVELS: readonly ModelThinkingLevel[] = [
 	"xhigh",
 	"max",
 ];
+export const COMPACTION_TIMER_STATUS_KEY = "compaction-timer";
+export const COMPACTION_TIMER_INTERVAL_MS = 250;
+export const COMPACTION_DURATION_ENTRY_TYPE = "compaction-duration";
 
 const MAX_MODEL_COMPLETIONS = 100;
+
+type CompactionTimerHandle = ReturnType<typeof setInterval>;
+
+export type CompactionClock = () => number;
+
+export interface CompactionModelExtensionOptions {
+	clock?: CompactionClock;
+	setInterval?: (callback: () => void, intervalMs: number) => CompactionTimerHandle;
+	clearInterval?: (timer: CompactionTimerHandle) => void;
+}
+
+export function formatCompactionDuration(durationMs: number): string {
+	return `${(Math.max(0, durationMs) / 1000).toFixed(1)}s`;
+}
+
+interface CompactionDurationEntry {
+	durationMs: number;
+}
 
 type SessionCustomEntry = {
 	type?: unknown;
@@ -50,8 +71,13 @@ export interface ParsedCompactionModelCommand {
 }
 
 /** Global extension-owned persistence. `null` is an explicit global clear. */
+export type CompactionModelStoreReadResult =
+	| { status: "configured"; model: CompactionModelState | null }
+	| { status: "missing" }
+	| { status: "invalid" };
+
 export interface CompactionModelStore {
-	read(): CompactionModelState | null | undefined;
+	read(): CompactionModelStoreReadResult;
 	write(state: CompactionModelState | null): void;
 }
 
@@ -60,20 +86,36 @@ interface PersistedCompactionModel {
 	model: CompactionModelState | null;
 }
 
+function isFileNotFoundError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { code?: unknown }).code === "ENOENT"
+	);
+}
+
 export function createGlobalCompactionModelStore(
 	path = GLOBAL_COMPACTION_MODEL_PATH,
 ): CompactionModelStore {
 	return {
-		read(): CompactionModelState | null | undefined {
+		read(): CompactionModelStoreReadResult {
+			let source: string;
 			try {
-				const persisted = JSON.parse(
-					readFileSync(path, "utf8"),
-				) as Partial<PersistedCompactionModel>;
-				if (persisted.version !== 1 || !("model" in persisted)) return undefined;
-				if (persisted.model === null) return null;
-				return isCompactionModelState(persisted.model) ? persisted.model : undefined;
+				source = readFileSync(path, "utf8");
+			} catch (error) {
+				return isFileNotFoundError(error) ? { status: "missing" } : { status: "invalid" };
+			}
+
+			try {
+				const persisted = JSON.parse(source) as Partial<PersistedCompactionModel>;
+				if (persisted.version !== 1 || !("model" in persisted)) return { status: "invalid" };
+				if (persisted.model === null) return { status: "configured", model: null };
+				return isCompactionModelState(persisted.model)
+					? { status: "configured", model: persisted.model }
+					: { status: "invalid" };
 			} catch {
-				return undefined;
+				return { status: "invalid" };
 			}
 		},
 		write(state: CompactionModelState | null): void {
@@ -263,12 +305,62 @@ export function formatFallbackNotice(
 export default function compactionModelExtension(
 	pi: ExtensionAPI,
 	globalStore: CompactionModelStore = createGlobalCompactionModelStore(),
+	options: CompactionModelExtensionOptions = {},
 ): void {
+	const clock = options.clock ?? (() => performance.now());
+	const scheduleTimer =
+		options.setInterval ?? ((callback, intervalMs) => setInterval(callback, intervalMs));
+	const cancelTimer = options.clearInterval ?? ((timer) => clearInterval(timer));
+	let compactionStartedAt: number | undefined;
+	let compactionTimer: CompactionTimerHandle | undefined;
+
+	const setCompactionStatus = (ctx: ExtensionContext): void => {
+		if (compactionStartedAt === undefined) return;
+		const elapsed = formatCompactionDuration(clock() - compactionStartedAt);
+		ctx.ui.setStatus(
+			COMPACTION_TIMER_STATUS_KEY,
+			ctx.ui.theme.fg("accent", `Compacting ${elapsed}`),
+		);
+	};
+
+	const stopCompactionTimer = (ctx: ExtensionContext): number | undefined => {
+		if (compactionTimer !== undefined) {
+			cancelTimer(compactionTimer);
+			compactionTimer = undefined;
+		}
+		const startedAt = compactionStartedAt;
+		compactionStartedAt = undefined;
+		ctx.ui.setStatus(COMPACTION_TIMER_STATUS_KEY, undefined);
+		return startedAt === undefined ? undefined : Math.max(0, clock() - startedAt);
+	};
+
+	const startCompactionTimer = (event: { signal: AbortSignal }, ctx: ExtensionContext): void => {
+		if (compactionStartedAt === undefined) {
+			compactionStartedAt = clock();
+			compactionTimer = scheduleTimer(() => setCompactionStatus(ctx), COMPACTION_TIMER_INTERVAL_MS);
+		}
+		setCompactionStatus(ctx);
+		event.signal.addEventListener("abort", () => stopCompactionTimer(ctx), { once: true });
+	};
 	let configured: CompactionModelState | undefined;
 	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	let availableModels: Model<Api>[] = [];
 	let lastFallbackKey: string | undefined;
 	let lastCompactionModel: CompactionModelState | undefined;
+	let lastCompactionDuration: number | undefined;
+
+	pi.registerEntryRenderer<CompactionDurationEntry>(
+		COMPACTION_DURATION_ENTRY_TYPE,
+		(entry, _options, theme) => {
+			const durationMs = entry.data?.durationMs;
+			if (typeof durationMs !== "number") return undefined;
+			return new Text(
+				theme.fg("muted", `Compaction took ${formatCompactionDuration(durationMs)}`),
+				1,
+				0,
+			);
+		},
+	);
 
 	const refreshModels = (ctx: ExtensionContext): void => {
 		modelRegistry = ctx.modelRegistry;
@@ -392,17 +484,18 @@ export default function compactionModelExtension(
 
 	const restore = (ctx: ExtensionContext): void => {
 		refreshModels(ctx);
-		let globalState: CompactionModelState | null | undefined;
+		let globalState: CompactionModelStoreReadResult;
 		try {
 			globalState = globalStore.read();
 		} catch {
-			globalState = undefined;
+			globalState = { status: "invalid" };
 		}
 
-		if (globalState !== undefined) {
-			configured = globalState ?? undefined;
-		} else {
-			// Migrate selections written by older versions of this extension.
+		if (globalState.status === "configured") {
+			configured = globalState.model ?? undefined;
+		} else if (globalState.status === "missing") {
+			// Migrate selections written by older versions only when no global
+			// state exists. Never overwrite malformed or newer-version state.
 			configured = restoreCompactionModelState(
 				ctx.sessionManager.getBranch() as SessionCustomEntry[],
 			);
@@ -413,16 +506,32 @@ export default function compactionModelExtension(
 					// Keep the legacy session fallback if global migration is unavailable.
 				}
 			}
+		} else {
+			configured = undefined;
+			ctx.ui.notify(
+				"Global compaction model state is invalid or from a newer version; preserving it unchanged.",
+				"warning",
+			);
 		}
 		lastFallbackKey = undefined;
 		lastCompactionModel = undefined;
+		lastCompactionDuration = undefined;
 	};
 
-	pi.on("session_start", (_event, ctx) => restore(ctx));
-	pi.on("session_tree", (_event, ctx) => restore(ctx));
-
+	pi.on("session_start", (_event, ctx) => {
+		stopCompactionTimer(ctx);
+		restore(ctx);
+	});
+	pi.on("session_tree", (_event, ctx) => {
+		stopCompactionTimer(ctx);
+		restore(ctx);
+	});
+	pi.on("session_shutdown", (_event, ctx) => {
+		stopCompactionTimer(ctx);
+	});
 	pi.on("session_before_compact", async (event, ctx) => {
 		lastCompactionModel = activeCompactionModel(ctx);
+		lastCompactionDuration = undefined;
 		if (!configured) return;
 
 		const model = configuredModel(ctx);
@@ -460,6 +569,7 @@ export default function compactionModelExtension(
 			thinkingLevel: clampThinkingLevel(model, configured.thinkingLevel),
 		};
 
+		startCompactionTimer(event, ctx);
 		try {
 			const streamFn = (
 				requestModel: Model<Api>,
@@ -478,9 +588,11 @@ export default function compactionModelExtension(
 				auth.env,
 				retrySettings(ctx),
 			);
+			lastCompactionDuration = stopCompactionTimer(ctx);
 			markCompactionModelHealthy();
 			return { compaction: result };
 		} catch (error) {
+			stopCompactionTimer(ctx);
 			if (event.signal.aborted || isAbortError(error)) return;
 			// Returning no result deliberately hands the same preparation back to
 			// core, which then uses the active conversation model and its existing
@@ -491,9 +603,25 @@ export default function compactionModelExtension(
 	});
 
 	pi.on("session_compact", (_event, ctx) => {
+		const duration = lastCompactionDuration ?? stopCompactionTimer(ctx);
 		const model = lastCompactionModel ?? activeCompactionModel(ctx);
 		lastCompactionModel = undefined;
-		if (!model) return;
-		ctx.ui.notify(`Compaction model: ${formatCompactionModel(model, model.thinkingLevel)}`, "info");
+		lastCompactionDuration = undefined;
+		if (duration !== undefined) {
+			pi.appendEntry<CompactionDurationEntry>(COMPACTION_DURATION_ENTRY_TYPE, {
+				durationMs: duration,
+			});
+		}
+		if (!model) {
+			if (duration !== undefined)
+				ctx.ui.notify(`Compaction took ${formatCompactionDuration(duration)}`, "info");
+			return;
+		}
+		const durationText =
+			duration === undefined ? "" : ` · Took ${formatCompactionDuration(duration)}`;
+		ctx.ui.notify(
+			`Compaction model: ${formatCompactionModel(model, model.thinkingLevel)}${durationText}`,
+			"info",
+		);
 	});
 }

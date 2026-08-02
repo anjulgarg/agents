@@ -1,22 +1,31 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+	COMPACTION_DURATION_ENTRY_TYPE,
 	COMPACTION_MODEL_ENTRY_TYPE,
+	COMPACTION_TIMER_STATUS_KEY,
 	activeThinkingLevel,
 	createGlobalCompactionModelStore,
+	formatCompactionDuration,
 	formatFallbackNotice,
 	modelCompletions,
 	parseCompactionModelCommand,
 	restoreCompactionModelState,
 	type CompactionModelState,
+	type CompactionModelStore,
 } from "../compaction-model.ts";
 import compactionModelExtension from "../compaction-model.ts";
 
 function assert(name: string, condition: boolean, details: string): void {
 	if (!condition) throw new Error(`FAIL: ${name}\n${details}`);
 	console.log(`PASS: ${name}`);
+}
+
+function storedModel(store: CompactionModelStore): CompactionModelState | null | undefined {
+	const result = store.read();
+	return result.status === "configured" ? result.model : undefined;
 }
 
 const targetModel = {
@@ -62,6 +71,11 @@ assert(
 		parseCompactionModelCommand("clear extra") === undefined,
 	"malformed commands were accepted",
 );
+assert(
+	"formats compaction durations like tool durations",
+	formatCompactionDuration(1_250) === "1.3s" && formatCompactionDuration(-10) === "0.0s",
+	formatCompactionDuration(1_250),
+);
 
 const configuredState: CompactionModelState = {
 	provider: targetModel.provider,
@@ -72,21 +86,21 @@ const globalStateDir = mkdtempSync(join(tmpdir(), "pi-compaction-model-"));
 const globalStore = createGlobalCompactionModelStore(join(globalStateDir, "compaction-model.json"));
 assert(
 	"global store starts unset",
-	globalStore.read() === undefined,
+	globalStore.read().status === "missing",
 	JSON.stringify(globalStore.read()),
 );
 globalStore.write(configuredState);
 assert(
 	"global store persists the selected model",
-	globalStore.read()?.provider === configuredState.provider &&
-		globalStore.read()?.id === configuredState.id &&
-		globalStore.read()?.thinkingLevel === configuredState.thinkingLevel,
+	storedModel(globalStore)?.provider === configuredState.provider &&
+		storedModel(globalStore)?.id === configuredState.id &&
+		storedModel(globalStore)?.thinkingLevel === configuredState.thinkingLevel,
 	readFileSync(join(globalStateDir, "compaction-model.json"), "utf8"),
 );
 globalStore.write(null);
 assert(
 	"global store persists an explicit clear",
-	globalStore.read() === null,
+	storedModel(globalStore) === null,
 	readFileSync(join(globalStateDir, "compaction-model.json"), "utf8"),
 );
 const branch = [
@@ -164,6 +178,7 @@ const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
 const commands = new Map<string, any>();
 const entries: any[] = [];
 const notices: Array<{ message: string; type?: string }> = [];
+let durationRenderer: any;
 let available = [...models];
 const authByProvider: Record<string, boolean> = {
 	deepseek: true,
@@ -172,6 +187,20 @@ const authByProvider: Record<string, boolean> = {
 };
 let streamShouldFail = false;
 const calls: Array<{ provider: string; model: string; options: any }> = [];
+const statusCalls: Array<{ key: string; text: string | undefined }> = [];
+let fakeNow = 10_000;
+let timerCallback: (() => void) | undefined;
+let onStreamResult: (() => void) | undefined;
+const timerOptions = {
+	clock: () => fakeNow,
+	setInterval: (callback: () => void) => {
+		timerCallback = callback;
+		return {} as any;
+	},
+	clearInterval: () => {
+		timerCallback = undefined;
+	},
+};
 
 const provider = {
 	id: targetModel.provider,
@@ -181,6 +210,7 @@ const provider = {
 		return {
 			result: async () => {
 				if (streamShouldFail) throw new Error("provider unavailable");
+				onStreamResult?.();
 				return {
 					stopReason: "stop",
 					content: [{ type: "text", text: "structured summary" }],
@@ -216,12 +246,57 @@ const context = {
 	isProjectTrusted: () => false,
 	waitForIdle: async () => undefined,
 	sessionManager,
-	ui: { notify: (message: string, type?: string) => notices.push({ message, type }) },
+	ui: {
+		notify: (message: string, type?: string) => notices.push({ message, type }),
+		setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
+		theme: { fg: (_color: string, text: string) => text },
+	},
 };
+
+const futureStatePath = join(globalStateDir, "future-compaction-model.json");
+const futureStateSource = `${JSON.stringify({ version: 2, model: configuredState }, null, 2)}\n`;
+writeFileSync(futureStatePath, futureStateSource, "utf8");
+const futureStore = createGlobalCompactionModelStore(futureStatePath);
+const futureHandlers = new Map<string, Array<(event: any, ctx: any) => any>>();
+const futureNotices: Array<{ message: string; type?: string }> = [];
+compactionModelExtension(
+	{
+		registerCommand: () => undefined,
+		registerEntryRenderer: () => undefined,
+		on: (event: string, handler: (event: any, ctx: any) => any) => {
+			const list = futureHandlers.get(event) ?? [];
+			list.push(handler);
+			futureHandlers.set(event, list);
+		},
+	} as any,
+	futureStore,
+	timerOptions,
+);
+await futureHandlers.get("session_start")?.[0]?.(
+	{},
+	{
+		...context,
+		sessionManager: { getBranch: () => branch },
+		ui: {
+			...context.ui,
+			notify: (message: string, type?: string) => futureNotices.push({ message, type }),
+		},
+	},
+);
+assert(
+	"preserves future-version state instead of overwriting it during legacy migration",
+	futureStore.read().status === "invalid" &&
+		readFileSync(futureStatePath, "utf8") === futureStateSource &&
+		futureNotices.at(-1)?.type === "warning",
+	JSON.stringify({ state: futureStore.read(), notices: futureNotices }),
+);
 
 compactionModelExtension(
 	{
 		registerCommand: (name: string, command: any) => commands.set(name, command),
+		registerEntryRenderer: (type: string, renderer: any) => {
+			if (type === COMPACTION_DURATION_ENTRY_TYPE) durationRenderer = renderer;
+		},
 		on: (event: string, handler: (event: any, ctx: any) => any) => {
 			const list = handlers.get(event) ?? [];
 			list.push(handler);
@@ -231,6 +306,7 @@ compactionModelExtension(
 			entries.push({ type: "custom", customType, data }),
 	} as any,
 	globalStore,
+	timerOptions,
 );
 
 const command = commands.get("compaction-model");
@@ -250,9 +326,9 @@ assert(
 await command.handler("deepseek/deepseek-v4-flash max", context);
 assert(
 	"persists the selected model globally without adding session state",
-	globalStore.read()?.provider === "deepseek" &&
-		globalStore.read()?.id === "deepseek-v4-flash" &&
-		globalStore.read()?.thinkingLevel === "max" &&
+	storedModel(globalStore)?.provider === "deepseek" &&
+		storedModel(globalStore)?.id === "deepseek-v4-flash" &&
+		storedModel(globalStore)?.thinkingLevel === "max" &&
 		entries.length === 0 &&
 		notices.at(-1)?.message === "Compaction model set to deepseek/deepseek-v4-flash max" &&
 		notices.at(-1)?.type === "info",
@@ -264,6 +340,7 @@ const restoredCommands = new Map<string, any>();
 compactionModelExtension(
 	{
 		registerCommand: (name: string, command: any) => restoredCommands.set(name, command),
+		registerEntryRenderer: () => undefined,
 		on: (event: string, handler: (event: any, ctx: any) => any) => {
 			const list = restoredHandlers.get(event) ?? [];
 			list.push(handler);
@@ -293,15 +370,15 @@ notices.length = 0;
 await command.handler("openai/gpt-4.1-mini", context);
 assert(
 	"defaults an implicit level to one supported by the selected model",
-	globalStore.read()?.id === "gpt-4.1-mini" &&
-		globalStore.read()?.thinkingLevel === "off" &&
+	storedModel(globalStore)?.id === "gpt-4.1-mini" &&
+		storedModel(globalStore)?.thinkingLevel === "off" &&
 		entries.length === 0,
-	JSON.stringify({ global: globalStore.read(), entries }),
+	JSON.stringify({ global: storedModel(globalStore), entries }),
 );
 await command.handler("clear", context);
 assert(
 	"persists clearing the global configured model",
-	globalStore.read() === null &&
+	storedModel(globalStore) === null &&
 		entries.length === 0 &&
 		notices.at(-1)?.message ===
 			"Compaction model cleared globally. Using the active conversation model.",
@@ -330,22 +407,52 @@ const compactEvent = (reason: "manual" | "threshold" | "overflow") => ({
 await command.handler("deepseek/deepseek-v4-flash high", context);
 notices.length = 0;
 for (const reason of ["manual", "threshold", "overflow"] as const) {
+	let liveStatus: { key: string; text: string | undefined } | undefined;
+	onStreamResult = () => {
+		fakeNow += 1_250;
+		timerCallback?.();
+		liveStatus = statusCalls.at(-1);
+		fakeNow += 750;
+	};
 	const result = await handlers.get("session_before_compact")?.[0]?.(compactEvent(reason), context);
+	const timerClearedAfterRequest =
+		timerCallback === undefined && statusCalls.at(-1)?.text === undefined;
 	await handlers.get("session_compact")?.[0]?.({}, context);
 	assert(
-		`routes ${reason} compaction through the configured model`,
+		`routes ${reason} compaction through the configured model and cleans up its timer`,
 		result?.compaction?.summary === "structured summary" &&
 			calls.at(-1)?.model === targetModel.id &&
-			calls.at(-1)?.options.reasoning === "high",
-		JSON.stringify({ result, call: calls.at(-1), notices }),
+			calls.at(-1)?.options.reasoning === "high" &&
+			liveStatus?.key === COMPACTION_TIMER_STATUS_KEY &&
+			liveStatus.text === "Compacting 1.3s" &&
+			timerClearedAfterRequest,
+		JSON.stringify({ result, call: calls.at(-1), liveStatus, statusCalls, notices }),
 	);
 }
+onStreamResult = undefined;
+const durationEntries = entries.splice(0);
+const renderedDuration = durationRenderer?.(
+	{ data: { durationMs: 2_000 } },
+	{},
+	{ fg: (_color: string, text: string) => text },
+);
 assert(
-	"notifies with the configured model after successful compaction",
+	"persists final compaction durations as permanent thread entries",
+	durationEntries.length === 3 &&
+		durationEntries.every(
+			(entry) =>
+				entry.customType === COMPACTION_DURATION_ENTRY_TYPE && entry.data?.durationMs === 2_000,
+		) &&
+		typeof durationRenderer === "function" &&
+		renderedDuration?.render(80).join(" ").includes("Compaction took 2.0s"),
+	JSON.stringify({ durationEntries, durationRenderer: typeof durationRenderer }),
+);
+assert(
+	"notifies with the configured model and final compaction duration",
 	notices.length === 3 &&
 		notices.every(
 			(notice) =>
-				notice.message === "Compaction model: deepseek/deepseek-v4-flash high" &&
+				notice.message === "Compaction model: deepseek/deepseek-v4-flash high · Took 2.0s" &&
 				notice.type === "info",
 		),
 	JSON.stringify(notices),
@@ -360,6 +467,7 @@ const unavailableResult = await handlers.get("session_before_compact")?.[0]?.(
 assert(
 	"falls back when selected-model auth is unavailable",
 	unavailableResult === undefined &&
+		timerCallback === undefined &&
 		notices.at(-1)?.message ===
 			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nFalling back to openai-codex/gpt-5.6-sol medium",
 	JSON.stringify({ unavailableResult, notices }),
@@ -383,6 +491,8 @@ const failedResult = await handlers.get("session_before_compact")?.[0]?.(
 assert(
 	"falls back when the selected-model request fails",
 	failedResult === undefined &&
+		timerCallback === undefined &&
+		statusCalls.at(-1)?.text === undefined &&
 		notices.length === 1 &&
 		notices[0]?.message ===
 			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nFalling back to openai-codex/gpt-5.6-sol medium",
