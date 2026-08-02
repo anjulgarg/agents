@@ -216,6 +216,7 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	let availableModels: Model<Api>[] = [];
 	let lastFallbackKey: string | undefined;
+	let lastCompactionModel: CompactionModelState | undefined;
 
 	const refreshModels = (ctx: ExtensionContext): void => {
 		modelRegistry = ctx.modelRegistry;
@@ -233,7 +234,17 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 		return ctx.modelRegistry.find(configured.provider, configured.id);
 	};
 
+	const activeCompactionModel = (ctx: ExtensionContext): CompactionModelState | undefined => {
+		if (!ctx.model) return undefined;
+		return {
+			provider: ctx.model.provider,
+			id: ctx.model.id,
+			thinkingLevel: activeThinkingLevel(ctx),
+		};
+	};
+
 	const notifyFallback = (ctx: ExtensionContext): void => {
+		lastCompactionModel = activeCompactionModel(ctx);
 		if (!configured) return;
 		const fallback = ctx.model;
 		const fallbackThinkingLevel = activeThinkingLevel(ctx);
@@ -274,6 +285,7 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 			if ("clear" in parsed) {
 				configured = undefined;
 				lastFallbackKey = undefined;
+				lastCompactionModel = undefined;
 				pi.appendEntry(COMPACTION_MODEL_ENTRY_TYPE, { clear: true });
 				ctx.ui.notify("Compaction model cleared. Using the active conversation model.", "info");
 				return;
@@ -318,12 +330,14 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 			ctx.sessionManager.getBranch() as SessionCustomEntry[],
 		);
 		lastFallbackKey = undefined;
+		lastCompactionModel = undefined;
 	};
 
 	pi.on("session_start", (_event, ctx) => restore(ctx));
 	pi.on("session_tree", (_event, ctx) => restore(ctx));
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		lastCompactionModel = activeCompactionModel(ctx);
 		if (!configured) return;
 
 		const model = configuredModel(ctx);
@@ -355,6 +369,12 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 			return;
 		}
 
+		lastCompactionModel = {
+			provider: model.provider,
+			id: model.id,
+			thinkingLevel: clampThinkingLevel(model, configured.thinkingLevel),
+		};
+
 		try {
 			const streamFn = (
 				requestModel: Model<Api>,
@@ -383,5 +403,12 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 			notifyFallback(ctx);
 			return;
 		}
+	});
+
+	pi.on("session_compact", (_event, ctx) => {
+		const model = lastCompactionModel ?? activeCompactionModel(ctx);
+		lastCompactionModel = undefined;
+		if (!model) return;
+		ctx.ui.notify(`Compaction model: ${formatCompactionModel(model, model.thinkingLevel)}`, "info");
 	});
 }

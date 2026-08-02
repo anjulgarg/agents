@@ -267,6 +267,7 @@ await command.handler("deepseek/deepseek-v4-flash high", context);
 notices.length = 0;
 for (const reason of ["manual", "threshold", "overflow"] as const) {
 	const result = await handlers.get("session_before_compact")?.[0]?.(compactEvent(reason), context);
+	await handlers.get("session_compact")?.[0]?.({}, context);
 	assert(
 		`routes ${reason} compaction through the configured model`,
 		result?.compaction?.summary === "structured summary" &&
@@ -276,8 +277,13 @@ for (const reason of ["manual", "threshold", "overflow"] as const) {
 	);
 }
 assert(
-	"does not emit a fallback notice for successful compaction",
-	notices.length === 0,
+	"notifies with the configured model after successful compaction",
+	notices.length === 3 &&
+		notices.every(
+			(notice) =>
+				notice.message === "Compaction model: deepseek/deepseek-v4-flash high" &&
+				notice.type === "info",
+		),
 	JSON.stringify(notices),
 );
 

@@ -3,6 +3,7 @@ import {
 	findCutPoint,
 	sessionEntryToContextMessages,
 	SettingsManager,
+	type ContextEvent,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type SessionEntry,
@@ -11,6 +12,60 @@ import {
 export const CONTINUATION_PROMPT = `Automatic context compaction completed. Reassess active work, current state, and open todo items. Treat open todos as the active work queue: reconcile verified items, then autonomously start the next unverified item after the current user request unless it conflicts or requires material user input. Continue working autonomously unless you need user input. If nothing remains, respond only with a brief completion confirmation.`;
 
 export const PROACTIVE_HEADROOM_TOKENS = 32_000;
+export const EMERGENCY_TOOL_RESULT_TEXT_CHARS = 48_000;
+
+const EMERGENCY_TRUNCATION_MARKER =
+	"temporarily omitted from this request; full result remains in the session";
+
+type ContextMessage = ContextEvent["messages"][number];
+
+function truncateEmergencyText(text: string, maxSourceChars: number): string {
+	if (text.length <= maxSourceChars) return text;
+
+	const keptChars = Math.max(0, maxSourceChars);
+	const omittedChars = text.length - keptChars;
+	const marker = `\n...[${omittedChars.toLocaleString()} characters ${EMERGENCY_TRUNCATION_MARKER}]...\n`;
+	if (keptChars === 0) return marker.trim();
+
+	const headChars = Math.ceil(keptChars / 2);
+	const tailChars = Math.floor(keptChars / 2);
+	return `${text.slice(0, headChars)}${marker}${tailChars > 0 ? text.slice(-tailChars) : ""}`;
+}
+
+export function protectOversizedToolResults(
+	messages: ContextEvent["messages"],
+	maxTextChars = EMERGENCY_TOOL_RESULT_TEXT_CHARS,
+): ContextEvent["messages"] {
+	let remainingChars = Math.max(0, Math.floor(maxTextChars));
+	let changed = false;
+	const protectedMessages = [...messages];
+
+	// Preserve the newest tool output first. Older tool results are still retained
+	// in the session and will be available to the compaction summary.
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role !== "toolResult") continue;
+
+		const content = message.content;
+		let contentChanged = false;
+		const protectedContent = content.map((block) => {
+			if (block.type !== "text") return block;
+
+			const keptChars = Math.min(block.text.length, remainingChars);
+			remainingChars -= keptChars;
+			const text = truncateEmergencyText(block.text, keptChars);
+			if (text === block.text) return block;
+			contentChanged = true;
+			return { ...block, text };
+		});
+		if (contentChanged) {
+			protectedMessages[index] = { ...message, content: protectedContent } as ContextMessage;
+			changed = true;
+		}
+	}
+
+	return changed ? protectedMessages : messages;
+}
 
 export function proactiveCompactionThreshold(contextWindow: number): number {
 	if (!Number.isFinite(contextWindow) || contextWindow <= 0) return Number.POSITIVE_INFINITY;
@@ -81,38 +136,36 @@ function sendContinuation(pi: ExtensionAPI): void {
 }
 
 export default function (pi: ExtensionAPI) {
+	let proactiveCompactionPending = false;
 	let proactiveCompactionInFlight = false;
-	let proactiveContinuationSent = false;
-	let nativeOutcomeDuringProactive: "continue" | "retry" | undefined;
+	let protectOutgoingContext = false;
 	let keepRecentTokens = DEFAULT_COMPACTION_SETTINGS.keepRecentTokens;
 
-	const finishProactiveCompaction = () => {
-		if (!proactiveCompactionInFlight || proactiveContinuationSent) return;
+	const clearProactiveState = () => {
+		proactiveCompactionPending = false;
+		protectOutgoingContext = false;
+	};
 
-		const shouldContinue = nativeOutcomeDuringProactive !== "retry";
-		proactiveContinuationSent = true;
+	const finishProactiveCompaction = () => {
+		if (!proactiveCompactionInFlight) return;
+
 		proactiveCompactionInFlight = false;
-		nativeOutcomeDuringProactive = undefined;
-		if (shouldContinue) sendContinuation(pi);
+		clearProactiveState();
 	};
 
 	const failProactiveCompaction = (ctx: ExtensionContext, error: unknown) => {
 		if (!proactiveCompactionInFlight) return;
 
-		const nativeOutcome = nativeOutcomeDuringProactive;
 		proactiveCompactionInFlight = false;
-		proactiveContinuationSent = nativeOutcome !== undefined;
-		nativeOutcomeDuringProactive = undefined;
-		if (nativeOutcome === "continue") {
-			sendContinuation(pi);
-			return;
-		}
-		if (nativeOutcome === "retry") return;
-
 		const message = error instanceof Error ? error.message : String(error);
 		if (message === "Nothing to compact (session too small)" || message === "Already compacted") {
+			clearProactiveState();
 			return;
 		}
+
+		// Keep the pending flag so a later settled run can retry. Context protection
+		// remains active until some compaction succeeds.
+		proactiveCompactionPending = true;
 		ctx.ui.notify(`Proactive compaction failed: ${message}`, "error");
 	};
 
@@ -128,7 +181,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_end", (event, ctx) => {
 		// A turn with tool results will otherwise continue through the agent loop.
-		// A final assistant answer has no tool results and must not trigger this.
+		// Record the need here, but never call ctx.compact() until agent_settled:
+		// manual compaction aborts and waits for the active run, which races this event.
 		if (event.toolResults.length === 0 || proactiveCompactionInFlight) return;
 
 		const usage = ctx.getContextUsage();
@@ -139,11 +193,29 @@ export default function (pi: ExtensionAPI) {
 		) {
 			return;
 		}
-		if (!hasCompactionCandidate(ctx.sessionManager.getBranch(), keepRecentTokens)) return;
+
+		proactiveCompactionPending = true;
+		const hasCandidate = hasCompactionCandidate(ctx.sessionManager.getBranch(), keepRecentTokens);
+		protectOutgoingContext ||= !hasCandidate || usage.tokens > usage.contextWindow;
+	});
+
+	pi.on("context", (event) => {
+		if (!proactiveCompactionPending || !protectOutgoingContext) return;
+
+		const messages = protectOversizedToolResults(event.messages);
+		return messages === event.messages ? undefined : { messages };
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		if (
+			!proactiveCompactionPending ||
+			proactiveCompactionInFlight ||
+			!hasCompactionCandidate(ctx.sessionManager.getBranch(), keepRecentTokens)
+		) {
+			return;
+		}
 
 		proactiveCompactionInFlight = true;
-		proactiveContinuationSent = false;
-		nativeOutcomeDuringProactive = undefined;
 		try {
 			ctx.compact({
 				onComplete: finishProactiveCompaction,
@@ -155,17 +227,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_compact", (event) => {
-		// Manual compactions are handled only by the proactive compact callback,
-		// so user-issued /compact never resumes the agent.
+		// Any successful compaction satisfies a pending proactive request. A
+		// deferred manual compaction is already settled, so it needs no continuation.
+		clearProactiveState();
 		if (event.reason === "manual") return;
-
-		// A large tool result can cross Pi's native threshold while proactive
-		// compaction is aborting the loop. Defer that continuation until the
-		// manual compact callback settles so the two paths cannot resume twice.
-		if (proactiveCompactionInFlight) {
-			nativeOutcomeDuringProactive = event.willRetry ? "retry" : "continue";
-			return;
-		}
 
 		// Native overflow recovery retries in core. Native threshold and
 		// non-retrying overflow compactions need the established follow-up.
