@@ -16,7 +16,6 @@ const repositoryRoot = basename(moduleRoot) === "dist" ? resolve(moduleRoot, "..
 const localPiConfigRoot = resolve(repositoryRoot, "pi/config");
 
 export const localPiConfigFiles = {
-	settings: existsSync(resolve(localPiConfigRoot, "settings.json")),
 	models: existsSync(resolve(localPiConfigRoot, "models.json")),
 	mcp: existsSync(resolve(localPiConfigRoot, "mcp.json")),
 } as const;
@@ -100,19 +99,6 @@ const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entryp
 	legacyPaths: [`.pi/agent/extensions/${entrypoint}`],
 }));
 
-const settingsPointers = [
-	"/defaultModel",
-	"/defaultProvider",
-	"/defaultThinkingLevel",
-	"/hideThinkingBlock",
-	"/httpIdleTimeoutMs",
-	"/editorPaddingX",
-	"/quietStartup",
-	"/showHardwareCursor",
-	"/theme",
-	"/enabledModels",
-] as const;
-
 const instructionBegin = "<!-- agents:instructions:begin -->";
 const instructionEnd = "<!-- agents:instructions:end -->";
 const block = (destination: string, content = "{{resource:pi/AGENTS.md}}") => ({
@@ -124,22 +110,6 @@ const block = (destination: string, content = "{{resource:pi/AGENTS.md}}") => ({
 });
 
 const otherComponents: ComponentDefinition[] = [
-	{
-		id: "pi-config:settings",
-		category: "pi-config",
-		label: "Pi Settings",
-		description: "Complete approved Pi defaults and model selection.",
-		resources: [{ path: "pi/config/settings.json", kind: "file" }],
-		outputs: [
-			{
-				strategy: "owned-json",
-				destination: ".pi/agent/settings.json",
-				pointers: settingsPointers,
-			},
-		],
-		dependsOn: ["pi-theme:claude-code"],
-		requirements: [NODE, PI],
-	},
 	{
 		id: "pi-config:models",
 		category: "pi-config",
@@ -281,14 +251,13 @@ const otherComponents: ComponentDefinition[] = [
 ];
 
 const localOnlyComponentFiles: Partial<Record<ComponentId, keyof typeof localPiConfigFiles>> = {
-	"pi-config:settings": "settings",
 	"pi-config:models": "models",
 	"pi-package:mcp-adapter": "mcp",
 	"pi-config:mcp-sentry": "mcp",
 };
 
-// Personal Pi settings are loaded only from the local checkout when present. Public clones
-// retain the open-source resources without exposing or trying to install those files.
+// Personal Pi configuration components are loaded only from the local checkout when present.
+// Public clones retain the open-source resources without exposing or trying to install those files.
 export const components: readonly ComponentDefinition[] = [
 	...skillComponents,
 	...extensionComponents,

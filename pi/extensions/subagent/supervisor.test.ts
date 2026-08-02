@@ -21,6 +21,7 @@ class FakeChild implements ChildHandle {
 	readonly usage: UsageStats = emptyUsage();
 	killed = false;
 	steered: string[] = [];
+	promptMessages: string[] = [];
 	aborted = 0;
 	stderr = "";
 	exitCode?: number;
@@ -37,7 +38,8 @@ class FakeChild implements ChildHandle {
 		this.ownerToken = options.ownerToken;
 	}
 
-	prompt(_message: string): Promise<unknown> {
+	prompt(message: string): Promise<unknown> {
+		this.promptMessages.push(message);
 		if (this.promptError) return Promise.reject(this.promptError);
 		return Promise.resolve({ type: "response", success: true });
 	}
@@ -743,6 +745,148 @@ async function testSoftSignalStuckInTool(): Promise<void> {
 	}
 }
 
+async function testTransientProviderRecovery(): Promise<void> {
+	const name = "m. transient provider failures retry the child without false success";
+	const children: FakeChild[] = [];
+	const wakes: Wake[] = [];
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		maxTransientRetries: 2,
+		transientRetryBaseDelayMs: 1,
+		sendUserMessage: (content, options) => {
+			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
+		},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+
+	try {
+		const { runId, taskIds } = supervisor.spawn([baseSpec({ task: "recover provider" })]);
+		children[0].emit({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "Unknown error (no error details in response)",
+			},
+		});
+		children[0].emit({ type: "agent_settled" });
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		let task = supervisor.runs.get(runId)?.tasks[0];
+		assert(
+			name,
+			task?.status === "running" &&
+				children[0].promptMessages.length === 2 &&
+				children[0].promptMessages[1]?.includes("INTERNAL PROVIDER RECOVERY") === true &&
+				wakes.length === 0,
+			`status=${task?.status} prompts=${JSON.stringify(children[0].promptMessages)} wakes=${JSON.stringify(wakes)}`,
+		);
+
+		children[0].settle("recovered result");
+		task = supervisor.runs.get(runId)?.tasks[0];
+		const result = supervisor.result(runId, taskIds[0]);
+		assert(
+			`${name} (successful recovery)`,
+			task?.status === "done" && result.output === "recovered result" && result.error === undefined,
+			`task=${JSON.stringify(task)} result=${JSON.stringify(result)}`,
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
+async function testTransientProviderFailureExhaustion(): Promise<void> {
+	const name = "n. exhausted transient recovery fails with the provider diagnostic";
+	const children: FakeChild[] = [];
+	const wakes: Wake[] = [];
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		maxTransientRetries: 1,
+		transientRetryBaseDelayMs: 1,
+		sendUserMessage: (content, options) => {
+			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
+		},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+
+	try {
+		const { runId, taskIds } = supervisor.spawn([baseSpec({ task: "exhaust provider" })]);
+		const failTurn = (): void => {
+			children[0].emit({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage:
+						"Azure OpenAI API error (503): upstream connect error or disconnect/reset before headers",
+				},
+			});
+			children[0].emit({ type: "agent_settled" });
+		};
+		failTurn();
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		failTurn();
+		const task = supervisor.runs.get(runId)?.tasks[0];
+		const result = supervisor.result(runId, taskIds[0]);
+		assert(
+			name,
+			task?.status === "failed" &&
+				children[0].promptMessages.length === 2 &&
+				result.error?.includes("automatic recovery attempt") === true &&
+				result.error?.includes("503") === true &&
+				wakes.length === 1,
+			`task=${JSON.stringify(task)} result=${JSON.stringify(result)} wakes=${JSON.stringify(wakes)}`,
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
+async function testNonTransientProviderFailureDoesNotRetry(): Promise<void> {
+	const name = "o. deterministic provider failures fail fast without retry";
+	const children: FakeChild[] = [];
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		sendUserMessage: () => {},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+
+	try {
+		const { runId, taskIds } = supervisor.spawn([baseSpec({ task: "invalid provider request" })]);
+		children[0].emit({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "401 authentication failed",
+			},
+		});
+		children[0].emit({ type: "agent_settled" });
+		const task = supervisor.runs.get(runId)?.tasks[0];
+		const result = supervisor.result(runId, taskIds[0]);
+		assert(
+			name,
+			task?.status === "failed" &&
+				children[0].promptMessages.length === 1 &&
+				result.error === "401 authentication failed",
+			`task=${JSON.stringify(task)} result=${JSON.stringify(result)}`,
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
 async function testExitPropagatesStderr(): Promise<void> {
 	const name =
 		"m. child exit failure carries exitCode + ANSI-stripped stderr in result, terse wake";
@@ -1195,6 +1339,9 @@ async function main(): Promise<void> {
 	await testResultDetail();
 	await testManualKillMetadata();
 	await testSoftSignalStuckInTool();
+	await testTransientProviderRecovery();
+	await testTransientProviderFailureExhaustion();
+	await testNonTransientProviderFailureDoesNotRetry();
 	await testExitPropagatesStderr();
 	await testExitDoesNotLeakStderrOnSuccess();
 	await testBoundedConcurrency();

@@ -4,11 +4,13 @@ import { fullscreenOverlayOptions } from "../lib/tui/index.ts";
 
 import { unbindSubagentControl } from "./control.ts";
 import { modelCatalog } from "./models.ts";
+import { registerProviderRecovery } from "../lib/provider-recovery.ts";
 import { SubagentDashboard } from "./ui.ts";
 import { SUBAGENT_MANAGEMENT_TOOLS } from "./tools.ts";
 import type { SubagentRuntime } from "./runtime.ts";
 
 export function registerSubagentLifecycle(pi: ExtensionAPI, runtime: SubagentRuntime): void {
+	registerProviderRecovery(pi);
 	const supervisor = runtime.supervisor;
 	let compactionInProgress = false;
 	const scheduleParentAbort = (): void => {

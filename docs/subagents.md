@@ -52,6 +52,12 @@ A persistent child cannot invoke subagent or subagent-management tools. Dependen
 
 Children inherit the parent's active tool allowlist. When the parent MCP tool is inactive, the child uses an isolated empty Pi-global MCP config instead of re-enabling configured servers.
 
+## Provider failure recovery
+
+Pi's native retry policy is enabled by default. The subagent lifecycle adds two delayed recovery turns after native retries are exhausted, preserving the current session context instead of treating a failed assistant response as successful or immediately killing the child. Operators may raise the native budget in their local Pi settings with `retry.maxRetries` and `retry.provider.maxRetries`; personal settings remain outside this repository.
+
+The recovery classifier retries transient HTTP, upstream connection, socket, timeout, overload, rate-limit, and unstructured Responses API failures such as `Unknown error (no error details in response)`. Authentication, quota, invalid-request, content-policy, and context failures remain fail-fast. Recovery stops after its bounded budget and reports the final provider diagnostic to the parent.
+
 ## F6 thread view
 
 The F6 thread view is a strictly read-only viewer. It renders the child's active branch merged with live events but offers no editor, child commands, steering, compaction controls, branch navigation, or model changes. Navigation, kill confirmation, parent return, and close behave as before.

@@ -24,6 +24,7 @@ export {
 	type SubagentMode,
 	type WorkspaceMode,
 } from "./contracts.ts";
+import { isTransientProviderFailure, providerErrorText } from "../lib/provider-retry.ts";
 import {
 	StuckDetector,
 	type RecentToolActivity,
@@ -81,6 +82,9 @@ export interface TaskState {
 	child?: ChildHandle;
 	/** Spawn inputs retained while queued; never persisted. */
 	spawnSpec?: TaskSpawnSpec;
+	/** Last assistant provider failure observed before agent_settled. */
+	providerFailure?: { error: string; retryable: boolean };
+	providerRetryCount: number;
 	ownerToken: string;
 	reaped: boolean;
 	abortRequested?: boolean;
@@ -225,6 +229,10 @@ export interface SupervisorOptions {
 	defaultTools?: string[];
 	/** Hard cap across all runs owned by this supervisor. Default 8. */
 	maxActiveChildren?: number;
+	/** Bounded recovery attempts after the child Pi retry policy is exhausted. */
+	maxTransientRetries?: number;
+	/** Initial delay between child recovery attempts. Defaults to 2 seconds. */
+	transientRetryBaseDelayMs?: number;
 	/**
 	 * Called after the outstanding-work check and before parentWaiting is set.
 	 * Tests use this to inject the settle/flag race; production leaves it unset.
@@ -235,6 +243,9 @@ export interface SupervisorOptions {
 const DEFAULT_TASK_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_WATCHDOG_TICK_MS = 30_000;
 const DEFAULT_MAX_ACTIVE_CHILDREN = 8;
+const DEFAULT_MAX_TRANSIENT_RETRIES = 2;
+const DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS = 2_000;
+const MAX_TRANSIENT_RETRY_DELAY_MS = 30_000;
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 /** Bound on the final context refresh before normal process termination begins. */
 const FINAL_CONTEXT_REFRESH_TIMEOUT_MS = 1000;
@@ -244,6 +255,11 @@ const ANSI_ESCAPE_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 function oneLine(text: string): string {
 	const line = text.trim().split(/\r?\n/)[0] ?? "";
 	return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+	if (value === undefined || !Number.isFinite(value)) return fallback;
+	return Math.max(0, Math.floor(value));
 }
 
 /** Strip CSI/ANSI color sequences so wake/result text stays readable. */
@@ -303,8 +319,11 @@ export class Supervisor {
 	private readonly now: () => number;
 	private readonly defaultTools: string[];
 	private readonly maxActiveChildren: number;
+	private readonly maxTransientRetries: number;
+	private readonly transientRetryBaseDelayMs: number;
 	private readonly betweenSettleCheckAndWait?: () => void;
 	private readonly timeouts = new Map<string, NodeJS.Timeout>();
+	private readonly providerRetryTimers = new Map<string, NodeJS.Timeout>();
 	private readonly abortFallbacks = new Map<string, NodeJS.Timeout>();
 	private readonly detectors = new Map<string, StuckDetector>();
 	private readonly exitHandlers: Array<{ event: string; handler: (...args: any[]) => void }> = [];
@@ -329,6 +348,14 @@ export class Supervisor {
 		this.now = options.now ?? (() => Date.now());
 		this.defaultTools = options.defaultTools ?? DEFAULT_TOOLS;
 		this.maxActiveChildren = Math.max(1, options.maxActiveChildren ?? DEFAULT_MAX_ACTIVE_CHILDREN);
+		this.maxTransientRetries = nonNegativeInteger(
+			options.maxTransientRetries,
+			DEFAULT_MAX_TRANSIENT_RETRIES,
+		);
+		this.transientRetryBaseDelayMs = nonNegativeInteger(
+			options.transientRetryBaseDelayMs,
+			DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS,
+		);
 		this.betweenSettleCheckAndWait = options.betweenSettleCheckAndWait;
 		this.installProcessHandlers();
 		this.installWatchdogTimer();
@@ -380,6 +407,7 @@ export class Supervisor {
 				output: "",
 				usage: emptyUsage(),
 				spawnSpec: spec,
+				providerRetryCount: 0,
 				ownerToken: `${runId}:${index}:${randomUUID()}`,
 				reaped: true,
 				lastEventAt: startedAt,
@@ -600,6 +628,8 @@ export class Supervisor {
 		this.timeouts.clear();
 		for (const timer of this.abortFallbacks.values()) clearTimeout(timer);
 		this.abortFallbacks.clear();
+		for (const timer of this.providerRetryTimers.values()) clearTimeout(timer);
+		this.providerRetryTimers.clear();
 		if (this.watchdogTimer) {
 			clearInterval(this.watchdogTimer);
 			this.watchdogTimer = undefined;
@@ -837,6 +867,71 @@ export class Supervisor {
 			});
 	}
 
+	private formatProviderFailure(task: TaskState, error: string): string {
+		const attempts = task.providerRetryCount;
+		if (attempts === 0) return error;
+		const label = attempts === 1 ? "attempt" : "attempts";
+		return `provider error after ${attempts} automatic recovery ${label}: ${error}`;
+	}
+
+	/**
+	 * Retry a failed child turn after native Pi retries are exhausted. The child
+	 * session remains alive, so the next prompt can continue without losing the
+	 * task context or persistent-session identity.
+	 */
+	private scheduleProviderRetry(runId: string, taskId: string): void {
+		const task = this.findTask(runId, taskId);
+		const failure = task?.providerFailure;
+		if (
+			!task ||
+			!failure ||
+			!failure.retryable ||
+			!task.child ||
+			this.disposed ||
+			this.providerRetryTimers.has(taskId)
+		)
+			return;
+		if (task.providerRetryCount >= this.maxTransientRetries) {
+			this.beginFinalization(runId, taskId, {
+				status: "failed",
+				error: this.formatProviderFailure(task, failure.error),
+			});
+			return;
+		}
+
+		const attempt = ++task.providerRetryCount;
+		const delayMs = Math.min(
+			MAX_TRANSIENT_RETRY_DELAY_MS,
+			this.transientRetryBaseDelayMs * 2 ** (attempt - 1),
+		);
+		task.providerFailure = undefined;
+		task.lastEventAt = this.now();
+		this.notifyListeners();
+		const timer = setTimeout(() => {
+			this.providerRetryTimers.delete(taskId);
+			const current = this.findTask(runId, taskId);
+			if (!current || current.status !== "running" || current.finalizing || !current.child) return;
+			void current.child
+				.prompt(
+					"[INTERNAL PROVIDER RECOVERY]\n" +
+						"The previous model response failed due to a transient provider or network error. " +
+						"Continue the original task from the current session state. Inspect current state " +
+						"before repeating any side effects.",
+				)
+				.catch((error) => {
+					const latest = this.findTask(runId, taskId);
+					if (!latest || latest.finalizing || isTerminalStatus(latest.status)) return;
+					const message = error instanceof Error ? error.message : String(error);
+					this.beginFinalization(runId, taskId, {
+						status: "failed",
+						error: formatChildExitError(current.child!, message),
+					});
+				});
+		}, delayMs);
+		timer.unref?.();
+		this.providerRetryTimers.set(taskId, timer);
+	}
+
 	private onChildEvent(runId: string, taskId: string, event: RpcEvent): void {
 		const task = this.findTask(runId, taskId);
 		if (!task || isTerminalStatus(task.status) || task.finalizing) return;
@@ -854,17 +949,41 @@ export class Supervisor {
 			this.refreshContext(runId, taskId);
 		}
 		if (task.status === "running") this.detectors.get(taskId)?.observe(event, now);
+		if (event.type === "message_end") {
+			const message = event.message as {
+				role?: unknown;
+				stopReason?: unknown;
+				errorMessage?: unknown;
+			};
+			if (message.role === "assistant") {
+				if (message.stopReason === "error") {
+					const error = providerErrorText(message) || "provider returned an unstructured error";
+					task.providerFailure = {
+						error,
+						retryable: isTransientProviderFailure(message),
+					};
+				} else {
+					task.providerFailure = undefined;
+					task.providerRetryCount = 0;
+				}
+			}
+		}
 		if (event.type === "agent_settled") {
-			this.beginFinalization(
-				runId,
-				taskId,
-				task.abortRequested
-					? {
-							status: "failed",
-							error: `aborted by parent: ${task.abortReason ?? "unspecified reason"}`,
-						}
-					: { status: "done" },
-			);
+			if (task.abortRequested) {
+				this.beginFinalization(runId, taskId, {
+					status: "failed",
+					error: `aborted by parent: ${task.abortReason ?? "unspecified reason"}`,
+				});
+			} else if (task.providerFailure) {
+				if (task.providerFailure.retryable) this.scheduleProviderRetry(runId, taskId);
+				else
+					this.beginFinalization(runId, taskId, {
+						status: "failed",
+						error: task.providerFailure.error,
+					});
+			} else {
+				this.beginFinalization(runId, taskId, { status: "done" });
+			}
 			return;
 		}
 		this.notifyListeners();
@@ -956,6 +1075,11 @@ export class Supervisor {
 			clearTimeout(abortFallback);
 			this.abortFallbacks.delete(taskId);
 		}
+		const providerRetry = this.providerRetryTimers.get(taskId);
+		if (providerRetry) {
+			clearTimeout(providerRetry);
+			this.providerRetryTimers.delete(taskId);
+		}
 		const task = this.findTask(runId, taskId);
 		if (!task || isTerminalStatus(task.status) || task.finalizing) return;
 		task.finalizing = true;
@@ -1035,8 +1159,9 @@ export class Supervisor {
 
 	private terminateTask(runId: string, taskId: string, result: FinalizationResult): void {
 		const task = this.findTask(runId, taskId);
-		if (!task || !task.finalizing || !task.child) return;
-		void task.child
+		const child = task?.child;
+		if (!task || !task.finalizing || !child?.terminate) return;
+		void child
 			.terminate()
 			.then((reaped) => this.finishFinalization(runId, taskId, result, reaped))
 			.catch((error) =>
