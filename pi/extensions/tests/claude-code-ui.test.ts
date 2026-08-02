@@ -70,6 +70,17 @@ assert(
 	formatModelStatus("GPT-5.6 Sol", "medium", true) === "⚡ gpt-5.6 sol medium",
 	formatModelStatus("GPT-5.6 Sol", "medium", true),
 );
+assert(
+	"removes OpenRouter's redundant catalog prefix",
+	formatModelStatus("DeepSeek: DeepSeek V4 Flash 0731", "xhigh", false, "openrouter") ===
+		"deepseek v4 flash 0731 xhigh",
+	formatModelStatus("DeepSeek: DeepSeek V4 Flash 0731", "xhigh", false, "openrouter"),
+);
+assert(
+	"preserves colons for non-OpenRouter model names",
+	formatModelStatus("Provider: Model", "high", false, "custom") === "provider: model high",
+	formatModelStatus("Provider: Model", "high", false, "custom"),
+);
 const logo = piLogo({ fg: (_color: string, text: string) => text } as any);
 assert(
 	"aligns the Pi logo with the standard one-column header gutter",

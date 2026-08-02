@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	isSerialExtensionTest,
 	resolveExtensionTestConcurrency,
+	resolveExtensionTestTimeoutMs,
 	runWithConcurrency,
 } from "../../scripts/run-extension-tests.ts";
 
@@ -22,6 +23,17 @@ describe("extension test runner", () => {
 	it.each(["0", "-1", "1.5", "abc"])("rejects invalid concurrency %s", (value) => {
 		expect(() => resolveExtensionTestConcurrency(value, 10, 16)).toThrow(
 			"EXTENSION_TEST_CONCURRENCY must be a positive integer",
+		);
+	});
+
+	it("uses a bounded default per-file timeout and honors a valid override", () => {
+		expect(resolveExtensionTestTimeoutMs(undefined)).toBe(120_000);
+		expect(resolveExtensionTestTimeoutMs("30000")).toBe(30_000);
+	});
+
+	it.each(["0", "-1", "1.5", "abc"])("rejects invalid timeout %s", (value) => {
+		expect(() => resolveExtensionTestTimeoutMs(value)).toThrow(
+			"EXTENSION_TEST_TIMEOUT_MS must be a positive integer",
 		);
 	});
 

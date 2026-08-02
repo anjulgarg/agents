@@ -119,8 +119,14 @@ export function formatGitBranch(branch: string, isLinkedWorktree: boolean): stri
 	return `${isLinkedWorktree ? WORKTREE_ICON : BRANCH_ICON} ${branch}`;
 }
 
-export function formatModelStatus(model: string, thinkingLevel: string, fastMode = false): string {
-	return `${fastMode ? "⚡ " : ""}${model.toLowerCase()} ${thinkingLevel.toLowerCase()}`;
+export function formatModelStatus(
+	model: string,
+	thinkingLevel: string,
+	fastMode = false,
+	provider?: string,
+): string {
+	const displayModel = provider === "openrouter" ? model.replace(/^[^:]+:\s*/, "").trim() : model;
+	return `${fastMode ? "⚡ " : ""}${displayModel.toLowerCase()} ${thinkingLevel.toLowerCase()}`;
 }
 
 export function formatExtensionStatuses(statuses: ReadonlyMap<string, string>): string[] {
@@ -396,7 +402,12 @@ export function createFooter(
 				color(117, formatCwd(ctx.cwd)),
 				color(
 					183,
-					formatModelStatus(model, getThinkingLevel(), isFastMode() && supportsFastMode(ctx)),
+					formatModelStatus(
+						model,
+						getThinkingLevel(),
+						isFastMode() && supportsFastMode(ctx),
+						ctx.model?.provider,
+					),
 				),
 				context ? color(117, context) : undefined,
 				quota?.fiveHourRemaining !== undefined

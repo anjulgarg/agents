@@ -80,11 +80,7 @@ describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
 		expect(components.length).toBe(
-			32 +
-				(localPiConfigFiles.models ? 1 : 0) +
-				1 +
-				(localPiConfigFiles.mcp ? 2 : 0) +
-				5,
+			32 + (localPiConfigFiles.models ? 1 : 0) + 1 + (localPiConfigFiles.mcp ? 2 : 0) + 5,
 		);
 		expect(components.filter(({ category }) => category === "skill").map(({ id }) => id)).toEqual(
 			skillIds,

@@ -10,6 +10,19 @@ const LIVE_TESTS = new Set([
 ]);
 const SERIAL_TESTS = new Set(["pi/extensions/tests/git-checkpoint.test.ts"]);
 const DEFAULT_MAX_CONCURRENCY = 4;
+const DEFAULT_TEST_TIMEOUT_MS = 120_000;
+
+export function resolveExtensionTestTimeoutMs(
+	value: string | undefined,
+	defaultMs = DEFAULT_TEST_TIMEOUT_MS,
+): number {
+	if (value === undefined) return defaultMs;
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < 1) {
+		throw new Error("EXTENSION_TEST_TIMEOUT_MS must be a positive integer");
+	}
+	return parsed;
+}
 
 interface ExtensionTestResult {
 	readonly display: string;
@@ -91,6 +104,7 @@ async function runExtensionTest(
 	root: string,
 	tsxCli: string,
 	tsxLoader: string,
+	timeoutMs: number,
 ): Promise<ExtensionTestResult> {
 	const display = relative(root, test).replaceAll("\\", "/");
 	const startedAt = performance.now();
@@ -99,15 +113,16 @@ async function runExtensionTest(
 			cwd: root,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: extensionTestEnvironment(tsxLoader),
+			detached: process.platform !== "win32",
 		});
 		let stdout = "";
 		let stderr = "";
-		child.stdout.setEncoding("utf8");
-		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => (stdout += chunk));
-		child.stderr.on("data", (chunk: string) => (stderr += chunk));
-		child.on("error", (error) => (stderr += `${error.message}\n`));
-		child.on("close", (exitCode) => {
+		let settled = false;
+		const finish = (exitCode: number, note = ""): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			if (note) stderr += note;
 			resolveResult({
 				display,
 				exitCode,
@@ -115,7 +130,32 @@ async function runExtensionTest(
 				stderr,
 				durationMs: Math.round(performance.now() - startedAt),
 			});
-		});
+		};
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk: string) => (stdout += chunk));
+		child.stderr.on("data", (chunk: string) => (stderr += chunk));
+		child.on("error", (error) => (stderr += `${error.message}\n`));
+		child.on("close", (exitCode) => finish(exitCode ?? 1));
+		const timer = setTimeout(() => {
+			if (child.pid === undefined) return finish(1, `Timed out after ${timeoutMs} ms.\n`);
+			try {
+				child.kill("SIGTERM");
+				if (process.platform !== "win32") {
+					setTimeout(() => {
+						try {
+							process.kill(-child.pid!, "SIGKILL");
+						} catch {
+							// Process group already gone.
+						}
+					}, 250).unref?.();
+				}
+			} catch {
+				// Child already exited between checks.
+			}
+			finish(1, `Timed out after ${timeoutMs} ms.\n`);
+		}, timeoutMs);
+		timer.unref?.();
 	});
 }
 
@@ -131,21 +171,14 @@ async function main(): Promise<void> {
 		process.env.EXTENSION_TEST_CONCURRENCY,
 		parallelTests.length,
 	);
+	const timeoutMs = resolveExtensionTestTimeoutMs(process.env.EXTENSION_TEST_TIMEOUT_MS);
 	const tsxCli = resolve(root, "node_modules/tsx/dist/cli.mjs");
 	const tsxLoader = pathToFileURL(resolve(root, "node_modules/tsx/dist/loader.mjs")).href;
 	const verbose = process.env.EXTENSION_TEST_VERBOSE === "1";
 	process.stdout.write(
-		`[extension-test] running ${parallelTests.length} parallel files with ${concurrency} workers and ${serialTests.length} serial files\n`,
+		`[extension-test] running ${parallelTests.length} parallel files with ${concurrency} workers and ${serialTests.length} serial files; ${timeoutMs} ms per-file timeout\n`,
 	);
-	const parallelResults = await runWithConcurrency(parallelTests, concurrency, (test) =>
-		runExtensionTest(test, root, tsxCli, tsxLoader),
-	);
-	const serialResults = await runWithConcurrency(serialTests, 1, (test) =>
-		runExtensionTest(test, root, tsxCli, tsxLoader),
-	);
-	const results = [...parallelResults, ...serialResults];
-	const failures: string[] = [];
-	for (const result of results) {
+	const report = (result: ExtensionTestResult): void => {
 		const passed = result.exitCode === 0;
 		process.stdout.write(
 			`[extension-test] ${passed ? "PASS" : "FAIL"} ${result.display} (${result.durationMs} ms)\n`,
@@ -154,8 +187,17 @@ async function main(): Promise<void> {
 			if (result.stdout) process.stdout.write(result.stdout);
 			if (result.stderr) process.stderr.write(result.stderr);
 		}
-		if (!passed) failures.push(result.display);
-	}
+	};
+	const run = (test: string): Promise<ExtensionTestResult> =>
+		runExtensionTest(test, root, tsxCli, tsxLoader, timeoutMs).then((result) => {
+			report(result);
+			return result;
+		});
+	const results = [
+		...(await runWithConcurrency(parallelTests, concurrency, run)),
+		...(await runWithConcurrency(serialTests, 1, run)),
+	];
+	const failures = results.filter(({ exitCode }) => exitCode !== 0).map(({ display }) => display);
 	if (failures.length > 0) {
 		throw new Error(`Extension tests failed (${failures.length}): ${failures.join(", ")}`);
 	}
