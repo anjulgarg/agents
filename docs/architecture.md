@@ -26,6 +26,8 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | `pi-team`      | The product team definition; selecting it adds the subagent extension dependency.                                 |
 | `instructions` | Managed instruction blocks or copies for Pi, Codex, OpenCode, Claude Code, and Cursor.                            |
 
+The compaction-model extension stores its global selection under `~/.pi/agent/state/compaction-model.json`; it is not tied to an individual session.
+
 Profiles combine these components: `default` selects the available catalog, `pi` selects Pi resources and shared instructions, and `skills` selects all shared skills. Local-only Pi configuration components appear only when their ignored files exist in the local checkout. Registry ordering is deterministic, so repeated installs are no-ops when outputs remain exact.
 
 ## Main implementation boundaries

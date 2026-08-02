@@ -1,6 +1,11 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
 	COMPACTION_MODEL_ENTRY_TYPE,
 	activeThinkingLevel,
+	createGlobalCompactionModelStore,
 	formatFallbackNotice,
 	modelCompletions,
 	parseCompactionModelCommand,
@@ -63,6 +68,27 @@ const configuredState: CompactionModelState = {
 	id: targetModel.id,
 	thinkingLevel: "max",
 };
+const globalStateDir = mkdtempSync(join(tmpdir(), "pi-compaction-model-"));
+const globalStore = createGlobalCompactionModelStore(join(globalStateDir, "compaction-model.json"));
+assert(
+	"global store starts unset",
+	globalStore.read() === undefined,
+	JSON.stringify(globalStore.read()),
+);
+globalStore.write(configuredState);
+assert(
+	"global store persists the selected model",
+	globalStore.read()?.provider === configuredState.provider &&
+		globalStore.read()?.id === configuredState.id &&
+		globalStore.read()?.thinkingLevel === configuredState.thinkingLevel,
+	readFileSync(join(globalStateDir, "compaction-model.json"), "utf8"),
+);
+globalStore.write(null);
+assert(
+	"global store persists an explicit clear",
+	globalStore.read() === null,
+	readFileSync(join(globalStateDir, "compaction-model.json"), "utf8"),
+);
 const branch = [
 	{ type: "custom", customType: COMPACTION_MODEL_ENTRY_TYPE, data: configuredState },
 	{ type: "custom", customType: "other", data: { ignored: true } },
@@ -193,16 +219,19 @@ const context = {
 	ui: { notify: (message: string, type?: string) => notices.push({ message, type }) },
 };
 
-compactionModelExtension({
-	registerCommand: (name: string, command: any) => commands.set(name, command),
-	on: (event: string, handler: (event: any, ctx: any) => any) => {
-		const list = handlers.get(event) ?? [];
-		list.push(handler);
-		handlers.set(event, list);
-	},
-	appendEntry: (customType: string, data: unknown) =>
-		entries.push({ type: "custom", customType, data }),
-} as any);
+compactionModelExtension(
+	{
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		on: (event: string, handler: (event: any, ctx: any) => any) => {
+			const list = handlers.get(event) ?? [];
+			list.push(handler);
+			handlers.set(event, list);
+		},
+		appendEntry: (customType: string, data: unknown) =>
+			entries.push({ type: "custom", customType, data }),
+	} as any,
+	globalStore,
+);
 
 const command = commands.get("compaction-model");
 assert(
@@ -220,28 +249,63 @@ assert(
 
 await command.handler("deepseek/deepseek-v4-flash max", context);
 assert(
-	"persists identifiers and thinking level without requiring current auth",
-	entries.at(-1)?.customType === COMPACTION_MODEL_ENTRY_TYPE &&
-		entries.at(-1)?.data?.provider === "deepseek" &&
-		entries.at(-1)?.data?.thinkingLevel === "max" &&
+	"persists the selected model globally without adding session state",
+	globalStore.read()?.provider === "deepseek" &&
+		globalStore.read()?.id === "deepseek-v4-flash" &&
+		globalStore.read()?.thinkingLevel === "max" &&
+		entries.length === 0 &&
 		notices.at(-1)?.message === "Compaction model set to deepseek/deepseek-v4-flash max" &&
 		notices.at(-1)?.type === "info",
-	JSON.stringify({ entry: entries.at(-1), notice: notices.at(-1) }),
+	JSON.stringify({ global: globalStore.read(), entries, notice: notices.at(-1) }),
+);
+
+const restoredHandlers = new Map<string, Array<(event: any, ctx: any) => any>>();
+const restoredCommands = new Map<string, any>();
+compactionModelExtension(
+	{
+		registerCommand: (name: string, command: any) => restoredCommands.set(name, command),
+		on: (event: string, handler: (event: any, ctx: any) => any) => {
+			const list = restoredHandlers.get(event) ?? [];
+			list.push(handler);
+			restoredHandlers.set(event, list);
+		},
+	} as any,
+	globalStore,
+);
+await restoredHandlers.get("session_start")?.[0]?.(
+	{},
+	{
+		...context,
+		sessionManager: { getBranch: () => [] },
+	},
+);
+const restoredLevels = await restoredCommands
+	.get("compaction-model")
+	.getArgumentCompletions("deepseek/deepseek-v4-flash m");
+assert(
+	"restores the global selection in a new session",
+	restoredLevels?.some(
+		(item: any) => item.value.endsWith(" max") && item.description === "current",
+	) === true,
+	JSON.stringify(restoredLevels),
 );
 notices.length = 0;
 await command.handler("openai/gpt-4.1-mini", context);
 assert(
 	"defaults an implicit level to one supported by the selected model",
-	entries.at(-1)?.data?.id === "gpt-4.1-mini" && entries.at(-1)?.data?.thinkingLevel === "off",
-	JSON.stringify(entries.at(-1)),
+	globalStore.read()?.id === "gpt-4.1-mini" &&
+		globalStore.read()?.thinkingLevel === "off" &&
+		entries.length === 0,
+	JSON.stringify({ global: globalStore.read(), entries }),
 );
 await command.handler("clear", context);
 assert(
-	"persists clearing the configured model",
-	entries.at(-1)?.customType === COMPACTION_MODEL_ENTRY_TYPE &&
-		entries.at(-1)?.data?.clear === true &&
-		notices.at(-1)?.message === "Compaction model cleared. Using the active conversation model.",
-	JSON.stringify({ entry: entries.at(-1), notice: notices.at(-1) }),
+	"persists clearing the global configured model",
+	globalStore.read() === null &&
+		entries.length === 0 &&
+		notices.at(-1)?.message ===
+			"Compaction model cleared globally. Using the active conversation model.",
+	JSON.stringify({ global: globalStore.read(), entries, notice: notices.at(-1) }),
 );
 notices.length = 0;
 
@@ -334,3 +398,5 @@ assert(
 		staleCompletions?.some((item: any) => item.value === "openai-codex/gpt-5.6-sol"),
 	JSON.stringify(staleCompletions),
 );
+
+rmSync(globalStateDir, { recursive: true, force: true });

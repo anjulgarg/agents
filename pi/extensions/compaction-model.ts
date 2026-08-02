@@ -5,8 +5,12 @@ import {
 	type Model,
 	type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import {
 	compact as runCompaction,
+	getAgentDir,
 	SettingsManager,
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -14,6 +18,7 @@ import {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 export const COMPACTION_MODEL_ENTRY_TYPE = "compaction-model";
+export const GLOBAL_COMPACTION_MODEL_PATH = join(getAgentDir(), "state", "compaction-model.json");
 export const COMPACTION_MODEL_LEVELS: readonly ModelThinkingLevel[] = [
 	"off",
 	"minimal",
@@ -42,6 +47,50 @@ export interface ParsedCompactionModelCommand {
 	provider: string;
 	id: string;
 	thinkingLevel?: ModelThinkingLevel;
+}
+
+/** Global extension-owned persistence. `null` is an explicit global clear. */
+export interface CompactionModelStore {
+	read(): CompactionModelState | null | undefined;
+	write(state: CompactionModelState | null): void;
+}
+
+interface PersistedCompactionModel {
+	version: 1;
+	model: CompactionModelState | null;
+}
+
+export function createGlobalCompactionModelStore(
+	path = GLOBAL_COMPACTION_MODEL_PATH,
+): CompactionModelStore {
+	return {
+		read(): CompactionModelState | null | undefined {
+			try {
+				const persisted = JSON.parse(
+					readFileSync(path, "utf8"),
+				) as Partial<PersistedCompactionModel>;
+				if (persisted.version !== 1 || !("model" in persisted)) return undefined;
+				if (persisted.model === null) return null;
+				return isCompactionModelState(persisted.model) ? persisted.model : undefined;
+			} catch {
+				return undefined;
+			}
+		},
+		write(state: CompactionModelState | null): void {
+			mkdirSync(dirname(path), { recursive: true });
+			const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+			try {
+				writeFileSync(
+					temporary,
+					`${JSON.stringify({ version: 1, model: state } satisfies PersistedCompactionModel, null, 2)}\n`,
+					{ encoding: "utf8", mode: 0o600 },
+				);
+				renameSync(temporary, path);
+			} finally {
+				rmSync(temporary, { force: true });
+			}
+		},
+	};
 }
 
 function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
@@ -211,7 +260,10 @@ export function formatFallbackNotice(
 	return `Compaction model unavailable: ${requested}\nFalling back to ${fallbackText}`;
 }
 
-export default function compactionModelExtension(pi: ExtensionAPI): void {
+export default function compactionModelExtension(
+	pi: ExtensionAPI,
+	globalStore: CompactionModelStore = createGlobalCompactionModelStore(),
+): void {
 	let configured: CompactionModelState | undefined;
 	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	let availableModels: Model<Api>[] = [];
@@ -283,11 +335,20 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if ("clear" in parsed) {
+				try {
+					globalStore.write(null);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(`Could not save global compaction model: ${message}`, "error");
+					return;
+				}
 				configured = undefined;
 				lastFallbackKey = undefined;
 				lastCompactionModel = undefined;
-				pi.appendEntry(COMPACTION_MODEL_ENTRY_TYPE, { clear: true });
-				ctx.ui.notify("Compaction model cleared. Using the active conversation model.", "info");
+				ctx.ui.notify(
+					"Compaction model cleared globally. Using the active conversation model.",
+					"info",
+				);
 				return;
 			}
 
@@ -308,15 +369,20 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 			}
 			const thinkingLevel = clampThinkingLevel(model, requestedLevel ?? activeThinkingLevel(ctx));
 
-			configured = {
+			const nextConfigured: CompactionModelState = {
 				provider: parsed.provider,
 				id: parsed.id,
 				thinkingLevel,
 			};
+			try {
+				globalStore.write(nextConfigured);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Could not save global compaction model: ${message}`, "error");
+				return;
+			}
+			configured = nextConfigured;
 			lastFallbackKey = undefined;
-			// Persist only identifiers and the requested level. The model is resolved
-			// again when this session resumes and before each compaction.
-			pi.appendEntry(COMPACTION_MODEL_ENTRY_TYPE, configured);
 			ctx.ui.notify(
 				`Compaction model set to ${formatCompactionModel(model, thinkingLevel)}`,
 				"info",
@@ -326,9 +392,28 @@ export default function compactionModelExtension(pi: ExtensionAPI): void {
 
 	const restore = (ctx: ExtensionContext): void => {
 		refreshModels(ctx);
-		configured = restoreCompactionModelState(
-			ctx.sessionManager.getBranch() as SessionCustomEntry[],
-		);
+		let globalState: CompactionModelState | null | undefined;
+		try {
+			globalState = globalStore.read();
+		} catch {
+			globalState = undefined;
+		}
+
+		if (globalState !== undefined) {
+			configured = globalState ?? undefined;
+		} else {
+			// Migrate selections written by older versions of this extension.
+			configured = restoreCompactionModelState(
+				ctx.sessionManager.getBranch() as SessionCustomEntry[],
+			);
+			if (configured) {
+				try {
+					globalStore.write(configured);
+				} catch {
+					// Keep the legacy session fallback if global migration is unavailable.
+				}
+			}
+		}
 		lastFallbackKey = undefined;
 		lastCompactionModel = undefined;
 	};
