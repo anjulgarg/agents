@@ -1,9 +1,3 @@
-import {
-	clampThinkingLevel,
-	type Api,
-	type Model,
-	type ModelThinkingLevel,
-} from "@earendil-works/pi-ai";
 import type { Context as ModelContext, UserMessage } from "@earendil-works/pi-ai/compat";
 import type {
 	ExtensionAPI,
@@ -22,11 +16,12 @@ import {
 
 import { completeDirectRequest, type DirectCompleteFunction } from "./lib/direct-completion.ts";
 import {
-	activeThinkingLevel,
-	createGlobalCompactionModelStore,
-	type CompactionModelState,
-	type CompactionModelStore,
-} from "./compaction-model.ts";
+	createGlobalUtilityModelStore,
+	resolvePreferredModel,
+	type ModelPreferenceChoice,
+	type ModelPreferenceResolution,
+	type ModelPreferenceStore,
+} from "./model-preference.ts";
 import {
 	fullscreenOverlayOptions,
 	getContentWidth,
@@ -126,21 +121,12 @@ export interface DeterministicSummaryOptions {
 	unpushedAvailable?: boolean;
 }
 
-export interface SummaryModelChoice {
-	model: Model<Api>;
-	thinkingLevel: ModelThinkingLevel;
-	source: "configured" | "active";
-}
-
-export interface SummaryModelResolution {
-	configured?: CompactionModelState;
-	preferred?: SummaryModelChoice;
-	fallback?: SummaryModelChoice;
-}
+export type SummaryModelChoice = ModelPreferenceChoice;
+export type SummaryModelResolution = ModelPreferenceResolution;
 
 export interface ChangesExtensionOptions {
 	complete?: DirectCompleteFunction;
-	store?: CompactionModelStore;
+	store?: ModelPreferenceStore;
 }
 
 export interface GitExecOptions {
@@ -539,70 +525,16 @@ export function parseGeneratedSummary(
 	};
 }
 
-function sameModel(
-	left: Pick<Model<Api>, "provider" | "id">,
-	right: Pick<Model<Api>, "provider" | "id">,
-): boolean {
-	return left.provider === right.provider && left.id === right.id;
-}
-
-/** Resolve the global compaction model on every invocation, without changing session state. */
-export function resolvePreferredSummaryModel(
+/** Resolve the global utility model on every invocation, without changing session state. */
+export function resolvePreferredUtilityModel(
 	ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "thinkingLevel">,
-	store: CompactionModelStore = createGlobalCompactionModelStore(),
+	store: ModelPreferenceStore = createGlobalUtilityModelStore(),
 ): SummaryModelResolution {
-	let configured: CompactionModelState | undefined;
-	try {
-		const result = store.read();
-		if (result.status === "configured" && result.model) configured = result.model;
-	} catch {
-		configured = undefined;
-	}
-
-	const active = ctx.model as Model<Api> | undefined;
-	let activeLevel: ModelThinkingLevel = "off";
-	if (active) {
-		try {
-			activeLevel = activeThinkingLevel(ctx as ExtensionContext);
-		} catch {
-			activeLevel = "off";
-		}
-	}
-	const activeChoice = active
-		? { model: active, thinkingLevel: activeLevel, source: "active" as const }
-		: undefined;
-
-	if (configured) {
-		let configuredModel: Model<Api> | undefined;
-		try {
-			configuredModel = ctx.modelRegistry.find(configured.provider, configured.id);
-		} catch {
-			configuredModel = undefined;
-		}
-		if (configuredModel) {
-			let thinkingLevel = configured.thinkingLevel;
-			try {
-				thinkingLevel = clampThinkingLevel(configuredModel, configured.thinkingLevel);
-			} catch {
-				// Keep the persisted level if a custom model implementation cannot be inspected.
-			}
-			const preferred: SummaryModelChoice = {
-				model: configuredModel,
-				thinkingLevel,
-				source: "configured",
-			};
-			return {
-				configured,
-				preferred,
-				fallback:
-					activeChoice && !sameModel(preferred.model, activeChoice.model)
-						? activeChoice
-						: undefined,
-			};
-		}
-	}
-	return { configured, preferred: activeChoice };
+	return resolvePreferredModel(ctx, store);
 }
+
+/** @deprecated Use resolvePreferredUtilityModel. */
+export const resolvePreferredSummaryModel = resolvePreferredUtilityModel;
 
 interface GitState {
 	status: string;
@@ -942,7 +874,7 @@ async function generateSummary(
 	if (snapshot.files.length === 0) return deterministic;
 	const prompt = buildSummaryPrompt(snapshot);
 	if (!prompt) return deterministic;
-	const resolution = resolvePreferredSummaryModel(ctx, options.store);
+	const resolution = resolvePreferredUtilityModel(ctx, options.store);
 	const candidates = [resolution.preferred, resolution.fallback].filter(
 		(choice): choice is SummaryModelChoice => Boolean(choice),
 	);

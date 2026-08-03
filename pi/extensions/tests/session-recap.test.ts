@@ -256,13 +256,28 @@ let completeCalls = 0;
 let invalidResponse = false;
 let completeGate: Promise<void> | undefined;
 const completionInputs: Array<{ context: any; options: any }> = [];
+const selectedModels: any[] = [];
+const utilityModel = {
+	id: "utility-fast",
+	provider: "utility-provider",
+	name: "Utility Fast",
+	reasoning: false,
+	thinkingLevelMap: { off: "off" },
+};
+const utilityStore = {
+	read: () => ({
+		status: "configured",
+		model: { provider: utilityModel.provider, id: utilityModel.id, thinkingLevel: "off" },
+	}),
+} as any;
 const pi = {
 	registerCommand: (name: string, command: any) => commands.set(name, command),
 	registerTool: () => toolRegistrations++,
 	appendEntry: (type: string, data: RecapState) => appended.push({ type, data }),
 };
 
-const fakeComplete = async (_model: any, context: any, options: any) => {
+const fakeComplete = async (model: any, context: any, options: any) => {
+	selectedModels.push(model);
 	completeCalls++;
 	completionInputs.push({ context, options });
 	if (completeGate) await completeGate;
@@ -309,9 +324,13 @@ assert(
 	JSON.stringify({ customStreamCalls, stopReason: customResponse.stopReason }),
 );
 completionInputs.length = 0;
+selectedModels.length = 0;
 completeCalls = 0;
 
-sessionRecapExtension(pi as any, { complete: fakeComplete as any });
+sessionRecapExtension(pi as any, {
+	complete: fakeComplete as any,
+	store: utilityStore,
+});
 assert(
 	"registers only the recap command and no model-facing tool",
 	commands.size === 1 && commands.has("recap") && toolRegistrations === 0,
@@ -338,6 +357,8 @@ const ctx = {
 	sessionManager: { getBranch: () => branch },
 	modelRegistry: {
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: { test: "1" }, env: {} }),
+		find: (provider: string, id: string) =>
+			provider === utilityModel.provider && id === utilityModel.id ? utilityModel : undefined,
 		getRegisteredProviderConfig: () => undefined,
 	},
 	ui: {
@@ -394,8 +415,9 @@ releaseCompletion();
 await immediateRecap;
 completeGate = undefined;
 assert(
-	"direct generation sends filtered source without Pi tools",
+	"direct generation uses the configured utility model and sends filtered source without Pi tools",
 	completeCalls === 1 &&
+		selectedModels[0] === utilityModel &&
 		completionInputs[0].context.tools === undefined &&
 		completionInputs[0].context.messages.length === 1 &&
 		completionInputs[0].context.messages[0].content[0].text.includes("future_tool x2") &&

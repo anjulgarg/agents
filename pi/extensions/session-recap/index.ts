@@ -9,6 +9,11 @@ import {
 import { Markdown, matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
 import { completeDirectRequest, type DirectCompleteFunction } from "../lib/direct-completion.ts";
 import {
+	resolvePreferredUtilityModel,
+	type ModelPreferenceChoice,
+	type ModelPreferenceStore,
+} from "../model-preference.ts";
+import {
 	formatModelUsageLines,
 	fullscreenOverlayOptions,
 	getContentWidth,
@@ -43,6 +48,7 @@ Keep the complete recap under 450 words.`;
 
 export interface SessionRecapOptions {
 	complete?: DirectCompleteFunction;
+	store?: ModelPreferenceStore;
 }
 
 interface GenerationSuccess {
@@ -257,7 +263,6 @@ async function runRecap(
 	// Capture the invocation boundary before any auth, model, or UI await. The
 	// active parent may keep appending entries while this independent request runs.
 	const branch = [...ctx.sessionManager.getBranch()];
-	const model = ctx.model;
 	const preparation = prepareRecap(branch);
 	if (preparation.previous && preparation.events.length === 0) {
 		await showRecap(ctx, preparation.previous.recap, preparation.previous.usage, true);
@@ -267,59 +272,80 @@ async function runRecap(
 		ctx.ui.notify("No session activity to recap", "warning");
 		return;
 	}
-	if (!model) {
+	const resolution = resolvePreferredUtilityModel(ctx, options.store);
+	const candidates = [resolution.preferred, resolution.fallback].filter(
+		(choice): choice is ModelPreferenceChoice => Boolean(choice),
+	);
+	if (candidates.length === 0) {
 		ctx.ui.notify("No model selected", "error");
 		return;
 	}
 
 	const source = buildRecapInput(preparation);
 	const result = await ctx.ui.custom<GenerationResult>((tui, theme, _keybindings, done) => {
-		const requestModel = `${model.provider}/${model.id}`;
-		const loader = new RecapLoadingView(tui, theme, requestModel, done, "off");
+		const firstCandidate = candidates[0]!;
+		const requestModel = `${firstCandidate.model.provider}/${firstCandidate.model.id}`;
+		const loader = new RecapLoadingView(
+			tui,
+			theme,
+			requestModel,
+			done,
+			firstCandidate.thinkingLevel,
+		);
 
 		void (async () => {
-			try {
-				const message: UserMessage = {
-					role: "user",
-					content: [{ type: "text", text: source }],
-					timestamp: Date.now(),
-				};
-				const response = await completeDirectRequest(
-					ctx.modelRegistry,
-					model,
-					{ systemPrompt: SYSTEM_PROMPT, messages: [message] },
-					{
-						signal: loader.controller.signal,
-						maxTokens: 900,
-					},
-					options.complete,
-				);
-				if (response.stopReason === "aborted") {
-					done(null);
+			const message: UserMessage = {
+				role: "user",
+				content: [{ type: "text", text: source }],
+				timestamp: Date.now(),
+			};
+			for (const [index, candidate] of candidates.entries()) {
+				try {
+					const response = await completeDirectRequest(
+						ctx.modelRegistry,
+						candidate.model,
+						{ systemPrompt: SYSTEM_PROMPT, messages: [message] },
+						{
+							signal: loader.controller.signal,
+							maxTokens: 900,
+							reasoning: candidate.thinkingLevel === "off" ? undefined : candidate.thinkingLevel,
+						},
+						options.complete,
+					);
+					if (response.stopReason === "aborted") {
+						done(null);
+						return;
+					}
+					if (response.stopReason === "error") {
+						throw new Error(response.errorMessage ?? "Recap generation failed");
+					}
+					const recap = responseText(response.content);
+					if (!isValidRecapMarkdown(recap)) {
+						throw new Error("Model returned an invalid recap; nothing was saved");
+					}
+					done({
+						recap,
+						usage: {
+							input: response.usage.input,
+							output: response.usage.output,
+							cacheRead: response.usage.cacheRead,
+							cacheWrite: response.usage.cacheWrite,
+							cost: response.usage.cost.total,
+							model: `${response.provider}/${response.model}`,
+							effort: candidate.thinkingLevel,
+						},
+					});
 					return;
+				} catch (error) {
+					if (loader.controller.signal.aborted) {
+						done(null);
+						return;
+					}
+					if (index === candidates.length - 1) {
+						done({ error: errorMessage(error) });
+						return;
+					}
 				}
-				if (response.stopReason === "error") {
-					throw new Error(response.errorMessage ?? "Recap generation failed");
-				}
-				const recap = responseText(response.content);
-				if (!isValidRecapMarkdown(recap)) {
-					throw new Error("Model returned an invalid recap; nothing was saved");
-				}
-				done({
-					recap,
-					usage: {
-						input: response.usage.input,
-						output: response.usage.output,
-						cacheRead: response.usage.cacheRead,
-						cacheWrite: response.usage.cacheWrite,
-						cost: response.usage.cost.total,
-						model: `${response.provider}/${response.model}`,
-						effort: "off",
-					},
-				});
-			} catch (error) {
-				if (loader.controller.signal.aborted) done(null);
-				else done({ error: errorMessage(error) });
 			}
 		})();
 		return loader;

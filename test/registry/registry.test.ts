@@ -46,6 +46,7 @@ const extensionIds = [
 	"pi-extension:todo",
 	"pi-extension:token-speed",
 	"pi-extension:tool-loader",
+	"pi-extension:utility-model",
 	"pi-extension:worktree",
 ];
 const skillIds = ["skill:foreman-plan", "skill:foreman-review", "skill:foreman-worker"];
@@ -82,7 +83,7 @@ describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
 		expect(components.length).toBe(
-			34 + (localPiConfigFiles.models ? 1 : 0) + 1 + (localPiConfigFiles.mcp ? 2 : 0) + 5,
+			35 + (localPiConfigFiles.models ? 1 : 0) + 1 + (localPiConfigFiles.mcp ? 2 : 0) + 5,
 		);
 		expect(components.filter(({ category }) => category === "skill").map(({ id }) => id)).toEqual(
 			skillIds,
@@ -90,7 +91,7 @@ describe("component registry", () => {
 		expect(
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
-		expect(components.slice(35).map(({ id }) => id)).toEqual([
+		expect(components.slice(36).map(({ id }) => id)).toEqual([
 			...(localPiConfigFiles.models ? ["pi-config:models"] : []),
 			"pi-config:keybindings",
 			...(localPiConfigFiles.mcp ? ["pi-package:mcp-adapter", "pi-config:mcp-sentry"] : []),

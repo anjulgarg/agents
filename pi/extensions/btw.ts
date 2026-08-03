@@ -16,6 +16,11 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import { completeDirectRequest, type DirectCompleteFunction } from "./lib/direct-completion.ts";
+import {
+	resolvePreferredUtilityModel,
+	type ModelPreferenceChoice,
+	type ModelPreferenceStore,
+} from "./model-preference.ts";
 import { boundSessionEvidence, extractSessionEvidence } from "./lib/session-evidence.ts";
 import {
 	fillLine,
@@ -92,6 +97,7 @@ export interface BtwChatTurn {
 
 export interface AnswerBtwOptions {
 	complete?: DirectCompleteFunction;
+	store?: ModelPreferenceStore;
 }
 
 function entryData(entry: SessionEntry): { customType?: string; data?: unknown } | undefined {
@@ -247,7 +253,11 @@ export async function answerBtw(
 	signal: AbortSignal,
 	options: AnswerBtwOptions = {},
 ): Promise<BtwAnswer> {
-	if (!ctx.model) throw new Error("No model selected");
+	const resolution = resolvePreferredUtilityModel(ctx, options.store);
+	const candidates = [resolution.preferred, resolution.fallback].filter(
+		(choice): choice is ModelPreferenceChoice => Boolean(choice),
+	);
+	if (candidates.length === 0) throw new Error("No model selected");
 
 	const snapshotLeafId = ctx.sessionManager.getLeafId();
 	const branch = [...ctx.sessionManager.getBranch()];
@@ -266,39 +276,52 @@ export async function answerBtw(
 		timestamp: Date.now(),
 	};
 
-	const response = await completeDirectRequest(
-		ctx.modelRegistry,
-		ctx.model,
-		{
-			systemPrompt: BTW_SYSTEM_PROMPT,
-			messages: [userMessage],
-		},
-		{
-			signal,
-			maxTokens: MAX_OUTPUT_TOKENS,
-		},
-		options.complete,
-	);
+	let lastError: unknown;
+	for (const [index, candidate] of candidates.entries()) {
+		try {
+			const response = await completeDirectRequest(
+				ctx.modelRegistry,
+				candidate.model,
+				{
+					systemPrompt: BTW_SYSTEM_PROMPT,
+					messages: [userMessage],
+				},
+				{
+					signal,
+					maxTokens: MAX_OUTPUT_TOKENS,
+					reasoning: candidate.thinkingLevel === "off" ? undefined : candidate.thinkingLevel,
+				},
+				options.complete,
+			);
 
-	if (response.stopReason === "aborted") throw new Error("Cancelled");
-	if (response.stopReason === "error") {
-		throw new Error(response.errorMessage ?? "The BTW model request failed");
+			if (response.stopReason === "aborted") throw new Error("Cancelled");
+			if (response.stopReason === "error") {
+				throw new Error(response.errorMessage ?? "The BTW model request failed");
+			}
+			const text = responseText(response);
+			if (!text) throw new Error("The BTW model returned no text");
+			return {
+				text,
+				usage: {
+					input: response.usage.input,
+					cacheRead: response.usage.cacheRead,
+					cacheWrite: response.usage.cacheWrite,
+					output: response.usage.output,
+					cost: response.usage.cost.total,
+					model: `${response.provider}/${response.model}`,
+					effort: candidate.thinkingLevel,
+				},
+				snapshotLeafId,
+			};
+		} catch (error) {
+			if (signal.aborted || (error instanceof Error && error.message === "Cancelled")) {
+				throw error;
+			}
+			lastError = error;
+			if (index === candidates.length - 1) throw error;
+		}
 	}
-	const text = responseText(response);
-	if (!text) throw new Error("The BTW model returned no text");
-	return {
-		text,
-		usage: {
-			input: response.usage.input,
-			cacheRead: response.usage.cacheRead,
-			cacheWrite: response.usage.cacheWrite,
-			output: response.usage.output,
-			cost: response.usage.cost.total,
-			model: `${response.provider}/${response.model}`,
-			effort: "off",
-		},
-		snapshotLeafId,
-	};
+	throw lastError instanceof Error ? lastError : new Error("The BTW model request failed");
 }
 
 export function formatBtwUsage(usage: BtwUsage): string {
@@ -625,8 +648,16 @@ export default function btwExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
+			const resolution = resolvePreferredUtilityModel(ctx);
+			const requestModel = resolution.preferred
+				? `${resolution.preferred.model.provider}/${resolution.preferred.model.id}`
+				: undefined;
+			if (!resolution.preferred) {
+				ctx.ui.notify("No model selected", "error");
+				return;
+			}
+
 			await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-				const requestModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 				let settled = false;
 				const finish = () => {
 					if (settled) return;

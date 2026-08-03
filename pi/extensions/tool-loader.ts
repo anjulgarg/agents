@@ -47,6 +47,7 @@ interface LoadToolsOutcome {
 }
 
 const USAGE = `Usage: /${LOAD_TOOLS_COMMAND} <${CAPABILITIES.join("|")}> [...]`;
+const STARTUP_RESET_DELAYS_MS = [25, 100, 250, 500, 1000, 2000] as const;
 const LoadToolsParams = Type.Object({
 	capability: Type.Optional(
 		StringEnum(CAPABILITIES, {
@@ -183,8 +184,29 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 	const groupTracker = new SoftGroupTracker();
 	bindSoftGroupTracker(pi as any, groupTracker, [LOAD_TOOLS_NAME]);
 	let sessionResetPending = false;
+	let startupResetTimer: ReturnType<typeof setTimeout> | undefined;
+	let startupResetIndex = 0;
+
+	const stopStartupReset = (): void => {
+		if (startupResetTimer !== undefined) clearTimeout(startupResetTimer);
+		startupResetTimer = undefined;
+	};
+
+	const scheduleStartupReset = (): void => {
+		const delay = STARTUP_RESET_DELAYS_MS[startupResetIndex++];
+		if (delay === undefined || !sessionResetPending) return;
+		startupResetTimer = setTimeout(() => {
+			startupResetTimer = undefined;
+			if (!sessionResetPending) return;
+			resetOptionalTools(pi);
+			scheduleStartupReset();
+		}, delay);
+		(startupResetTimer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+	};
+
 	const activateCapabilities = (capabilities: readonly Capability[]): LoadToolsOutcome => {
 		sessionResetPending = false;
+		stopStartupReset();
 		return loadCapabilities(pi, capabilities);
 	};
 
@@ -246,8 +268,11 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", () => {
+		stopStartupReset();
+		startupResetIndex = 0;
 		resetOptionalTools(pi);
 		sessionResetPending = true;
+		scheduleStartupReset();
 	});
 
 	// Packages loaded after this extension can register or reactivate optional roots
@@ -256,7 +281,13 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", () => {
 		if (!sessionResetPending) return;
 		sessionResetPending = false;
+		stopStartupReset();
 		resetOptionalTools(pi);
+	});
+
+	pi.on("session_shutdown", () => {
+		sessionResetPending = false;
+		stopStartupReset();
 	});
 
 	pi.registerCommand(LOAD_TOOLS_COMMAND, {

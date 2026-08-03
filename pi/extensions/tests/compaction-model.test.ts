@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
 	COMPACTION_DURATION_ENTRY_TYPE,
+	COMPACTION_NOTICE_ENTRY_TYPE,
 	COMPACTION_MODEL_ENTRY_TYPE,
 	COMPACTION_TIMER_STATUS_KEY,
 	activeThinkingLevel,
@@ -179,6 +180,7 @@ const commands = new Map<string, any>();
 const entries: any[] = [];
 const notices: Array<{ message: string; type?: string }> = [];
 let durationRenderer: any;
+let noticeRenderer: any;
 let available = [...models];
 const authByProvider: Record<string, boolean> = {
 	deepseek: true,
@@ -296,6 +298,7 @@ compactionModelExtension(
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerEntryRenderer: (type: string, renderer: any) => {
 			if (type === COMPACTION_DURATION_ENTRY_TYPE) durationRenderer = renderer;
+			if (type === COMPACTION_NOTICE_ENTRY_TYPE) noticeRenderer = renderer;
 		},
 		on: (event: string, handler: (event: any, ctx: any) => any) => {
 			const list = handlers.get(event) ?? [];
@@ -417,7 +420,10 @@ for (const reason of ["manual", "threshold", "overflow"] as const) {
 	const result = await handlers.get("session_before_compact")?.[0]?.(compactEvent(reason), context);
 	const timerClearedAfterRequest =
 		timerCallback === undefined && statusCalls.at(-1)?.text === undefined;
-	await handlers.get("session_compact")?.[0]?.({}, context);
+	await handlers.get("session_compact")?.[0]?.(
+		{ reason, compactionEntry: { tokensBefore: preparation.tokensBefore } },
+		context,
+	);
 	assert(
 		`routes ${reason} compaction through the configured model and cleans up its timer`,
 		result?.compaction?.summary === "structured summary" &&
@@ -430,22 +436,56 @@ for (const reason of ["manual", "threshold", "overflow"] as const) {
 	);
 }
 onStreamResult = undefined;
-const durationEntries = entries.splice(0);
+const compactionEntries = entries.splice(0);
+const noticeEntries = compactionEntries.filter(
+	(entry) => entry.customType === COMPACTION_NOTICE_ENTRY_TYPE,
+);
+const durationEntries = compactionEntries.filter(
+	(entry) => entry.customType === COMPACTION_DURATION_ENTRY_TYPE,
+);
+const renderedNotice = noticeRenderer?.(
+	{
+		data: {
+			reason: "threshold",
+			tokensBefore: 239_000,
+			model: "openai-codex/gpt-5.6-sol high",
+		},
+	},
+	{},
+	{ fg: (_color: string, text: string) => text },
+);
 const renderedDuration = durationRenderer?.(
 	{ data: { durationMs: 2_000 } },
 	{},
 	{ fg: (_color: string, text: string) => text },
 );
 assert(
-	"persists final compaction durations as permanent thread entries",
-	durationEntries.length === 3 &&
+	"persists visible compaction receipts and final durations as permanent thread entries",
+	noticeEntries.length === 3 &&
+		noticeEntries.every(
+			(entry) =>
+				["manual", "threshold", "overflow"].includes(entry.data?.reason) &&
+				entry.data?.model === "deepseek/deepseek-v4-flash high",
+		) &&
+		durationEntries.length === 3 &&
 		durationEntries.every(
 			(entry) =>
 				entry.customType === COMPACTION_DURATION_ENTRY_TYPE && entry.data?.durationMs === 2_000,
 		) &&
+		typeof noticeRenderer === "function" &&
+		renderedNotice
+			?.render(200)
+			.join(" ")
+			.includes(
+				"Context compacted · threshold · ≈239k tokens · using openai-codex/gpt-5.6-sol high",
+			) &&
 		typeof durationRenderer === "function" &&
 		renderedDuration?.render(80).join(" ").includes("Compaction took 2.0s"),
-	JSON.stringify({ durationEntries, durationRenderer: typeof durationRenderer }),
+	JSON.stringify({
+		compactionEntries,
+		noticeRenderer: typeof noticeRenderer,
+		durationRenderer: typeof durationRenderer,
+	}),
 );
 assert(
 	"notifies with the configured model and final compaction duration",

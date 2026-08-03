@@ -1,6 +1,8 @@
-import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
+import type { UserMessage } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import { completeDirectRequest } from "../lib/direct-completion.ts";
+import { resolvePreferredUtilityModel, type ModelPreferenceChoice } from "../model-preference.ts";
 import { extractTitleText, normalizeSessionTitle } from "./core.ts";
 
 export { extractTitleText, normalizeSessionTitle } from "./core.ts";
@@ -44,32 +46,52 @@ export default function (pi: ExtensionAPI) {
 	let namingAbort: AbortController | undefined;
 
 	pi.on("before_agent_start", (event, ctx) => {
-		if (pi.getSessionName() || !ctx.model || namingInFlight) return;
+		if (pi.getSessionName() || namingInFlight) return;
+		const resolution = resolvePreferredUtilityModel(ctx);
+		const candidates = [resolution.preferred, resolution.fallback].filter(
+			(choice): choice is ModelPreferenceChoice => Boolean(choice),
+		);
+		if (candidates.length === 0) return;
 		namingInFlight = true;
 		namingAbort = new AbortController();
 		ctx.ui.setStatus("session-title", "Naming session…");
 
 		void (async () => {
 			try {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
-				if (!auth.ok || !auth.apiKey) return;
 				const message: UserMessage = {
 					role: "user",
 					content: [{ type: "text", text: buildConversationContext(ctx, event.prompt) }],
 					timestamp: Date.now(),
 				};
-				const response = await complete(
-					ctx.model!,
-					{ systemPrompt: SYSTEM_PROMPT, messages: [message] },
-					{
-						apiKey: auth.apiKey,
-						headers: auth.headers,
-						env: auth.env,
-						signal: namingAbort?.signal,
-					},
-				);
-				const title = normalizeSessionTitle(extractTitleText(response.content));
-				if (title && !pi.getSessionName()) pi.setSessionName(title);
+				let lastError: unknown;
+				for (const [index, candidate] of candidates.entries()) {
+					try {
+						const response = await completeDirectRequest(
+							ctx.modelRegistry,
+							candidate.model,
+							{ systemPrompt: SYSTEM_PROMPT, messages: [message] },
+							{
+								reasoning: candidate.thinkingLevel === "off" ? undefined : candidate.thinkingLevel,
+								signal: namingAbort?.signal,
+							},
+						);
+						if (response.stopReason === "aborted") return;
+						if (response.stopReason === "error") {
+							throw new Error(response.errorMessage ?? "Session title generation failed");
+						}
+						const title = normalizeSessionTitle(extractTitleText(response.content));
+						if (title && !pi.getSessionName()) {
+							pi.setSessionName(title);
+							return;
+						}
+						throw new Error("Model returned no session title");
+					} catch (error) {
+						if (namingAbort?.signal.aborted) return;
+						lastError = error;
+						if (index === candidates.length - 1) throw error;
+					}
+				}
+				if (lastError) throw lastError;
 			} catch (error) {
 				if (!namingAbort?.signal.aborted) {
 					const message = error instanceof Error ? error.message : String(error);

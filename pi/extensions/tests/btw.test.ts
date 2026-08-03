@@ -374,6 +374,7 @@ async function testAnswerUsesDedicatedPromptWithoutToolsOrMutation(): Promise<vo
 	let captured: { context?: any; options?: any } = {};
 	let mutations = 0;
 	let evidenceSnapshots: string[] = [];
+	const selectedModels: unknown[] = [];
 	const model = {
 		id: "test-model",
 		name: "Test",
@@ -383,6 +384,18 @@ async function testAnswerUsesDedicatedPromptWithoutToolsOrMutation(): Promise<vo
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1 },
+		contextWindow: 100_000,
+		maxTokens: 4_096,
+	};
+	const utilityModel = {
+		id: "utility-fast",
+		name: "Utility Fast",
+		api: "openai-responses",
+		provider: "utility",
+		baseUrl: "https://example.test",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0.1, output: 0.1, cacheRead: 0.01, cacheWrite: 0.1 },
 		contextWindow: 100_000,
 		maxTokens: 4_096,
 	};
@@ -404,6 +417,8 @@ async function testAnswerUsesDedicatedPromptWithoutToolsOrMutation(): Promise<vo
 				headers: { authorization: "x" },
 				env: { TEST: "1" },
 			}),
+			find: (provider: string, id: string) =>
+				provider === utilityModel.provider && id === utilityModel.id ? utilityModel : undefined,
 			getRegisteredProviderConfig: () => undefined,
 		},
 		sessionManager: {
@@ -423,7 +438,8 @@ async function testAnswerUsesDedicatedPromptWithoutToolsOrMutation(): Promise<vo
 		},
 	};
 
-	const completeFn = async (_model: unknown, context: unknown, options: unknown) => {
+	const completeFn = async (requestModel: unknown, context: unknown, options: unknown) => {
+		selectedModels.push(requestModel);
 		captured = { context, options };
 		const prompt = JSON.stringify(context);
 		evidenceSnapshots.push(prompt);
@@ -497,6 +513,25 @@ async function testAnswerUsesDedicatedPromptWithoutToolsOrMutation(): Promise<vo
 			formatBtwUsage(second.usage).includes("Cache hit"),
 		JSON.stringify({ evidenceSnapshots, second }),
 	);
+
+	const utilityStore = {
+		read: () => ({
+			status: "configured",
+			model: { provider: utilityModel.provider, id: utilityModel.id, thinkingLevel: "off" },
+		}),
+	} as any;
+	await answerBtw(
+		ctx as never,
+		"Use the configured utility model",
+		[],
+		new AbortController().signal,
+		{ complete: completeFn as never, store: utilityStore },
+	);
+	assert(
+		"BTW uses the configured utility model",
+		selectedModels.at(-1) === utilityModel,
+		JSON.stringify({ selectedModels }),
+	);
 }
 
 async function testCancellationCloseAndBoundedRendering(): Promise<void> {
@@ -542,7 +577,7 @@ async function testCancellationCloseAndBoundedRendering(): Promise<void> {
 			closed = true;
 		},
 		"openai/test-model",
-		(async (_model, _context, options: any) => {
+		(async (_model: any, _context: any, options: any) => {
 			await new Promise((resolve, reject) => {
 				resolveAnswer = resolve;
 				options.signal?.addEventListener("abort", () => reject(new Error("Cancelled")), {

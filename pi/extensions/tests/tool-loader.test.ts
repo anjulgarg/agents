@@ -126,6 +126,18 @@ assert(
 	latePackage.activeTools.join(","),
 );
 
+const asyncLatePackage = createHarness();
+emit(asyncLatePackage, "session_start");
+asyncLatePackage.activeTools = [...asyncLatePackage.activeTools, "mcp"];
+await new Promise((resolve) => setTimeout(resolve, 40));
+assert(
+	"bounded startup synchronization removes roots reactivated after session_start",
+	!CAPABILITIES.some((name) => asyncLatePackage.activeTools.includes(name)) &&
+		asyncLatePackage.activeTools.includes(LOAD_TOOLS_NAME),
+	asyncLatePackage.activeTools.join(","),
+);
+emit(asyncLatePackage, "session_shutdown");
+
 const mcp = fresh.tools.get(LOAD_TOOLS_NAME);
 const loaded = await mcp.execute("load-1", { capability: "mcp" });
 assert(
@@ -300,6 +312,7 @@ assert(
 
 const allCapabilities = createHarness();
 emit(allCapabilities, "session_start");
+emit(allCapabilities, "before_agent_start");
 const statuses = [] as string[];
 for (const capability of CAPABILITIES) {
 	const result = loadCapability(allCapabilities.pi, capability);

@@ -96,7 +96,7 @@ describe("transactional install", () => {
 			(entry: any) => typeof entry === "object" && entry.source === sourceRoot,
 		);
 		expect(local.skills).toEqual([]);
-		expect(local.extensions).toHaveLength(32);
+		expect(local.extensions).toHaveLength(33);
 		expect(
 			local.extensions.every(
 				(path: string) => path.startsWith("+pi/extensions/") && !path.includes("test"),

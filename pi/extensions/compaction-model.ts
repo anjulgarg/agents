@@ -5,8 +5,7 @@ import {
 	type Model,
 	type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import {
 	compact as runCompaction,
@@ -15,24 +14,35 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
+
+import {
+	activeModelThinkingLevel,
+	createModelPreferenceStore,
+	formatModelPreference,
+	isModelPreferenceState,
+	modelPreferenceCompletions,
+	MODEL_PREFERENCE_LEVELS,
+	parseModelPreferenceCommand,
+	type ModelPreferenceState,
+	type ModelPreferenceStore,
+	type ModelPreferenceStoreReadResult,
+	type ParsedModelPreferenceCommand,
+} from "./model-preference.ts";
 
 export const COMPACTION_MODEL_ENTRY_TYPE = "compaction-model";
 export const GLOBAL_COMPACTION_MODEL_PATH = join(getAgentDir(), "state", "compaction-model.json");
-export const COMPACTION_MODEL_LEVELS: readonly ModelThinkingLevel[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-];
+export const COMPACTION_MODEL_LEVELS = MODEL_PREFERENCE_LEVELS;
 export const COMPACTION_TIMER_STATUS_KEY = "compaction-timer";
 export const COMPACTION_TIMER_INTERVAL_MS = 250;
 export const COMPACTION_DURATION_ENTRY_TYPE = "compaction-duration";
+export const COMPACTION_NOTICE_ENTRY_TYPE = "compaction-notice";
 
-const MAX_MODEL_COMPLETIONS = 100;
+export interface CompactionNoticeEntry {
+	readonly reason: string;
+	readonly tokensBefore?: number;
+	readonly model?: string;
+}
 
 type CompactionTimerHandle = ReturnType<typeof setInterval>;
 
@@ -58,100 +68,18 @@ type SessionCustomEntry = {
 	data?: unknown;
 };
 
-export interface CompactionModelState {
-	provider: string;
-	id: string;
-	thinkingLevel: ModelThinkingLevel;
-}
-
-export interface ParsedCompactionModelCommand {
-	provider: string;
-	id: string;
-	thinkingLevel?: ModelThinkingLevel;
-}
-
-/** Global extension-owned persistence. `null` is an explicit global clear. */
-export type CompactionModelStoreReadResult =
-	| { status: "configured"; model: CompactionModelState | null }
-	| { status: "missing" }
-	| { status: "invalid" };
-
-export interface CompactionModelStore {
-	read(): CompactionModelStoreReadResult;
-	write(state: CompactionModelState | null): void;
-}
-
-interface PersistedCompactionModel {
-	version: 1;
-	model: CompactionModelState | null;
-}
-
-function isFileNotFoundError(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as { code?: unknown }).code === "ENOENT"
-	);
-}
+export type CompactionModelState = ModelPreferenceState;
+export type ParsedCompactionModelCommand = ParsedModelPreferenceCommand;
+export type CompactionModelStoreReadResult = ModelPreferenceStoreReadResult;
+export type CompactionModelStore = ModelPreferenceStore;
 
 export function createGlobalCompactionModelStore(
 	path = GLOBAL_COMPACTION_MODEL_PATH,
 ): CompactionModelStore {
-	return {
-		read(): CompactionModelStoreReadResult {
-			let source: string;
-			try {
-				source = readFileSync(path, "utf8");
-			} catch (error) {
-				return isFileNotFoundError(error) ? { status: "missing" } : { status: "invalid" };
-			}
-
-			try {
-				const persisted = JSON.parse(source) as Partial<PersistedCompactionModel>;
-				if (persisted.version !== 1 || !("model" in persisted)) return { status: "invalid" };
-				if (persisted.model === null) return { status: "configured", model: null };
-				return isCompactionModelState(persisted.model)
-					? { status: "configured", model: persisted.model }
-					: { status: "invalid" };
-			} catch {
-				return { status: "invalid" };
-			}
-		},
-		write(state: CompactionModelState | null): void {
-			mkdirSync(dirname(path), { recursive: true });
-			const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-			try {
-				writeFileSync(
-					temporary,
-					`${JSON.stringify({ version: 1, model: state } satisfies PersistedCompactionModel, null, 2)}\n`,
-					{ encoding: "utf8", mode: 0o600 },
-				);
-				renameSync(temporary, path);
-			} finally {
-				rmSync(temporary, { force: true });
-			}
-		},
-	};
+	return createModelPreferenceStore(path);
 }
 
-function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
-	return (
-		typeof value === "string" && (COMPACTION_MODEL_LEVELS as readonly string[]).includes(value)
-	);
-}
-
-export function isCompactionModelState(value: unknown): value is CompactionModelState {
-	if (!value || typeof value !== "object") return false;
-	const state = value as Partial<CompactionModelState>;
-	return (
-		typeof state.provider === "string" &&
-		state.provider.length > 0 &&
-		typeof state.id === "string" &&
-		state.id.length > 0 &&
-		isThinkingLevel(state.thinkingLevel)
-	);
-}
+export const isCompactionModelState = isModelPreferenceState;
 
 export function restoreCompactionModelState(
 	entries: readonly SessionCustomEntry[],
@@ -167,112 +95,10 @@ export function restoreCompactionModelState(
 	return undefined;
 }
 
-export function parseCompactionModelCommand(
-	args: string,
-): ParsedCompactionModelCommand | { clear: true } | undefined {
-	const tokens = args.trim().split(/\s+/).filter(Boolean);
-	if (tokens.length === 0) return undefined;
-	if (tokens[0]?.toLowerCase() === "clear") {
-		return tokens.length === 1 ? { clear: true } : undefined;
-	}
-	if (tokens.length > 2) return undefined;
-
-	const reference = tokens[0]!;
-	const separator = reference.indexOf("/");
-	if (separator <= 0 || separator === reference.length - 1) return undefined;
-
-	const thinkingLevel = tokens[1]?.toLowerCase();
-	if (thinkingLevel !== undefined && !isThinkingLevel(thinkingLevel)) return undefined;
-	return {
-		provider: reference.slice(0, separator),
-		id: reference.slice(separator + 1),
-		...(thinkingLevel ? { thinkingLevel } : {}),
-	};
-}
-
-export function formatCompactionModel(
-	model: Pick<Model<Api>, "provider" | "id">,
-	thinkingLevel: ModelThinkingLevel,
-): string {
-	return `${model.provider}/${model.id} ${thinkingLevel}`;
-}
-
-function modelReference(model: Pick<Model<Api>, "provider" | "id">): string {
-	return `${model.provider}/${model.id}`;
-}
-
-function modelFromReference(
-	models: readonly Model<Api>[],
-	reference: string,
-): Model<Api> | undefined {
-	return models.find((model) => modelReference(model) === reference);
-}
-
-export function modelCompletions(
-	models: readonly Model<Api>[],
-	prefix: string,
-	selected: CompactionModelState | undefined,
-): AutocompleteItem[] | null {
-	const hasSecondToken = /\s/.test(prefix);
-	const tokens = prefix.trim().split(/\s+/).filter(Boolean);
-	if (hasSecondToken) {
-		const reference = tokens[0];
-		const model = reference ? modelFromReference(models, reference) : undefined;
-		if (!model) return null;
-		const levelPrefix = tokens.slice(1).join(" ").toLowerCase();
-		const levels = getSupportedThinkingLevels(model).filter((level) =>
-			level.startsWith(levelPrefix),
-		);
-		if (levels.length === 0) return null;
-		return levels.map((level) => ({
-			value: `${reference} ${level}`,
-			label: level,
-			description:
-				selected?.provider === model.provider &&
-				selected.id === model.id &&
-				selected.thinkingLevel === level
-					? "current"
-					: undefined,
-		}));
-	}
-
-	const query = prefix.trim().toLowerCase();
-	const sortedModels = [...models].sort((left, right) =>
-		modelReference(left).localeCompare(modelReference(right)),
-	);
-	const items = sortedModels
-		.filter((model) => !query || modelReference(model).toLowerCase().includes(query))
-		.slice(0, MAX_MODEL_COMPLETIONS)
-		.map((model) => {
-			const reference = modelReference(model);
-			const isCurrent = selected?.provider === model.provider && selected.id === model.id;
-			return {
-				value: reference,
-				label: reference,
-				description:
-					[
-						model.name !== model.id ? model.name : undefined,
-						isCurrent ? `current · ${selected.thinkingLevel}` : undefined,
-					]
-						.filter(Boolean)
-						.join(" · ") || undefined,
-			};
-		});
-
-	if (!query || "clear".startsWith(query)) {
-		items.push({
-			value: "clear",
-			label: "clear",
-			description: "Use the active conversation model",
-		});
-	}
-	return items.length > 0 ? items : null;
-}
-
-export function activeThinkingLevel(ctx: ExtensionContext): ModelThinkingLevel {
-	if (!ctx.model) return "off";
-	return clampThinkingLevel(ctx.model, ctx.thinkingLevel ?? "off");
-}
+export const parseCompactionModelCommand = parseModelPreferenceCommand;
+export const formatCompactionModel = formatModelPreference;
+export const modelCompletions = modelPreferenceCompletions;
+export const activeThinkingLevel = activeModelThinkingLevel;
 
 function retrySettings(
 	ctx: ExtensionContext,
@@ -349,6 +175,24 @@ export default function compactionModelExtension(
 	let lastCompactionModel: CompactionModelState | undefined;
 	let lastCompactionDuration: number | undefined;
 
+	pi.registerEntryRenderer<CompactionNoticeEntry>(
+		COMPACTION_NOTICE_ENTRY_TYPE,
+		(entry, _options, theme) => {
+			const reason = entry.data?.reason;
+			if (typeof reason !== "string") return undefined;
+			const tokensBefore = entry.data?.tokensBefore;
+			const tokenText =
+				typeof tokensBefore === "number" && Number.isFinite(tokensBefore)
+					? ` · ≈${Math.round(tokensBefore / 1_000)}k tokens`
+					: "";
+			const modelText = typeof entry.data?.model === "string" ? ` · using ${entry.data.model}` : "";
+			return new Text(
+				theme.fg("muted", `Context compacted · ${reason}${tokenText}${modelText}`),
+				1,
+				0,
+			);
+		},
+	);
 	pi.registerEntryRenderer<CompactionDurationEntry>(
 		COMPACTION_DURATION_ENTRY_TYPE,
 		(entry, _options, theme) => {
@@ -393,7 +237,7 @@ export default function compactionModelExtension(
 		const fallback = ctx.model;
 		const fallbackThinkingLevel = activeThinkingLevel(ctx);
 		const key = `${configured.provider}/${configured.id} ${configured.thinkingLevel}|${
-			fallback ? modelReference(fallback) : "none"
+			fallback ? `${fallback.provider}/${fallback.id}` : "none"
 		}|${fallbackThinkingLevel}`;
 		if (key === lastFallbackKey) return;
 		lastFallbackKey = key;
@@ -602,9 +446,15 @@ export default function compactionModelExtension(
 		}
 	});
 
-	pi.on("session_compact", (_event, ctx) => {
+	pi.on("session_compact", (event, ctx) => {
 		const duration = lastCompactionDuration ?? stopCompactionTimer(ctx);
 		const model = lastCompactionModel ?? activeCompactionModel(ctx);
+		const tokensBefore = event.compactionEntry?.tokensBefore;
+		pi.appendEntry<CompactionNoticeEntry>(COMPACTION_NOTICE_ENTRY_TYPE, {
+			reason: event.reason,
+			...(typeof tokensBefore === "number" ? { tokensBefore } : {}),
+			...(model ? { model: formatCompactionModel(model, model.thinkingLevel) } : {}),
+		});
 		lastCompactionModel = undefined;
 		lastCompactionDuration = undefined;
 		if (duration !== undefined) {

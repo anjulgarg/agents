@@ -34,7 +34,7 @@ describe("interactive dashboard and selector", () => {
 		await pause();
 		expect(view.lastFrame()).toContain("Selected 3/");
 		expect(view.lastFrame()).toContain("Skills (3)");
-		expect(view.lastFrame()).toContain("Pi Extensions (32)");
+		expect(view.lastFrame()).toContain("Pi Extensions (33)");
 		expect(view.lastFrame()).toContain("Prompts (1)");
 		view.stdin.write(" ");
 		await pause();

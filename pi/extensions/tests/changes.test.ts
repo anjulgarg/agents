@@ -73,7 +73,7 @@ const {
 	parseGeneratedSummary,
 	parseNameStatusZ,
 	parsePorcelainStatusZ,
-	resolvePreferredSummaryModel,
+	resolvePreferredUtilityModel,
 	default: changesExtension,
 } = await import("../changes.ts");
 
@@ -409,7 +409,7 @@ function testPreferredSummaryModel(): void {
 	const configuredStore = {
 		read: () => ({ status: "configured", model: configured }),
 	} as any;
-	const selected = resolvePreferredSummaryModel(context, configuredStore);
+	const selected = resolvePreferredUtilityModel(context, configuredStore);
 	assert(
 		"preferred summary resolution selects the configured compaction model and thinking level",
 		selected.configured === configured &&
@@ -427,7 +427,7 @@ function testPreferredSummaryModel(): void {
 			model: { provider: "missing-provider", id: "missing-summary", thinkingLevel: "high" },
 		}),
 	} as any;
-	const fallback = resolvePreferredSummaryModel(context, unavailableStore);
+	const fallback = resolvePreferredUtilityModel(context, unavailableStore);
 	assert(
 		"preferred summary resolution falls back safely when configured model is unavailable",
 		fallback.configured?.provider === "missing-provider" &&
