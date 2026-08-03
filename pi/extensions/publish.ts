@@ -1,9 +1,12 @@
+import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
+
+import { completeDirectRequest } from "./lib/direct-completion.ts";
+import { resolvePreferredUtilityModel, type ModelPreferenceChoice } from "./model-preference.ts";
 
 // /git:publish - stage every change, draft a Conventional Commits message with the
 // codex backend, commit, and push to origin. On the default branch, ask whether
@@ -85,6 +88,16 @@ function stripFences(text: string): string {
 	const fence = out.match(/^```[^\n]*\n([\s\S]*?)\n```$/);
 	if (fence) out = fence[1].trim();
 	return out;
+}
+
+function responseText(message: AssistantMessage): string {
+	return message.content
+		.filter(
+			(part): part is Extract<AssistantMessage["content"][number], { type: "text" }> =>
+				part.type === "text",
+		)
+		.map((part) => part.text)
+		.join("\n");
 }
 
 function slugify(subject: string): string {
@@ -180,37 +193,56 @@ async function publish(args: string, ctx: ExtensionCommandContext): Promise<void
 	].filter(Boolean);
 
 	ctx.ui.notify("Drafting commit message...", "info");
-	if (!ctx.model) {
-		ctx.ui.notify("No active model; aborting.", "error");
-		return;
-	}
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-	if (!auth.ok) {
-		ctx.ui.notify(`Could not resolve auth: ${auth.error}`, "error");
-		return;
-	}
-	const stream = streamSimple(
-		ctx.model,
-		{
-			systemPrompt: DRAFT_INSTRUCTIONS,
-			messages: [{ role: "user", content: promptParts.join("\n\n"), timestamp: Date.now() }],
-		},
-		{
-			reasoning: "low",
-			signal,
-			...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
-			...(auth.headers ? { headers: auth.headers } : {}),
-			...(auth.env ? { env: auth.env } : {}),
-		},
+	const resolution = resolvePreferredUtilityModel(ctx);
+	const candidates = [resolution.preferred, resolution.fallback].filter(
+		(choice): choice is ModelPreferenceChoice => Boolean(choice),
 	);
-	let drafted = "";
-	let streamError: string | undefined;
-	for await (const event of stream) {
-		if (event.type === "text_delta") drafted += event.delta ?? "";
-		else if (event.type === "error") streamError = event.error?.errorMessage ?? "stream error";
+	if (candidates.length === 0) {
+		ctx.ui.notify("No model selected; aborting.", "error");
+		return;
 	}
-	if (streamError) {
-		ctx.ui.notify(`Drafting failed: ${streamError}`, "error");
+	const message: UserMessage = {
+		role: "user",
+		content: promptParts.join("\n\n"),
+		timestamp: Date.now(),
+	};
+	let drafted = "";
+	let draftError: unknown;
+	for (const [index, candidate] of candidates.entries()) {
+		try {
+			const response = await completeDirectRequest(
+				ctx.modelRegistry,
+				candidate.model,
+				{ systemPrompt: DRAFT_INSTRUCTIONS, messages: [message] },
+				{
+					reasoning: candidate.thinkingLevel === "off" ? undefined : candidate.thinkingLevel,
+					signal,
+				},
+			);
+			if (response.stopReason === "aborted") {
+				ctx.ui.notify("Publish cancelled.", "info");
+				return;
+			}
+			if (response.stopReason === "error") {
+				throw new Error(response.errorMessage ?? "The model returned an error");
+			}
+			drafted = responseText(response);
+			break;
+		} catch (error) {
+			if (signal?.aborted) {
+				ctx.ui.notify("Publish cancelled.", "info");
+				return;
+			}
+			draftError = error;
+			if (index === candidates.length - 1) {
+				const detail = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Drafting failed: ${detail}`, "error");
+				return;
+			}
+		}
+	}
+	if (draftError && !drafted) {
+		ctx.ui.notify(`Drafting failed: ${String(draftError)}`, "error");
 		return;
 	}
 	drafted = stripFences(drafted.trim());
