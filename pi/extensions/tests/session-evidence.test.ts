@@ -121,6 +121,19 @@ const fixture = [
 			recoveredFailures: 1,
 		},
 	}),
+	entry({
+		type: "custom",
+		id: "activity1",
+		parentId: "ann1",
+		customType: "announce-step-activity",
+		data: {
+			phase: "Editing",
+			status: "completed",
+			receivedTokens: 88,
+			toolCount: 2,
+			changedFiles: ["src/login.ts", "src/auth.ts"],
+		},
+	}),
 ] as SessionEntry[];
 
 const extracted = extractSessionEvidence(fixture);
@@ -131,6 +144,7 @@ assert(
 		extractedText.includes("TOOLS: future_tool x2, subagent x1") &&
 		extractedText.includes("AGENT: The race is isolated") &&
 		extractedText.includes("WORK: Diagnose login race (4 tools, 1 file changed)") &&
+		extractedText.includes("WORK: Editing (2 tools, 2 files changed)") &&
 		!extractedText.includes("checks") &&
 		!extractedText.includes("recovered") &&
 		!extractedText.includes("I will inspect") &&

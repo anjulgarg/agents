@@ -78,6 +78,7 @@ interface ActiveRun extends TokenCounters {
 	toolFailure: boolean;
 	assistantFailure: boolean;
 	aborted: boolean;
+	receiptAppended: boolean;
 }
 
 function displayStep(step: string): string {
@@ -119,9 +120,6 @@ function formatLiveSlice(
 	}
 	if (receivedTokens !== undefined && receivedTokens > 0) {
 		details.push(`↓ ${formatTokenCount(receivedTokens)} tokens`);
-	}
-	if (activity?.status === "failed" || activity?.status === "aborted") {
-		details.push(activity.status);
 	}
 	return `${displayStep(step)} (${details.join(" · ")})`;
 }
@@ -176,6 +174,7 @@ function createActiveRun(startedAt: number): ActiveRun {
 		toolFailure: false,
 		assistantFailure: false,
 		aborted: false,
+		receiptAppended: false,
 		...createTokenCounters(),
 	};
 }
@@ -277,6 +276,11 @@ function activityEntryData(entry: unknown): ActivityEntry | undefined {
 	};
 }
 
+function isTerminalAssistantMessage(message: unknown): boolean {
+	if (!isRecord(message)) return false;
+	return message.stopReason === "stop" || message.stopReason === "length";
+}
+
 function sessionEntries(ctx: ExtensionContext): unknown[] {
 	const manager = ctx.sessionManager as unknown as {
 		getBranch?: () => unknown[];
@@ -359,40 +363,32 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		return activeRun;
 	};
 
-	const appendActivity = (run: ActiveRun, completedAt: number, status: ActivityStatus): void => {
-		const entry: ActivityEntry = {
-			phase: run.phase,
-			durationMs: Math.max(0, completedAt - run.startedAt),
-			status,
-			receivedTokens: tokenTotal(run),
-			toolCount: run.toolCount,
-			changedFiles: [...run.changedFiles],
-		};
+	const appendActivity = (run: ActiveRun, completedAt = Date.now()): void => {
+		if (run.receiptAppended) return;
+		run.receiptAppended = true;
 		try {
-			pi.appendEntry<ActivityEntry>(ACTIVITY_ENTRY_TYPE, entry);
+			pi.appendEntry<ActivityEntry>(ACTIVITY_ENTRY_TYPE, {
+				phase: run.phase,
+				durationMs: Math.max(0, completedAt - run.startedAt),
+				status: "completed",
+				receivedTokens: tokenTotal(run),
+				toolCount: run.toolCount,
+				changedFiles: [...run.changedFiles],
+			});
 		} catch {
 			// A persistence failure must not turn passive tracking into a run failure.
 		}
 	};
 
-	const finishActiveRun = (statusOverride?: ActivityStatus, completedAt = Date.now()): void => {
+	const finishActiveRun = (): void => {
 		if (!activeRun) return;
-		const completed = activeRun;
+		activeRun.activeTools.clear();
 		activeRun = undefined;
-		completed.activeTools.clear();
-		const status =
-			statusOverride ??
-			(completed.aborted
-				? "aborted"
-				: completed.toolFailure || completed.assistantFailure
-					? "failed"
-					: "completed");
-		appendActivity(completed, completedAt, status);
 	};
 
-	const clearRuntime = (statusOverride?: ActivityStatus): void => {
+	const clearRuntime = (): void => {
 		const context = workingContext;
-		finishActiveRun(statusOverride);
+		finishActiveRun();
 		stopSliceTimer();
 		clearWorkingMessage(context);
 		workingContext = undefined;
@@ -428,9 +424,8 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		if (!data) return undefined;
 		return {
 			render(width: number): string[] {
-				const color = data.status === "completed" ? "muted" : "error";
 				return new Text(
-					theme.fg(color, formatSlice(data.phase, data.durationMs, data.receivedTokens, data)),
+					theme.fg("muted", formatSlice(data.phase, data.durationMs, data.receivedTokens, data)),
 					CHAT_PADDING,
 					0,
 				).render(width);
@@ -512,6 +507,9 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		activeRun.receivedTokens +=
 			output ?? Math.max(activeRun.currentReceivedEstimate, estimateMessageTokens(event.message));
 		activeRun.currentReceivedEstimate = 0;
+		// Pi inserts custom entries emitted during message_end immediately before
+		// the still-mounted streaming assistant component.
+		if (isTerminalAssistantMessage(event.message)) appendActivity(activeRun);
 		updateWorkingLine();
 	});
 
@@ -551,12 +549,12 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		// Normally session_shutdown has already run. This guard also makes a
 		// direct replacement event safe and prevents a stale timer from surviving.
-		if (activeRun || sliceTimer !== undefined || workingContext) clearRuntime("aborted");
+		if (activeRun || sliceTimer !== undefined || workingContext) clearRuntime();
 		reconcileLegacyEntries(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx) workingContext = ctx;
-		clearRuntime("aborted");
+		clearRuntime();
 	});
 }

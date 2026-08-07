@@ -159,6 +159,19 @@ harness.emit(
 	tui.context,
 );
 harness.emit(
+	"message_end",
+	{
+		type: "message_end",
+		message: { role: "assistant", stopReason: "toolUse", usage: { output: 0 } },
+	},
+	tui.context,
+);
+assert(
+	"tool-use assistant messages do not append the final receipt early",
+	harness.appended.length === 0,
+	JSON.stringify(harness.appended),
+);
+harness.emit(
 	"tool_execution_start",
 	{
 		type: "tool_execution_start",
@@ -239,30 +252,64 @@ harness.emit(
 	},
 	tui.context,
 );
-harness.emit("agent_settled", { type: "agent_settled" }, tui.context);
+harness.emit(
+	"message_end",
+	{
+		type: "message_end",
+		message: { role: "assistant", stopReason: "stop", usage: { output: 88 } },
+	},
+	tui.context,
+);
 
 const completedActivity = harness.appended.at(-1);
 assert(
-	"settlement appends one context-free activity receipt",
+	"final assistant completion appends the ordered receipt before settlement",
 	completedActivity?.type === ACTIVITY_ENTRY_TYPE &&
 		completedActivity.data.phase === "Editing" &&
 		completedActivity.data.durationMs === 3_234 &&
 		completedActivity.data.receivedTokens === 88 &&
 		completedActivity.data.toolCount === 4 &&
 		completedActivity.data.changedFiles.length === 2 &&
-		completedActivity.data.status === "completed" &&
-		tui.workingMessages.at(-1) === undefined,
+		completedActivity.data.status === "completed",
 	JSON.stringify({ completedActivity, workingMessages: tui.workingMessages }),
 );
+const activityColors: string[] = [];
+const activityTheme = {
+	fg: (color: string, text: string) => {
+		activityColors.push(color);
+		return text;
+	},
+};
 const activityRendered = harness.renderers
-	.get(ACTIVITY_ENTRY_TYPE)?.({ data: completedActivity?.data }, {}, theme)
+	.get(ACTIVITY_ENTRY_TYPE)?.({ data: completedActivity?.data }, {}, activityTheme)
 	.render(100) as string[];
 assert(
-	"activity receipts render without entering model context",
+	"completed activity receipt renders muted without failure details",
 	activityRendered.join("\n").includes("Editing") &&
 		activityRendered.join("\n").includes("4 tools") &&
+		!activityRendered.join("\n").includes("failed") &&
+		activityColors.includes("muted") &&
+		!activityColors.includes("error") &&
 		!harness.handlers.has("context"),
-	JSON.stringify({ activityRendered, handlers: [...harness.handlers.keys()] }),
+	JSON.stringify({ activityRendered, activityColors, handlers: [...harness.handlers.keys()] }),
+);
+const historicalFailureRendered = harness.renderers
+	.get(ACTIVITY_ENTRY_TYPE)?.(
+		{ data: { ...completedActivity?.data, status: "failed" } },
+		{},
+		activityTheme,
+	)
+	.render(100) as string[];
+assert(
+	"historical failed receipts also omit failure text and error color",
+	!historicalFailureRendered.join("\n").includes("failed") && !activityColors.includes("error"),
+	JSON.stringify({ historicalFailureRendered, activityColors }),
+);
+harness.emit("agent_settled", { type: "agent_settled" }, tui.context);
+assert(
+	"settlement clears live activity without appending a trailing duplicate",
+	harness.appended.length === 1 && tui.workingMessages.at(-1) === undefined,
+	JSON.stringify({ appended: harness.appended, workingMessages: tui.workingMessages }),
 );
 
 const commandCases: Array<[string, string]> = [
@@ -331,16 +378,15 @@ failureHarness.emit(
 	failureContext.context,
 );
 assert(
-	"tool failures remain visible without changing tool results",
+	"tool failures do not appear in the live status",
 	failureContext.workingMessages.at(-1)?.includes("Running tests") === true &&
-		failureContext.workingMessages.at(-1)?.includes("failed") === true,
+		failureContext.workingMessages.at(-1)?.includes("failed") !== true,
 	JSON.stringify(failureContext.workingMessages),
 );
 failureHarness.emit("agent_settled", { type: "agent_settled" }, failureContext.context);
 assert(
-	"failed activity settles without a continuation",
-	failureHarness.appended.at(-1)?.data.status === "failed" &&
-		failureHarness.appended.length === 1 &&
+	"failed activity settles without a trailing receipt",
+	failureHarness.appended.length === 0 &&
 		failureHarness.handlers.get("agent_settled") !== undefined,
 	JSON.stringify(failureHarness.appended),
 );
@@ -371,15 +417,14 @@ failureHarness.emit(
 	failureContext.context,
 );
 assert(
-	"abort state is visible before settlement",
-	failureContext.workingMessages.at(-1)?.includes("aborted") === true,
+	"abort state does not appear in the live status",
+	failureContext.workingMessages.at(-1)?.includes("aborted") !== true,
 	JSON.stringify(failureContext.workingMessages),
 );
 failureHarness.emit("agent_settled", { type: "agent_settled" }, failureContext.context);
 assert(
 	"abort settlement clears the timer-owned working message",
-	failureHarness.appended.at(-1)?.data.status === "aborted" &&
-		failureContext.workingMessages.at(-1) === undefined,
+	failureHarness.appended.length === 0 && failureContext.workingMessages.at(-1) === undefined,
 	JSON.stringify({ appended: failureHarness.appended, working: failureContext.workingMessages }),
 );
 
@@ -421,11 +466,20 @@ printHarness.emit(
 	},
 	print.context,
 );
+printHarness.emit(
+	"message_end",
+	{
+		type: "message_end",
+		message: { role: "assistant", stopReason: "stop", usage: { output: 12 } },
+	},
+	print.context,
+);
 printHarness.emit("agent_settled", { type: "agent_settled" }, print.context);
 assert(
-	"print mode avoids UI-only operations while retaining the receipt",
+	"print mode avoids UI operations while retaining one ordered receipt",
 	print.workingMessages.length === 0 &&
 		print.statusCalls.length === 0 &&
+		printHarness.appended.length === 1 &&
 		printHarness.appended[0]?.type === ACTIVITY_ENTRY_TYPE,
 	JSON.stringify({
 		working: print.workingMessages,

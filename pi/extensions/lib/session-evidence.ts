@@ -1,6 +1,7 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 const ANNOUNCEMENT_UPDATE_ENTRY_TYPE = "announce-step-duration-update";
+const ACTIVITY_ENTRY_TYPE = "announce-step-activity";
 const DEFAULT_MAX_EVENT_CHARS = 4_000;
 const OMISSION_RESERVE = 100;
 
@@ -12,6 +13,13 @@ export interface SessionEvidenceEvent {
 interface AnnouncementData {
 	completed?: unknown;
 	step?: unknown;
+	toolCount?: unknown;
+	changedFiles?: unknown;
+}
+
+interface ActivityData {
+	status?: unknown;
+	phase?: unknown;
 	toolCount?: unknown;
 	changedFiles?: unknown;
 }
@@ -56,18 +64,32 @@ function count(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
-function announcementText(data: AnnouncementData): string | undefined {
-	if (data.completed !== true || typeof data.step !== "string" || !data.step.trim()) {
-		return undefined;
-	}
+function workText(
+	step: unknown,
+	toolCountValue: unknown,
+	changedFilesValue: unknown,
+): string | undefined {
+	if (typeof step !== "string" || !step.trim()) return undefined;
 	const details: string[] = [];
-	const toolCount = count(data.toolCount);
-	const changedFiles = Array.isArray(data.changedFiles) ? data.changedFiles.length : 0;
+	const toolCount = count(toolCountValue);
+	const changedFiles = Array.isArray(changedFilesValue) ? changedFilesValue.length : 0;
 	if (toolCount) details.push(`${toolCount} ${toolCount === 1 ? "tool" : "tools"}`);
 	if (changedFiles) {
 		details.push(`${changedFiles} ${changedFiles === 1 ? "file" : "files"} changed`);
 	}
-	return `WORK: ${compactText(data.step)}${details.length ? ` (${details.join(", ")})` : ""}`;
+	return `WORK: ${compactText(step)}${details.length ? ` (${details.join(", ")})` : ""}`;
+}
+
+function announcementText(data: AnnouncementData): string | undefined {
+	return data.completed === true
+		? workText(data.step, data.toolCount, data.changedFiles)
+		: undefined;
+}
+
+function activityText(data: ActivityData): string | undefined {
+	return data.status === "completed"
+		? workText(data.phase, data.toolCount, data.changedFiles)
+		: undefined;
 }
 
 function toolSummary(counts: Map<string, number>): string | undefined {
@@ -78,7 +100,8 @@ function toolSummary(counts: Map<string, number>): string | undefined {
 /**
  * Neutral high-signal session evidence: user text, completed/length-terminated
  * assistant text, aggregated tool-call counts, and completed announce-step
- * duration updates. Feature-specific custom entries (recap, btw, etc.) are ignored.
+ * duration updates and current activity receipts. Feature-specific custom entries
+ * (recap, btw, etc.) are ignored.
  */
 export function extractSessionEvidence(
 	entries: SessionEntry[],
@@ -122,8 +145,12 @@ export function extractSessionEvidence(
 			continue;
 		}
 
-		if (entry.type === "custom" && entry.customType === ANNOUNCEMENT_UPDATE_ENTRY_TYPE) {
+		if (entry.type !== "custom") continue;
+		if (entry.customType === ANNOUNCEMENT_UPDATE_ENTRY_TYPE) {
 			const text = announcementText((entry.data ?? {}) as AnnouncementData);
+			if (text) pushEvent(entry.id, text);
+		} else if (entry.customType === ACTIVITY_ENTRY_TYPE) {
+			const text = activityText((entry.data ?? {}) as ActivityData);
 			if (text) pushEvent(entry.id, text);
 		}
 	}
