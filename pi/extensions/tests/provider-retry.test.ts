@@ -41,6 +41,10 @@ check(
 	isTransientProviderFailure(resetFailure),
 );
 check(
+	"Azure 5xx responses outside the common status list are classified as transient",
+	isTransientProviderFailure({ stopReason: "error", errorMessage: "Azure OpenAI API error (599)" }),
+);
+check(
 	"authentication failure is not classified as transient",
 	!isTransientProviderFailure({ stopReason: "error", errorMessage: "401 authentication failed" }),
 );
@@ -129,13 +133,13 @@ void (async () => {
 	started({}, ctx);
 	settled({}, ctx);
 	await wait(5);
-	check("circuit breaker suppresses retries on the same failed model", pi.sent.length === 2);
+	check("a new user turn reopens bounded recovery", pi.sent.length === 3);
 
 	pi.handlers.get("model_select")!({}, ctx);
 	started({}, ctx);
 	settled({}, ctx);
 	await wait(10);
-	check("model changes reopen bounded recovery", pi.sent.length === 3);
+	check("model changes reopen bounded recovery", pi.sent.length === 4);
 
 	started({}, ctx);
 	messageEnd({ message: { role: "assistant", stopReason: "stop" } }, ctx);
@@ -143,7 +147,69 @@ void (async () => {
 	started({}, ctx);
 	settled({}, ctx);
 	await wait(10);
-	check("a successful assistant turn resets the recovery budget", pi.sent.length === 4);
+	check("a successful assistant turn resets the recovery budget", pi.sent.length === 5);
+
+	let windowNow = 0;
+	const windowPi: FakePi & { notices: string[] } = {
+		handlers: new Map(),
+		sent: [],
+		notices: [],
+		on(event, handler) {
+			this.handlers.set(event, handler);
+		},
+		sendMessage(message, options) {
+			this.sent.push({ message, options });
+		},
+	};
+	const windowLeaf = { type: "message", message: { role: "assistant", ...unknownFailure } };
+	const windowCtx = {
+		sessionManager: { getLeafEntry: () => windowLeaf },
+		model: { provider: "azure", id: "gpt-luna" },
+		ui: { notify: (message: string) => windowPi.notices.push(message) },
+	};
+	const windowDispose = registerProviderRecovery(windowPi as any, {
+		baseDelayMs: 1,
+		maxDelayMs: 1,
+		retryWindowMs: 100,
+		now: () => windowNow,
+	});
+	const windowSettled = windowPi.handlers.get("agent_settled")!;
+	const windowStarted = windowPi.handlers.get("agent_start")!;
+	windowSettled({}, windowCtx);
+	await wait(5);
+	windowStarted({}, windowCtx);
+	windowNow = 20;
+	windowSettled({}, windowCtx);
+	await wait(5);
+	windowStarted({}, windowCtx);
+	windowNow = 40;
+	windowSettled({}, windowCtx);
+	await wait(5);
+	check(
+		"window-based recovery is not capped at two attempts",
+		windowPi.sent.length === 3,
+		JSON.stringify(windowPi.sent),
+	);
+	windowStarted({}, windowCtx);
+	windowNow = 101;
+	windowSettled({}, windowCtx);
+	await wait(5);
+	check(
+		"recovery stops after the one-minute window",
+		windowPi.sent.length === 3 && windowPi.notices.length === 1,
+		JSON.stringify(windowPi.notices),
+	);
+	windowPi.handlers.get("message_end")!(
+		{ message: { role: "assistant", stopReason: "stop" } },
+		windowCtx,
+	);
+	windowLeaf.message = { role: "assistant", ...unknownFailure };
+	windowStarted({}, windowCtx);
+	windowNow = 110;
+	windowSettled({}, windowCtx);
+	await wait(5);
+	check("successful calls reset the retry window", windowPi.sent.length === 4);
+	windowDispose();
 
 	dispose();
 	if (failed > 0) {

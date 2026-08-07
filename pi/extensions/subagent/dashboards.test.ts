@@ -341,6 +341,38 @@ function testSubagentDashboard(): void {
 	thread.handleInput("\x1b");
 	check("subagent thread: escape returns to parent", returnedToParent === 1);
 
+	// ---------- thread: transient provider failures stay silent during recovery ----------
+	const transientFailure = {
+		...assistantMessage([]),
+		stopReason: "error",
+		errorMessage: "Azure OpenAI API error (503): service unavailable",
+	};
+	const recoveringThreadOutput = makeThread([subagentTask({ messages: [transientFailure] as any })])
+		.render(120)
+		.map(stripAnsi)
+		.join("\n");
+	check(
+		"subagent thread: transient provider failures are hidden while recovery is active",
+		!recoveringThreadOutput.includes("Azure OpenAI API error (503)"),
+		recoveringThreadOutput,
+	);
+	const failedThreadOutput = makeThread([
+		subagentTask({
+			done: true,
+			status: "failed",
+			error: "provider error after automatic recovery attempts: service unavailable",
+			messages: [transientFailure] as any,
+		}),
+	])
+		.render(120)
+		.map(stripAnsi)
+		.join("\n");
+	check(
+		"subagent thread: final provider failure remains visible",
+		failedThreadOutput.includes("provider error after automatic recovery attempts"),
+		failedThreadOutput,
+	);
+
 	// ---------- thread: kill arming and confirmation ----------
 	let killedTask = "";
 	let killedAll = 0;

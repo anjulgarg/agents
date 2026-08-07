@@ -36,6 +36,7 @@ import {
 	type ToolRenderContext,
 } from "../lib/minimal-tool-presentation.ts";
 import { WORKING_FRAMES, WORKING_FRAME_INTERVAL_MS } from "../announce-step.ts";
+import { isTransientProviderFailure } from "../lib/provider-retry.ts";
 import { STATUS_KEY as TOKEN_SPEED_STATUS_KEY } from "../token-speed.ts";
 import type {
 	ContextUsageSnapshot,
@@ -797,6 +798,13 @@ function messageText(message: Message): string {
 		.join("\n");
 }
 
+/** Retryable provider failures are internal recovery attempts, not thread output. */
+function visibleThreadMessages(messages: readonly Message[]): Message[] {
+	return messages.filter(
+		(message) => message.role !== "assistant" || !isTransientProviderFailure(message),
+	);
+}
+
 /** Full-screen, read-only child conversation opened by F6. */
 export class SubagentThreadView implements Component {
 	private readonly selection = new SelectableViewportController();
@@ -869,7 +877,7 @@ export class SubagentThreadView implements Component {
 	}
 
 	private sequenceIdentity(item: SubagentThreadItem): string {
-		const messages = item.result.messages ?? [];
+		const messages = visibleThreadMessages(item.result.messages ?? []);
 		const last = messages.at(-1);
 		let lastIdentity = "none";
 		if (last && typeof last === "object") {
@@ -888,7 +896,7 @@ export class SubagentThreadView implements Component {
 	}
 
 	private contentLines(item: SubagentThreadItem, width: number): string[] {
-		const messages = item.result.messages ?? [];
+		const messages = visibleThreadMessages(item.result.messages ?? []);
 		const sequenceKey = this.sequenceIdentity(item);
 		if (this.seededSequenceKey !== sequenceKey) {
 			this.seededSequenceKey = sequenceKey;

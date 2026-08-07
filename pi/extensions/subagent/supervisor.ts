@@ -84,6 +84,8 @@ export interface TaskState {
 	spawnSpec?: TaskSpawnSpec;
 	/** Last assistant provider failure observed before agent_settled. */
 	providerFailure?: { error: string; retryable: boolean };
+	/** Start of the current continuous transient-failure recovery window. */
+	providerRetryWindowStartedAt?: number;
 	providerRetryCount: number;
 	ownerToken: string;
 	reaped: boolean;
@@ -229,10 +231,12 @@ export interface SupervisorOptions {
 	defaultTools?: string[];
 	/** Hard cap across all runs owned by this supervisor. Default 8. */
 	maxActiveChildren?: number;
-	/** Bounded recovery attempts after the child Pi retry policy is exhausted. */
+	/** Optional safety cap after the child Pi retry policy is exhausted. */
 	maxTransientRetries?: number;
 	/** Initial delay between child recovery attempts. Defaults to 2 seconds. */
 	transientRetryBaseDelayMs?: number;
+	/** Continuous transient-failure recovery window. Defaults to one minute. */
+	transientRetryWindowMs?: number;
 	/**
 	 * Called after the outstanding-work check and before parentWaiting is set.
 	 * Tests use this to inject the settle/flag race; production leaves it unset.
@@ -243,8 +247,8 @@ export interface SupervisorOptions {
 const DEFAULT_TASK_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_WATCHDOG_TICK_MS = 30_000;
 const DEFAULT_MAX_ACTIVE_CHILDREN = 8;
-const DEFAULT_MAX_TRANSIENT_RETRIES = 2;
 const DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS = 2_000;
+const DEFAULT_TRANSIENT_RETRY_WINDOW_MS = 60_000;
 const MAX_TRANSIENT_RETRY_DELAY_MS = 30_000;
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 /** Bound on the final context refresh before normal process termination begins. */
@@ -319,8 +323,9 @@ export class Supervisor {
 	private readonly now: () => number;
 	private readonly defaultTools: string[];
 	private readonly maxActiveChildren: number;
-	private readonly maxTransientRetries: number;
+	private readonly maxTransientRetries: number | undefined;
 	private readonly transientRetryBaseDelayMs: number;
+	private readonly transientRetryWindowMs: number;
 	private readonly betweenSettleCheckAndWait?: () => void;
 	private readonly timeouts = new Map<string, NodeJS.Timeout>();
 	private readonly providerRetryTimers = new Map<string, NodeJS.Timeout>();
@@ -348,13 +353,17 @@ export class Supervisor {
 		this.now = options.now ?? (() => Date.now());
 		this.defaultTools = options.defaultTools ?? DEFAULT_TOOLS;
 		this.maxActiveChildren = Math.max(1, options.maxActiveChildren ?? DEFAULT_MAX_ACTIVE_CHILDREN);
-		this.maxTransientRetries = nonNegativeInteger(
-			options.maxTransientRetries,
-			DEFAULT_MAX_TRANSIENT_RETRIES,
-		);
+		this.maxTransientRetries =
+			options.maxTransientRetries === undefined
+				? undefined
+				: nonNegativeInteger(options.maxTransientRetries, 0);
 		this.transientRetryBaseDelayMs = nonNegativeInteger(
 			options.transientRetryBaseDelayMs,
 			DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS,
+		);
+		this.transientRetryWindowMs = nonNegativeInteger(
+			options.transientRetryWindowMs,
+			DEFAULT_TRANSIENT_RETRY_WINDOW_MS,
 		);
 		this.betweenSettleCheckAndWait = options.betweenSettleCheckAndWait;
 		this.installProcessHandlers();
@@ -891,7 +900,14 @@ export class Supervisor {
 			this.providerRetryTimers.has(taskId)
 		)
 			return;
-		if (task.providerRetryCount >= this.maxTransientRetries) {
+		const failureObservedAt = this.now();
+		task.providerRetryWindowStartedAt ??= failureObservedAt;
+		const elapsedMs = Math.max(0, failureObservedAt - task.providerRetryWindowStartedAt);
+		if (
+			(this.maxTransientRetries !== undefined &&
+				task.providerRetryCount >= this.maxTransientRetries) ||
+			elapsedMs >= this.transientRetryWindowMs
+		) {
 			this.beginFinalization(runId, taskId, {
 				status: "failed",
 				error: this.formatProviderFailure(task, failure.error),
@@ -900,10 +916,19 @@ export class Supervisor {
 		}
 
 		const attempt = ++task.providerRetryCount;
-		const delayMs = Math.min(
+		const backoffMs = Math.min(
 			MAX_TRANSIENT_RETRY_DELAY_MS,
 			this.transientRetryBaseDelayMs * 2 ** (attempt - 1),
 		);
+		const remainingMs = Math.max(0, this.transientRetryWindowMs - elapsedMs);
+		if (backoffMs >= remainingMs) {
+			this.beginFinalization(runId, taskId, {
+				status: "failed",
+				error: this.formatProviderFailure(task, failure.error),
+			});
+			return;
+		}
+
 		task.providerFailure = undefined;
 		task.lastEventAt = this.now();
 		this.notifyListeners();
@@ -927,7 +952,7 @@ export class Supervisor {
 						error: formatChildExitError(current.child!, message),
 					});
 				});
-		}, delayMs);
+		}, backoffMs);
 		timer.unref?.();
 		this.providerRetryTimers.set(taskId, timer);
 	}
@@ -958,13 +983,13 @@ export class Supervisor {
 			if (message.role === "assistant") {
 				if (message.stopReason === "error") {
 					const error = providerErrorText(message) || "provider returned an unstructured error";
-					task.providerFailure = {
-						error,
-						retryable: isTransientProviderFailure(message),
-					};
-				} else {
+					const retryable = isTransientProviderFailure(message);
+					task.providerFailure = { error, retryable };
+					if (retryable) task.providerRetryWindowStartedAt ??= now;
+				} else if (message.stopReason !== "aborted") {
 					task.providerFailure = undefined;
 					task.providerRetryCount = 0;
+					task.providerRetryWindowStartedAt = undefined;
 				}
 			}
 		}

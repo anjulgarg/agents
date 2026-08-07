@@ -16,7 +16,7 @@ const NON_RETRYABLE_PROVIDER_ERROR_PATTERN =
  * do not classify empty Responses API failures as retryable.
  */
 const TRANSIENT_PROVIDER_ERROR_PATTERN =
-	/\b(?:429|500|502|503|504|524)\b|overloaded|rate.?limit|too many requests|service.?unavailable|server.?error|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|upstream.?connect|disconnect\/?reset|reset before headers|connection termination|socket|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|timed? ?out|timeout|terminated|websocket.?closed|websocket.?error|ended without|retry(?:ing|able)|try your request again/i;
+	/\b(?:429|5\d{2})\b|overloaded|rate.?limit|too many requests|service.?unavailable|server.?error|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|upstream.?connect|disconnect\/?reset|reset before headers|connection termination|socket|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|timed? ?out|timeout|terminated|websocket.?closed|websocket.?error|ended without|retry(?:ing|able)|try your request again/i;
 
 const EMPTY_RESPONSE_ERROR_PATTERN = /unknown error|no error details/i;
 

@@ -849,6 +849,73 @@ async function testTransientProviderFailureExhaustion(): Promise<void> {
 	}
 }
 
+async function testTransientProviderRecoveryWindow(): Promise<void> {
+	const name = "o. transient provider recovery uses a resettable one-minute window";
+	const children: FakeChild[] = [];
+	const wakes: Wake[] = [];
+	let now = 0;
+	const supervisor = new Supervisor({
+		watchdogTickMs: 0,
+		transientRetryBaseDelayMs: 1,
+		transientRetryWindowMs: 100,
+		now: () => now,
+		sendUserMessage: (content, options) => {
+			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
+		},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+
+	try {
+		const { runId, taskIds } = supervisor.spawn([baseSpec({ task: "windowed recovery" })]);
+		const child = children[0]!;
+		const failTurn = (): void => {
+			child.emit({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Azure OpenAI API error (503): service unavailable",
+				},
+			});
+			child.emit({ type: "agent_settled" });
+		};
+
+		failTurn();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		now = 20;
+		failTurn();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		child.emit({
+			type: "message_end",
+			message: { role: "assistant", stopReason: "stop" },
+		});
+		now = 90;
+		failTurn();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		now = 110;
+		failTurn();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		now = 191;
+		failTurn();
+		const task = supervisor.runs.get(runId)?.tasks[0];
+		const result = supervisor.result(runId, taskIds[0]);
+		assert(
+			name,
+			task?.status === "failed" &&
+				child.promptMessages.length === 5 &&
+				result.error?.includes("automatic recovery") === true &&
+				wakes.length === 1,
+			`task=${JSON.stringify(task)} prompts=${child.promptMessages.length} result=${JSON.stringify(result)} wakes=${JSON.stringify(wakes)}`,
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
 async function testNonTransientProviderFailureDoesNotRetry(): Promise<void> {
 	const name = "o. deterministic provider failures fail fast without retry";
 	const children: FakeChild[] = [];
@@ -1341,6 +1408,7 @@ async function main(): Promise<void> {
 	await testSoftSignalStuckInTool();
 	await testTransientProviderRecovery();
 	await testTransientProviderFailureExhaustion();
+	await testTransientProviderRecoveryWindow();
 	await testNonTransientProviderFailureDoesNotRetry();
 	await testExitPropagatesStderr();
 	await testExitDoesNotLeakStderrOnSuccess();

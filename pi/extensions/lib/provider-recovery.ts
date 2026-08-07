@@ -3,9 +3,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isTransientProviderFailure, providerErrorText } from "./provider-retry.ts";
 
 export const PROVIDER_RECOVERY_MESSAGE_TYPE = "provider-recovery";
+/** Legacy opt-in attempt cap. The default recovery budget is time-based. */
 export const DEFAULT_PROVIDER_RECOVERY_RETRIES = 2;
 export const DEFAULT_PROVIDER_RECOVERY_BASE_DELAY_MS = 2_000;
 export const DEFAULT_PROVIDER_RECOVERY_MAX_DELAY_MS = 30_000;
+export const DEFAULT_PROVIDER_RECOVERY_WINDOW_MS = 60_000;
 
 const PROVIDER_RECOVERY_PROMPT = [
 	"[INTERNAL PROVIDER RECOVERY]",
@@ -15,13 +17,19 @@ const PROVIDER_RECOVERY_PROMPT = [
 ].join("\n");
 
 export interface ProviderRecoveryOptions {
+	/** Optional legacy attempt cap. Omit it to use the one-minute window only. */
 	maxRetries?: number;
 	baseDelayMs?: number;
 	maxDelayMs?: number;
+	/** Maximum continuous transient-failure recovery window. Defaults to one minute. */
+	retryWindowMs?: number;
+	/** Injectable clock for deterministic tests. */
+	now?: () => number;
 }
 
 interface RecoveryState {
 	attempts: number;
+	retryStartedAt?: number;
 	timer?: ReturnType<typeof setTimeout>;
 	queuedRecovery: boolean;
 	circuitOpen: boolean;
@@ -57,15 +65,19 @@ function modelKey(ctx: ExtensionContext): string {
 /**
  * Keep a settled parent session alive after the native retry budget is exhausted.
  * Pi's core handles ordinary transient failures first; this is the bounded outer
- * guard for providers that return an unstructured failure response. Once
- * exhausted, a per-model circuit breaker prevents every later user turn from
- * replaying the same hidden recovery sequence during a sustained outage.
+ * guard for providers that return an unstructured failure response. Once the
+ * window is exhausted, a per-model circuit breaker prevents duplicate settled
+ * events from replaying the same hidden recovery sequence until a new turn or
+ * model selection resets it.
  */
 export function registerProviderRecovery(
 	pi: ExtensionAPI,
 	options: ProviderRecoveryOptions = {},
 ): () => void {
-	const maxRetries = boundedInteger(options.maxRetries, DEFAULT_PROVIDER_RECOVERY_RETRIES, 0);
+	const maxRetries =
+		options.maxRetries === undefined
+			? undefined
+			: boundedInteger(options.maxRetries, DEFAULT_PROVIDER_RECOVERY_RETRIES, 0);
 	const baseDelayMs = boundedInteger(
 		options.baseDelayMs,
 		DEFAULT_PROVIDER_RECOVERY_BASE_DELAY_MS,
@@ -75,6 +87,12 @@ export function registerProviderRecovery(
 		baseDelayMs,
 		boundedInteger(options.maxDelayMs, DEFAULT_PROVIDER_RECOVERY_MAX_DELAY_MS, 0),
 	);
+	const retryWindowMs = boundedInteger(
+		options.retryWindowMs,
+		DEFAULT_PROVIDER_RECOVERY_WINDOW_MS,
+		0,
+	);
+	const now = options.now ?? (() => Date.now());
 	const state: RecoveryState = {
 		attempts: 0,
 		queuedRecovery: false,
@@ -91,6 +109,7 @@ export function registerProviderRecovery(
 	const reset = (): void => {
 		clearTimer();
 		state.attempts = 0;
+		state.retryStartedAt = undefined;
 		state.queuedRecovery = false;
 		state.circuitOpen = false;
 		state.circuitModelKey = undefined;
@@ -102,21 +121,19 @@ export function registerProviderRecovery(
 	});
 
 	pi.on("agent_start", () => {
-		// A queued internal recovery preserves its attempt budget. A normal user
-		// turn cancels any delayed recovery and starts a fresh budget.
-		if (!state.queuedRecovery) {
-			clearTimer();
-			state.attempts = 0;
-		}
+		// A queued internal recovery preserves its retry window. A normal user
+		// turn cancels any delayed recovery and starts a fresh window.
+		if (!state.queuedRecovery) reset();
 		state.queuedRecovery = false;
 	});
 
 	pi.on("message_end", (event) => {
-		if (event.message.role === "assistant" && event.message.stopReason !== "error") {
-			state.attempts = 0;
-			state.circuitOpen = false;
-			state.circuitModelKey = undefined;
+		if (event.message.role !== "assistant") return;
+		if (event.message.stopReason === "error") {
+			if (isTransientProviderFailure(event.message)) state.retryStartedAt ??= now();
+			return;
 		}
+		if (event.message.stopReason !== "aborted") reset();
 	});
 
 	pi.on("model_select", () => {
@@ -124,7 +141,7 @@ export function registerProviderRecovery(
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
-		if (state.closed || state.timer || maxRetries === 0) return;
+		if (state.closed || state.timer) return;
 		const failure = latestAssistantMessage(ctx);
 		if (!failure || !isTransientProviderFailure(failure)) return;
 		const failedModelKey = modelKey(ctx);
@@ -133,19 +150,35 @@ export function registerProviderRecovery(
 			state.circuitOpen = false;
 			state.circuitModelKey = undefined;
 			state.attempts = 0;
+			state.retryStartedAt = undefined;
 		}
-		if (state.attempts >= maxRetries) {
+
+		const failureObservedAt = now();
+		state.retryStartedAt ??= failureObservedAt;
+		const elapsedMs = Math.max(0, failureObservedAt - state.retryStartedAt);
+		if ((maxRetries !== undefined && state.attempts >= maxRetries) || elapsedMs >= retryWindowMs) {
 			state.circuitOpen = true;
 			state.circuitModelKey = failedModelKey;
 			ctx.ui?.notify(
-				`Automatic provider recovery paused for ${failedModelKey}; switch models or retry manually.`,
-				"warning",
+				`Automatic provider recovery stopped for ${failedModelKey}: ${providerErrorText(failure) || "unspecified provider error"}`,
+				"error",
 			);
 			return;
 		}
 
 		const attempt = ++state.attempts;
-		const delayMs = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+		const backoffMs = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+		const remainingMs = Math.max(0, retryWindowMs - elapsedMs);
+		if (backoffMs >= remainingMs) {
+			state.circuitOpen = true;
+			state.circuitModelKey = failedModelKey;
+			ctx.ui?.notify(
+				`Automatic provider recovery stopped for ${failedModelKey}: ${providerErrorText(failure) || "retry window expired"}`,
+				"error",
+			);
+			return;
+		}
+
 		state.timer = setTimeout(() => {
 			state.timer = undefined;
 			if (state.closed) return;
@@ -162,7 +195,7 @@ export function registerProviderRecovery(
 				},
 				{ triggerTurn: true, deliverAs: "followUp" },
 			);
-		}, delayMs);
+		}, backoffMs);
 		state.timer.unref?.();
 	});
 
