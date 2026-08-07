@@ -40,7 +40,8 @@ Long-running work displays a coarse phase derived from actual model and tool lif
 - `Building`
 - `Running command`
 
-The status includes bounded elapsed time and activity counts. It is passive: no progress tool call,
+When no tool is active, the live status uses `Working` rather than guessing `Running command`. The
+status includes bounded elapsed time and activity counts. It is passive: no progress tool call,
 prompt instruction, follow-up message, or additional model turn is created. Completed activity is
 stored as a muted, context-free receipt immediately before the final assistant message, never after
 it. Failure labels and error coloring are omitted. Historical legacy announcement receipts remain

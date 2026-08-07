@@ -25,6 +25,7 @@ type ActivePhaseStatus = "running" | "failed" | "aborted";
 const LEGACY_ANNOUNCEMENT_ENTRY_TYPE = "announce-step-duration";
 const LEGACY_ANNOUNCEMENT_UPDATE_ENTRY_TYPE = "announce-step-duration-update";
 const ACTIVITY_STATUS_KEY = "working";
+const WORKING_PHASE = "Working";
 const CHAT_PADDING = 1;
 const ACTIVITY_TIMER_INTERVAL_MS = 1000;
 const MAX_CHANGED_FILES = 64;
@@ -183,6 +184,10 @@ function tokenTotal(counters: TokenCounters): number {
 	return counters.receivedTokens + counters.currentReceivedEstimate;
 }
 
+function currentLivePhase(run: ActiveRun): ActivityPhase | typeof WORKING_PHASE {
+	return [...run.activeTools.values()].at(-1) ?? WORKING_PHASE;
+}
+
 function safeNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -333,7 +338,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		safeWorkingMessage(
 			workingContext,
 			formatLiveSlice(
-				activeRun.phase,
+				currentLivePhase(activeRun),
 				Math.max(0, now - activeRun.startedAt),
 				tokenTotal(activeRun),
 				details,

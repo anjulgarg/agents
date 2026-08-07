@@ -136,6 +136,12 @@ assert(
 );
 
 harness.emit("agent_start", { type: "agent_start" }, tui.context);
+assert(
+	"model work uses a generic live phase until a tool starts",
+	tui.workingMessages.at(-1)?.startsWith("Working...") === true &&
+		tui.workingMessages.at(-1)?.includes("Running command") !== true,
+	JSON.stringify(tui.workingMessages),
+);
 now += 1_234;
 harness.emit(
 	"tool_execution_start",
@@ -251,6 +257,11 @@ harness.emit(
 		isError: false,
 	},
 	tui.context,
+);
+assert(
+	"model work resumes after the final tool completes",
+	tui.workingMessages.at(-1)?.startsWith("Working...") === true,
+	JSON.stringify(tui.workingMessages),
 );
 harness.emit(
 	"message_end",
@@ -379,7 +390,7 @@ failureHarness.emit(
 );
 assert(
 	"tool failures do not appear in the live status",
-	failureContext.workingMessages.at(-1)?.includes("Running tests") === true &&
+	failureContext.workingMessages.at(-1)?.includes("Working") === true &&
 		failureContext.workingMessages.at(-1)?.includes("failed") !== true,
 	JSON.stringify(failureContext.workingMessages),
 );
