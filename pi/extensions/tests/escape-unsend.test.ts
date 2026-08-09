@@ -93,30 +93,42 @@ assert(
 	shouldUnsend({
 		stopReason: "aborted",
 		producedWork: false,
+		escapeRequested: true,
 		pending: { entryId: "u1", text: "fix me" },
 		mode: "tui",
 	}) &&
 		!shouldUnsend({
 			stopReason: "aborted",
 			producedWork: true,
+			escapeRequested: true,
 			pending: { entryId: "u1", text: "fix me" },
 			mode: "tui",
 		}) &&
 		!shouldUnsend({
 			stopReason: "stop",
 			producedWork: false,
+			escapeRequested: true,
 			pending: { entryId: "u1", text: "fix me" },
 			mode: "tui",
 		}) &&
 		!shouldUnsend({
 			stopReason: "aborted",
 			producedWork: false,
+			escapeRequested: true,
 			pending: { entryId: "u1", text: "fix me" },
 			mode: "rpc",
 		}) &&
 		!shouldUnsend({
 			stopReason: "aborted",
 			producedWork: false,
+			escapeRequested: false,
+			pending: { entryId: "u1", text: "fix me" },
+			mode: "tui",
+		}) &&
+		!shouldUnsend({
+			stopReason: "aborted",
+			producedWork: false,
+			escapeRequested: true,
 			pending: undefined,
 			mode: "tui",
 		}),
@@ -149,6 +161,10 @@ const flushTimers = (): Promise<void> => new Promise((resolve) => setTimeout(res
 const navigations: string[] = [];
 const editorTexts: string[] = [];
 const submitted: string[] = [];
+const terminalInputHandlers: Array<(data: string) => unknown> = [];
+const emitTerminalInput = (data: string): void => {
+	for (const handler of terminalInputHandlers) handler(data);
+};
 const branch = [
 	{ id: "root-user", type: "message", message: { role: "user", content: "older" } },
 	{ id: "assistant-1", type: "message", message: { role: "assistant", content: "ok" } },
@@ -178,8 +194,13 @@ const liveEditor = {
 
 const ctx = {
 	mode: "tui",
+	isIdle: () => false,
 	sessionManager: { getBranch: () => branch },
 	ui: {
+		onTerminalInput: (handler: (data: string) => unknown) => {
+			terminalInputHandlers.push(handler);
+			return () => undefined;
+		},
 		getEditorComponent: () => editorFactory,
 		setEditorComponent: (factory: typeof editorFactory) => {
 			editorFactory = factory;
@@ -215,6 +236,7 @@ branch.push({
 	type: "message",
 	message: { role: "user", content: "oops wrong prompt" },
 });
+emitTerminalInput("\x1b");
 await emit(
 	"message_end",
 	{
@@ -256,6 +278,7 @@ await emit(
 	},
 	ctx,
 );
+emitTerminalInput("\x1b");
 await emit(
 	"message_end",
 	{
@@ -293,6 +316,7 @@ branch.push({
 	message: { role: "user", content: "tool bound" },
 });
 await emit("tool_execution_start", { toolName: "read" }, ctx);
+emitTerminalInput("\x1b");
 await emit(
 	"message_end",
 	{
@@ -305,6 +329,60 @@ await flushTimers();
 
 assert(
 	"a tool call before abort blocks unsend",
+	submitted.length === 0 && navigations.length === 0 && editorTexts.length === 0,
+	JSON.stringify({ submitted, navigations, editorTexts }),
+);
+
+submitted.length = 0;
+navigations.length = 0;
+editorTexts.length = 0;
+await emit("before_agent_start", {}, ctx);
+await emit("agent_start", {}, ctx);
+await emit(
+	"message_end",
+	{
+		message: { role: "user", content: "long autonomous work" },
+	},
+	ctx,
+);
+branch.push({
+	id: "user-5",
+	type: "message",
+	message: { role: "user", content: "long autonomous work" },
+});
+await emit(
+	"message_update",
+	{
+		message: { role: "assistant", content: [{ type: "text", text: "changed files" }] },
+	},
+	ctx,
+);
+await emit(
+	"message_end",
+	{
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "changed files" }],
+			stopReason: "stop",
+		},
+	},
+	ctx,
+);
+// A continuation starts another low-level run without a new top-level prompt.
+await emit("agent_start", {}, ctx);
+emitTerminalInput("\x1b");
+await emit(
+	"message_end",
+	{
+		message: { role: "assistant", content: [], stopReason: "aborted" },
+	},
+	ctx,
+);
+await emit("agent_settled", {}, ctx);
+await flushTimers();
+
+assert(
+	"work from an earlier low-level run blocks a later continuation abort",
 	submitted.length === 0 && navigations.length === 0 && editorTexts.length === 0,
 	JSON.stringify({ submitted, navigations, editorTexts }),
 );

@@ -14,7 +14,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { EditorComponent } from "@earendil-works/pi-tui";
+import { matchesKey, type EditorComponent } from "@earendil-works/pi-tui";
 
 type PendingPrompt = {
 	entryId: string;
@@ -99,12 +99,14 @@ export function resolvePendingPrompt(
 export function shouldUnsend(input: {
 	stopReason: unknown;
 	producedWork: boolean;
+	escapeRequested: boolean;
 	pending: PendingPrompt | undefined;
 	mode: string | undefined;
 }): boolean {
 	return (
 		input.mode === "tui" &&
 		input.stopReason === "aborted" &&
+		input.escapeRequested &&
 		!input.producedWork &&
 		Boolean(input.pending?.entryId && input.pending.text)
 	);
@@ -123,9 +125,11 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 	let pendingText: string | undefined;
 	let pending: PendingPrompt | undefined;
 	let producedWork = false;
+	let escapeRequested = false;
 	let unsendOnSettle = false;
 	let unsending = false;
 	let liveEditor: EditorComponent | undefined;
+	let terminalInputUnsubscribe: (() => void) | undefined;
 
 	const markProgress = (message?: { content?: unknown }): void => {
 		if (message && assistantHasProgress(message)) producedWork = true;
@@ -176,16 +180,34 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 		pending = undefined;
 		pendingText = undefined;
 		producedWork = false;
+		escapeRequested = false;
 		unsendOnSettle = false;
 		unsending = false;
 		liveEditor = undefined;
-		if (ctx.mode === "tui") wrapEditor(ctx);
+		terminalInputUnsubscribe?.();
+		terminalInputUnsubscribe = undefined;
+		if (ctx.mode === "tui") {
+			wrapEditor(ctx);
+			terminalInputUnsubscribe = ctx.ui.onTerminalInput((data) => {
+				if (matchesKey(data, "escape") && !ctx.isIdle()) escapeRequested = true;
+			});
+		}
+	});
+
+	pi.on("before_agent_start", () => {
+		// This is the top-level prompt boundary. agent_start is only a low-level
+		// run and can fire again for retries, compaction retries, or continuations.
+		pending = undefined;
+		pendingText = undefined;
+		producedWork = false;
+		escapeRequested = false;
+		unsendOnSettle = false;
 	});
 
 	pi.on("agent_start", () => {
-		// Do NOT resolve entryId here: agent_start fires before the new user
-		// message is appended, so the branch still points at the previous prompt.
-		producedWork = false;
+		// Preserve producedWork across low-level retries and continuations, but
+		// only consider Escape input from this specific low-level run.
+		escapeRequested = false;
 		unsendOnSettle = false;
 	});
 
@@ -202,8 +224,6 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 			// Content is available, but appendMessage runs after this handler —
 			// only remember the text; resolve entryId once the user is on the branch.
 			pendingText = messageText(event.message.content).trim() || undefined;
-			producedWork = false;
-			unsendOnSettle = false;
 			return;
 		}
 		if (event.message.role !== "assistant") return;
@@ -213,19 +233,25 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 		unsendOnSettle = shouldUnsend({
 			stopReason: event.message.stopReason,
 			producedWork,
+			escapeRequested,
 			pending,
 			mode: ctx.mode,
 		});
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
-		if (!unsendOnSettle || unsending) return;
+		if (!unsendOnSettle || unsending) {
+			escapeRequested = false;
+			return;
+		}
 		if (!refreshPending(ctx)) {
 			unsendOnSettle = false;
+			escapeRequested = false;
 			return;
 		}
 
 		unsendOnSettle = false;
+		escapeRequested = false;
 		unsending = true;
 
 		// Let the main loop return to getUserInput (or accept pendingUserInputs)
