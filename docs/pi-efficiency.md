@@ -34,6 +34,7 @@ capability does not connect to a server, expose configuration, or perform an ext
 
 Long-running work displays a coarse phase derived from actual model and tool lifecycle events:
 
+- `Working` when no tool is active
 - `Inspecting`
 - `Editing`
 - `Running tests`

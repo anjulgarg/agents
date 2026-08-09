@@ -109,7 +109,7 @@ assert(
 	harness.registerToolCalls === 0 &&
 		harness.activeToolReads === 0 &&
 		!harness.handlers.has("before_agent_start") &&
-		ACTIVITY_PHASES.length === 5 &&
+		ACTIVITY_PHASES.length === 6 &&
 		!harness.handlers.has("promptGuidelines"),
 	JSON.stringify({
 		handlers: [...harness.handlers.keys()],
@@ -322,6 +322,40 @@ assert(
 	harness.appended.length === 1 && tui.workingMessages.at(-1) === undefined,
 	JSON.stringify({ appended: harness.appended, workingMessages: tui.workingMessages }),
 );
+
+const noToolHarness = createHarness();
+const noToolContext = createContext("tui");
+noToolHarness.emit("agent_start", { type: "agent_start" }, noToolContext.context);
+noToolHarness.emit(
+	"message_end",
+	{
+		type: "message_end",
+		message: { role: "assistant", stopReason: "stop", usage: { output: 429 } },
+	},
+	noToolContext.context,
+);
+const noToolActivity = noToolHarness.appended.at(-1);
+const noToolRendered = noToolHarness.renderers
+	.get(ACTIVITY_ENTRY_TYPE)?.({ data: noToolActivity?.data }, {}, theme)
+	.render(100) as string[];
+const staleNoToolRendered = noToolHarness.renderers
+	.get(ACTIVITY_ENTRY_TYPE)?.(
+		{ data: { ...noToolActivity?.data, phase: "Running command" } },
+		{},
+		theme,
+	)
+	.render(100) as string[];
+assert(
+	"tool-free history receipts use the generic working phase",
+	noToolActivity?.data.phase === "Working" &&
+		noToolActivity.data.toolCount === 0 &&
+		noToolRendered.join("\n").includes("Working...") &&
+		!noToolRendered.join("\n").includes("Running command") &&
+		staleNoToolRendered.join("\n").includes("Working...") &&
+		!staleNoToolRendered.join("\n").includes("Running command"),
+	JSON.stringify({ noToolActivity, noToolRendered, staleNoToolRendered }),
+);
+noToolHarness.emit("agent_settled", { type: "agent_settled" }, noToolContext.context);
 
 const commandCases: Array<[string, string]> = [
 	["npm test", "Running tests"],

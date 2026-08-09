@@ -10,6 +10,7 @@ export const WORKING_FRAME_INTERVAL_MS = 120;
 
 export const ACTIVITY_ENTRY_TYPE = "announce-step-activity";
 export const ACTIVITY_PHASES = [
+	"Working",
 	"Inspecting",
 	"Editing",
 	"Running tests",
@@ -167,7 +168,7 @@ function createTokenCounters(): TokenCounters {
 function createActiveRun(startedAt: number): ActiveRun {
 	return {
 		startedAt,
-		phase: "Running command",
+		phase: WORKING_PHASE,
 		phaseStatus: "running",
 		toolCount: 0,
 		changedFiles: new Set(),
@@ -271,12 +272,15 @@ function activityEntryData(entry: unknown): ActivityEntry | undefined {
 		!Array.isArray(data.changedFiles)
 	)
 		return undefined;
+	const toolCount = Math.max(0, data.toolCount);
+	const phase =
+		data.phase === "Running command" && toolCount === 0 ? WORKING_PHASE : (data.phase as ActivityPhase);
 	return {
-		phase: data.phase as ActivityPhase,
+		phase,
 		durationMs: Math.max(0, data.durationMs),
 		status: data.status as ActivityStatus,
 		receivedTokens: safeNumber(data.receivedTokens) ?? 0,
-		toolCount: Math.max(0, data.toolCount),
+		toolCount,
 		changedFiles: data.changedFiles.filter((path): path is string => typeof path === "string"),
 	};
 }
