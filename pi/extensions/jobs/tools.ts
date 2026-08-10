@@ -8,11 +8,9 @@ import { Type } from "typebox";
 
 import {
 	ExpandableToolRender,
-	SynchronizedShimmerRender,
 	TOOL_CHAT_PADDING,
 	emptyCollapsedToolRender,
 	formatToolDuration,
-	type ToolActivitySnapshot,
 } from "../lib/tui/index.ts";
 import {
 	JOB_MANAGEMENT_TOOLS,
@@ -51,6 +49,8 @@ export type JobStartDetails = {
 export type JobToolOptions = {
 	/** Directory check seam for tests; defaults to a real filesystem stat. */
 	isDirectory?: (candidate: string) => boolean;
+	/** Called after a job is registered so UI projections can claim its lifecycle. */
+	onJobStarted?: (job: JobSnapshot) => void;
 };
 
 function defaultIsDirectory(candidate: string): boolean {
@@ -112,24 +112,6 @@ export function resolveJobTimeoutMs(raw: number | undefined): number {
 		);
 	}
 	return raw * 1000;
-}
-
-/**
- * Manager state, not `ToolRenderContext.isPartial`, decides liveness: `job`
- * returns as soon as the process starts, so the host row is never partial.
- * Only `running` shimmer; queued/stopping stay static but still invalidate.
- */
-export function jobActivity(job: JobSnapshot): ToolActivitySnapshot {
-	return {
-		active: job.status === "running",
-		startedAt: job.startedAt,
-		endedAt: job.finishedAt,
-		elapsedMs: job.durationMs,
-	};
-}
-
-export function jobNeedsInvalidator(job: JobSnapshot): boolean {
-	return !isTerminalJobStatus(job.status);
 }
 
 export function jobOutcomeLabel(job: JobSnapshot): string | undefined {
@@ -386,10 +368,10 @@ export function registerJobTools(
 	pi: ExtensionAPI,
 	manager: JobManagerApi,
 	options: JobToolOptions = {},
-): void {
+): () => void {
 	const isDirectory = options.isDirectory ?? defaultIsDirectory;
-	/** Live manager invalidator subscriptions, keyed by tool call row. */
-	const invalidators = new Map<string, () => void>();
+	/** Transcript callbacks are used once, only to reveal the final receipt. */
+	const receiptInvalidators = new Map<string, Set<() => void>>();
 
 	const lookup = (jobId: string): JobSnapshot | undefined => {
 		try {
@@ -399,21 +381,27 @@ export function registerJobTools(
 		}
 	};
 
-	const syncInvalidator = (
-		key: string,
-		jobId: string,
-		active: boolean,
-		invalidate: (() => void) | undefined,
-	): void => {
-		if (active && invalidate && !invalidators.has(key)) {
-			invalidators.set(key, manager.registerInvalidator(jobId, invalidate));
-			return;
-		}
-		if (!active && invalidators.has(key)) {
-			invalidators.get(key)?.();
-			invalidators.delete(key);
-		}
+	const watchFinalReceipt = (jobId: string, invalidate: (() => void) | undefined): void => {
+		if (!invalidate) return;
+		const callbacks = receiptInvalidators.get(jobId) ?? new Set<() => void>();
+		callbacks.add(invalidate);
+		receiptInvalidators.set(jobId, callbacks);
 	};
+
+	const unsubscribe = manager.subscribe?.(() => {
+		for (const [jobId, callbacks] of receiptInvalidators) {
+			const job = lookup(jobId);
+			if (!job || !isTerminalJobStatus(job.status)) continue;
+			receiptInvalidators.delete(jobId);
+			for (const invalidate of callbacks) {
+				try {
+					invalidate();
+				} catch {
+					// A stale transcript row must not block other job receipts.
+				}
+			}
+		}
+	});
 
 	pi.registerTool({
 		name: "job",
@@ -447,6 +435,7 @@ export function registerJobTools(
 
 			const job = manager.start({ command, cwd, label: label || undefined, timeoutMs });
 			activateManagementTools(pi);
+			options.onJobStarted?.(job);
 
 			const details: JobStartDetails = {
 				jobId: job.jobId,
@@ -473,9 +462,7 @@ export function registerJobTools(
 
 		renderResult(result, _options, theme, context) {
 			const details = result.details as JobStartDetails | undefined;
-			const key = `${context.toolCallId ?? ""}:${details?.jobId ?? ""}`;
 			if (!details?.jobId) {
-				syncInvalidator(key, "", false, undefined);
 				const message = oneLine(firstText(result)) || "job failed to start";
 				return new JobReceiptLine(theme, message, "error");
 			}
@@ -495,15 +482,11 @@ export function registerJobTools(
 					outputTail: "",
 					truncated: false,
 				} satisfies JobSnapshot);
-			const activity = jobActivity(job);
-			// Expanded details include a growing outputTail; subscribing them to
-			// the live clock reflows the whole transcript and makes the TUI thrash.
-			const needsLivePaint = jobNeedsInvalidator(job) && !context.expanded;
-			syncInvalidator(key, job.jobId, needsLivePaint, context.invalidate);
-
+			if (!isTerminalJobStatus(job.status)) watchFinalReceipt(job.jobId, context.invalidate);
 			if (context.expanded) return renderJobDetails(job, theme);
-			const row = new JobReceiptLine(theme, jobReceiptSegments(job));
-			return activity.active ? new SynchronizedShimmerRender(row, theme, activity) : row;
+			if (!isTerminalJobStatus(job.status)) return emptyCollapsedToolRender();
+			receiptInvalidators.delete(job.jobId);
+			return new JobReceiptLine(theme, jobReceiptSegments(job));
 		},
 	});
 
@@ -637,4 +620,9 @@ export function registerJobTools(
 			);
 		},
 	});
+
+	return () => {
+		unsubscribe?.();
+		receiptInvalidators.clear();
+	};
 }

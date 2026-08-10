@@ -2,7 +2,6 @@ import * as path from "node:path";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-import { SynchronizedShimmerRender } from "../lib/tui/index.ts";
 import {
 	isTerminalJobStatus,
 	type JobManagerApi,
@@ -88,6 +87,7 @@ class FakeManager implements JobManagerApi {
 	disposeCount = 0;
 	resultValue: JobResult | undefined;
 	private nextId = 1;
+	private readonly listeners = new Set<() => void>();
 
 	start(spec: JobSpec): JobSnapshot {
 		const job = makeSnapshot({
@@ -99,6 +99,7 @@ class FakeManager implements JobManagerApi {
 		});
 		this.started.push(spec);
 		this.jobs.set(job.jobId, job);
+		this.emit();
 		return job;
 	}
 
@@ -149,12 +150,22 @@ class FakeManager implements JobManagerApi {
 		};
 	}
 
+	subscribe(listener: () => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	}
+
 	async dispose(): Promise<void> {
 		this.disposeCount++;
 	}
 
 	setJob(job: JobSnapshot): void {
 		this.jobs.set(job.jobId, job);
+		this.emit();
+	}
+
+	private emit(): void {
+		for (const listener of this.listeners) listener();
 	}
 }
 
@@ -671,17 +682,16 @@ function testReceiptRows(): void {
 		.trim();
 
 	assert(
-		"job receipts use the & prefix with running, completed, and failure formats",
-		rows.running === "& npm run build · running 4.2s" &&
-			rows.labelled === "& build · running 4.2s" &&
+		"running jobs stay out of the transcript while final receipts retain their format",
+		rows.running === "" &&
+			rows.labelled === "" &&
 			rows.completed === "& npm run build · 42.1s" &&
 			rows.failed === "& npm run build · exit 1 · 42.1s",
 		JSON.stringify(rows),
 	);
 	assert(
-		"queued and stopping receipts use explicit status words instead of running",
-		rows.queued === "& npm run build · queued 4.2s" &&
-			rows.stopping === "& npm run build · stopping 4.2s",
+		"queued and stopping jobs stay out of the transcript",
+		rows.queued === "" && rows.stopping === "",
 		JSON.stringify({ queued: rows.queued, stopping: rows.stopping }),
 	);
 	assert(
@@ -707,11 +717,13 @@ function testReceiptRows(): void {
 		JSON.stringify({ callRow, expandedCallRow }),
 	);
 	assert(
-		"job receipts never add success checkmarks or a leading failure cross",
-		Object.values(rows).every(
-			(row) =>
-				!row.includes("✓") && !row.includes("✗") && !row.includes("×") && row.startsWith("& "),
-		),
+		"final job receipts never add success checkmarks or a leading failure cross",
+		Object.values(rows)
+			.filter(Boolean)
+			.every(
+				(row) =>
+					!row.includes("✓") && !row.includes("✗") && !row.includes("×") && row.startsWith("& "),
+			),
 		JSON.stringify(rows),
 	);
 	const failedSnapshot = makeSnapshot({
@@ -731,7 +743,7 @@ function testReceiptRows(): void {
 	);
 }
 
-function testShimmerAndStyling(): void {
+function testTranscriptLivenessAndStyling(): void {
 	const { manager, tool } = setup();
 	const details = {
 		jobId: "job-1",
@@ -754,34 +766,20 @@ function testShimmerAndStyling(): void {
 	manager.setJob(makeSnapshot({ status: "running", durationMs: 4_200 }));
 	const live = renderRow(tool("job"), manager, details, context);
 	assert(
-		"running receipts shimmer from manager state rather than ToolRenderContext.isPartial",
-		live.component instanceof SynchronizedShimmerRender &&
-			context.isPartial === false &&
-			context.executionStarted === false &&
-			live.lines.join("").includes("running 4.2s"),
+		"running receipts remain absent from transcript rendering",
+		live.lines.length === 0 && context.isPartial === false && context.executionStarted === false,
 		JSON.stringify(live.lines),
 	);
 	assert(
-		"the running receipt registers its invalidator with the manager exactly once",
-		manager.invalidatorCalls.length === 1 &&
-			manager.invalidatorCalls[0]!.jobId === "job-1" &&
-			manager.invalidatorCalls[0]!.invalidate === invalidate,
+		"running transcript receipts never join the manager animation clock",
+		manager.invalidatorCalls.length === 0,
 		JSON.stringify(manager.invalidatorCalls.map((call) => call.jobId)),
 	);
-	renderRow(tool("job"), manager, details, context);
-	assert(
-		"repeated paints of a live receipt do not stack manager subscriptions",
-		manager.invalidatorCalls.length === 1 && manager.unregisterCount === 0,
-		`${manager.invalidatorCalls.length}/${manager.unregisterCount}`,
-	);
-
-	manager.invalidatorCalls[0]!.invalidate();
 	manager.setJob(makeSnapshot({ status: "completed", durationMs: 42_100, finishedAt: 43_100 }));
 	const settled = renderRow(tool("job"), manager, details, context);
 	assert(
-		"completion stops the shimmer and releases the manager invalidator",
-		!(settled.component instanceof SynchronizedShimmerRender) &&
-			manager.unregisterCount === 1 &&
+		"completion invalidates once to reveal the final transcript receipt",
+		manager.unregisterCount === 0 &&
 			invalidateCalls === 1 &&
 			settled.lines.join("").includes("42.1s"),
 		`${manager.unregisterCount} ${invalidateCalls} ${JSON.stringify(settled.lines)}`,
@@ -800,14 +798,13 @@ function testShimmerAndStyling(): void {
 		renderContext({ toolCallId: "row-stopping-live", invalidate }),
 	);
 	assert(
-		"queued and stopping stay static without shimmer but still register invalidators",
-		!(queued.component instanceof SynchronizedShimmerRender) &&
-			!(stopping.component instanceof SynchronizedShimmerRender) &&
-			manager.invalidatorCalls.length === 2 &&
-			manager.invalidatorCalls.every((call) => call.jobId === "job-1"),
+		"queued and stopping jobs stay hidden without animation invalidators",
+		queued.lines.length === 0 &&
+			stopping.lines.length === 0 &&
+			manager.invalidatorCalls.length === 0,
 		JSON.stringify({
-			queued: queued.component.constructor.name,
-			stopping: stopping.component.constructor.name,
+			queued: queued.lines,
+			stopping: stopping.lines,
 			invalidators: manager.invalidatorCalls.length,
 		}),
 	);
@@ -896,7 +893,7 @@ function testShimmerAndStyling(): void {
 	);
 }
 
-function testExpandedSkipsLiveInvalidator(): void {
+function testExpandedLiveDetailsStayStatic(): void {
 	const { manager, tool } = setup();
 	const details = {
 		jobId: "job-1",
@@ -908,32 +905,28 @@ function testExpandedSkipsLiveInvalidator(): void {
 	const invalidate = (): void => undefined;
 	manager.setJob(makeSnapshot({ status: "running", durationMs: 4_200 }));
 
-	renderRow(tool("job"), manager, details, renderContext({ toolCallId: "row-live", invalidate }));
+	const collapsed = renderRow(
+		tool("job"),
+		manager,
+		details,
+		renderContext({ toolCallId: "row-live", invalidate }),
+	);
 	assert(
-		"collapsed running receipts subscribe to the manager invalidate clock",
-		manager.invalidatorCalls.length === 1 && manager.unregisterCount === 0,
-		`${manager.invalidatorCalls.length}/${manager.unregisterCount}`,
+		"collapsed running receipts remain absent and static",
+		collapsed.lines.length === 0 && manager.invalidatorCalls.length === 0,
+		JSON.stringify(collapsed.lines),
 	);
 
-	renderRow(
+	const expanded = renderRow(
 		tool("job"),
 		manager,
 		details,
 		renderContext({ toolCallId: "row-live", invalidate, expanded: true }),
 	);
 	assert(
-		"Ctrl+O expanded running details drop the live invalidate subscription",
-		manager.unregisterCount === 1 && manager.invalidatorCalls.length === 1,
-		`${manager.invalidatorCalls.length}/${manager.unregisterCount}`,
-	);
-
-	manager.invalidatorCalls.length = 0;
-	manager.unregisterCount = 0;
-	renderRow(tool("job"), manager, details, renderContext({ toolCallId: "row-live", invalidate }));
-	assert(
-		"collapsing a running receipt re-subscribes to the invalidate clock",
-		manager.invalidatorCalls.length === 1 && manager.unregisterCount === 0,
-		`${manager.invalidatorCalls.length}/${manager.unregisterCount}`,
+		"expanded running details remain available without joining the animation clock",
+		expanded.lines.join("\n").includes("status running") && manager.invalidatorCalls.length === 0,
+		JSON.stringify(expanded.lines),
 	);
 }
 
@@ -1068,6 +1061,62 @@ function testManagementRowVisibility(): void {
 			render("job_cancel", failure, errored).includes("Unknown job nope"),
 		`${render("job_status", success, expanded)} | ${render("job_status", failure, errored)}`,
 	);
+}
+
+async function testFixedActivityPanel(): Promise<void> {
+	const pi = new FakePi(["bash"]);
+	const manager = new FakeManager();
+	registerJobsExtension(pi as any, { createManager: () => manager, isDirectory: () => true });
+	let widget: any;
+	let renderRequests = 0;
+	const tui = { requestRender: () => renderRequests++ } as any;
+	const ui = {
+		theme: plainTheme,
+		setWidget: (_key: string, content: any) => {
+			widget?.dispose?.();
+			widget = typeof content === "function" ? content(tui, plainTheme) : undefined;
+		},
+	} as any;
+	const ctx = {
+		mode: "tui",
+		cwd: "/repo",
+		ui,
+		sessionManager: { getBranch: () => [] },
+	} as any;
+	await pi.handlers.get("session_start")!({ type: "session_start", reason: "startup" }, ctx);
+	const jobTool = pi.tools.get("job")!;
+	for (let index = 1; index <= 5; index++) {
+		await jobTool.execute(
+			`call-${index}`,
+			{ command: `command-${index}`, label: `label-${index}` },
+			undefined,
+			undefined,
+			ctx,
+		);
+	}
+	const running = widget.render(80).map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	assert(
+		"running async commands occupy the fixed panel with command text and overflow",
+		running.length === 3 &&
+			running[0]!.includes("& command-1") &&
+			!running[0]!.includes("label-1") &&
+			running[2]!.includes("+ 3 more async commands"),
+		JSON.stringify(running),
+	);
+
+	for (const job of manager.status()) {
+		manager.setJob({
+			...job,
+			status: "completed",
+			finishedAt: job.startedAt + job.durationMs,
+		});
+	}
+	assert(
+		"completed async commands leave the panel and stop its animation host",
+		widget === undefined && renderRequests > 0,
+		JSON.stringify({ widget: Boolean(widget), renderRequests }),
+	);
+	await pi.handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "quit" }, ctx);
 }
 
 async function testLifecycleAndPersistence(): Promise<void> {
@@ -1259,8 +1308,9 @@ await testStartActivationAndValidation();
 await testStatusResultCancel();
 await testStatusListCap();
 testReceiptRows();
-testShimmerAndStyling();
-testExpandedSkipsLiveInvalidator();
+testTranscriptLivenessAndStyling();
+testExpandedLiveDetailsStayStatic();
 testExpandedDetailsAndErrors();
 testManagementRowVisibility();
+await testFixedActivityPanel();
 await testLifecycleAndPersistence();

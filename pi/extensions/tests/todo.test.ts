@@ -213,10 +213,8 @@ assert(
 );
 const openWidget = widgetFactory(undefined, theme).render(80) as string[];
 assert(
-	"todo widget leaves one blank line above the input",
-	openWidget.length === 4 &&
-		openWidget.at(-1) === "" &&
-		openWidget.at(-2)?.includes("Third") === true,
+	"todo section delegates spacing to the shared panel",
+	openWidget.length === 3 && openWidget.at(-1)?.includes("Third") === true,
 	JSON.stringify(openWidget),
 );
 

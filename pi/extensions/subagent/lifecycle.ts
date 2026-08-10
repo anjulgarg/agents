@@ -118,6 +118,8 @@ export function registerSubagentLifecycle(pi: ExtensionAPI, runtime: SubagentRun
 	});
 
 	pi.on("session_tree", (_event, ctx) => {
+		runtime.clearActivityWidget();
+		runtime.setActivityContext(ctx.mode === "tui" ? ctx : undefined);
 		// Branch navigation changes which parent snapshots are visible. Never
 		// retain a registry reconstructed from another branch.
 		const sessions = runtime.refreshPersistentState(ctx);

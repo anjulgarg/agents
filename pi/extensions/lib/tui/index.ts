@@ -57,6 +57,17 @@ export {
 	type ToolRevealContext,
 } from "./tool-render.ts";
 export {
+	BOTTOM_PANEL_MAX_LINES,
+	BOTTOM_PANEL_SECTION_ORDER,
+	BOTTOM_PANEL_WIDGET_KEY,
+	BottomPanel,
+	getBottomPanel,
+	type BottomPanelSectionHandle,
+	type BottomPanelSectionOptions,
+	type BottomPanelSectionPatch,
+	type BottomPanelSectionRenderer,
+} from "./bottom-panel.ts";
+export {
 	SoftGroupTracker,
 	SynchronizedShimmerRender,
 	bindSoftGroupTracker,

@@ -1276,16 +1276,22 @@ async function testParentActivityWidget(): Promise<void> {
 	const children: FakeChild[] = [];
 	const supervisor = install(pi, children);
 	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-test-"));
-	const widgets = new Map<string, string[] | undefined>();
+	let activityPanel: any;
+	const tui = { requestRender: () => undefined } as any;
+	const activityTheme = {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	};
 	const ctx = fakeCtx({
 		cwd: promptRoot,
 		mode: "tui",
 		ui: {
 			notify: () => {},
 			custom: async () => {},
-			theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-			setWidget: (key: string, content: string[] | undefined) => {
-				widgets.set(key, content);
+			theme: activityTheme,
+			setWidget: (_key: string, content: any) => {
+				activityPanel?.dispose?.();
+				activityPanel = typeof content === "function" ? content(tui, activityTheme) : undefined;
 			},
 		},
 	});
@@ -1299,13 +1305,13 @@ async function testParentActivityWidget(): Promise<void> {
 			},
 			ctx,
 		);
-		const running = widgets.get("subagent-activity")?.[0] ?? "";
+		const running = activityPanel?.render(120)?.[0] ?? "";
 		children[0].settle("done");
-		const partial = widgets.get("subagent-activity")?.[0] ?? "";
+		const partial = activityPanel?.render(120)?.[0] ?? "";
 		children[1].settle("done");
 		children[2].settle("done");
 		children[3].settle("done");
-		const completed = widgets.get("subagent-activity")?.[0] ?? "";
+		const completed = activityPanel?.render(120)?.[0] ?? "";
 		assert(
 			name,
 			running.includes("Subagents") &&
@@ -1332,16 +1338,22 @@ async function testParentActivityWidgetAggregatesStandaloneRuns(): Promise<void>
 	const children: FakeChild[] = [];
 	const supervisor = install(pi, children);
 	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-test-"));
-	const widgets = new Map<string, string[] | undefined>();
+	let activityPanel: any;
+	const tui = { requestRender: () => undefined } as any;
+	const activityTheme = {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	};
 	const ctx = fakeCtx({
 		cwd: promptRoot,
 		mode: "tui",
 		ui: {
 			notify: () => {},
 			custom: async () => {},
-			theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-			setWidget: (key: string, content: string[] | undefined) => {
-				widgets.set(key, content);
+			theme: activityTheme,
+			setWidget: (_key: string, content: any) => {
+				activityPanel?.dispose?.();
+				activityPanel = typeof content === "function" ? content(tui, activityTheme) : undefined;
 			},
 		},
 	});
@@ -1349,11 +1361,11 @@ async function testParentActivityWidgetAggregatesStandaloneRuns(): Promise<void>
 		await pi.emit("session_start", {}, ctx);
 		await callTool(pi, "subagent", { task: "first standalone task" }, ctx);
 		await callTool(pi, "subagent", { task: "second standalone task" }, ctx);
-		const running = widgets.get("subagent-activity")?.[0] ?? "";
+		const running = activityPanel?.render(120)?.[0] ?? "";
 		children[0].settle("first done");
-		const partial = widgets.get("subagent-activity")?.[0] ?? "";
+		const partial = activityPanel?.render(120)?.[0] ?? "";
 		children[1].settle("second done");
-		const completed = widgets.get("subagent-activity")?.[0] ?? "";
+		const completed = activityPanel?.render(120)?.[0] ?? "";
 		assert(
 			name,
 			children.length === 2 &&

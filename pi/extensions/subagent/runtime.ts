@@ -8,6 +8,7 @@ import {
 	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
 
 import { killSubagentRuns } from "./control.ts";
@@ -50,12 +51,18 @@ import {
 	type TaskState,
 } from "./supervisor.ts";
 import { buildThreadGroups, SubagentThreadView, type SubagentThreadGroup } from "./ui.ts";
-import { fullscreenOverlayOptions } from "../lib/tui/index.ts";
+import {
+	BOTTOM_PANEL_SECTION_ORDER,
+	fullscreenOverlayOptions,
+	getBottomPanel,
+	type BottomPanel,
+	type BottomPanelSectionHandle,
+} from "../lib/tui/index.ts";
 
 const execFileAsync = promisify(execFile);
 const PERSIST_TYPE = "subagent-state";
 const WAKE_MESSAGE_TYPE = "subagent-wake";
-const ACTIVITY_WIDGET_KEY = "subagent-activity";
+const ACTIVITY_SECTION = "subagents";
 const ACTIVITY_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 const ACTIVITY_FRAME_INTERVAL_MS = 360;
 const ACTIVITY_COMPLETION_MS = 5000;
@@ -308,11 +315,13 @@ export class SubagentRuntime {
 	private readonly approvedManualRetries = new Set<string>();
 	private activeTeamRunId: string | undefined;
 	private activityContext: ExtensionContext | undefined;
+	private activityPanel: BottomPanel | undefined;
+	private activitySection: BottomPanelSectionHandle | undefined;
 	private activityGroupKey: string | undefined;
-	private activityFrame = 0;
+	private activityGroup: SubagentThreadGroup | undefined;
+	private activityRunning = 0;
 	private previousActivityRunning = 0;
 	private activityCompletionUntil = 0;
-	private activityTimer: ReturnType<typeof setInterval> | undefined;
 	private activityCompletionTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly dashboardListeners = new Set<() => void>();
 
@@ -904,13 +913,27 @@ export class SubagentRuntime {
 	}
 
 	setActivityContext(ctx: ExtensionContext | undefined): void {
+		const nextPanel = ctx?.mode === "tui" ? getBottomPanel(ctx) : undefined;
+		if (nextPanel !== this.activityPanel) {
+			this.activitySection?.remove();
+			this.activitySection = undefined;
+			this.activityPanel = nextPanel;
+		}
 		this.activityContext = ctx;
+		if (this.activityGroup) this.updateActivitySection();
 	}
 
 	clearActivityWidget(): void {
-		this.stopActivityAnimation();
 		this.clearActivityCompletionTimer();
-		this.activityContext?.ui.setWidget(ACTIVITY_WIDGET_KEY, undefined);
+		this.activitySection?.remove();
+		this.activitySection = undefined;
+		this.activityPanel = undefined;
+		this.activityContext = undefined;
+		this.activityGroup = undefined;
+		this.activityGroupKey = undefined;
+		this.activityRunning = 0;
+		this.previousActivityRunning = 0;
+		this.activityCompletionUntil = 0;
 	}
 
 	private async hydratePersistentThreadHistory(ctx: ExtensionContext): Promise<void> {
@@ -1036,6 +1059,7 @@ export class SubagentRuntime {
 	}
 
 	restoreSession(ctx: ExtensionContext): boolean {
+		this.clearActivityWidget();
 		this.setActivityContext(ctx.mode === "tui" ? ctx : undefined);
 		const persisted = loadPersistedRuns(ctx);
 		for (const run of persisted.values()) {
@@ -1235,48 +1259,70 @@ export class SubagentRuntime {
 		this.updateActivityWidget();
 	}
 
-	private stopActivityAnimation(): void {
-		if (!this.activityTimer) return;
-		clearInterval(this.activityTimer);
-		this.activityTimer = undefined;
-	}
-
 	private clearActivityCompletionTimer(): void {
 		if (!this.activityCompletionTimer) return;
 		clearTimeout(this.activityCompletionTimer);
 		this.activityCompletionTimer = undefined;
 	}
 
-	private renderActivityWidget(group: SubagentThreadGroup, running: number): void {
-		const ctx = this.activityContext;
-		if (!ctx || ctx.mode !== "tui") return;
-		const theme = ctx.ui.theme;
+	private removeActivitySection(): void {
+		this.activitySection?.remove();
+		this.activitySection = undefined;
+		this.activityGroup = undefined;
+		this.activityRunning = 0;
+	}
+
+	private renderActivityLine(_width: number, theme: Theme): string[] {
+		const group = this.activityGroup;
+		if (!group) return [];
 		const completed = group.items.filter((item) => item.result.done && !item.result.error).length;
 		const failed = group.items.filter((item) => item.result.done && item.result.error).length;
-		const done = running === 0;
+		const done = this.activityRunning === 0;
 		const label = group.teamRunId
 			? `${this.teamNames.get(group.teamRunId) ?? "Team"} team`
 			: "Subagents";
-
+		const frame =
+			ACTIVITY_FRAMES[Math.floor(Date.now() / ACTIVITY_FRAME_INTERVAL_MS) % ACTIVITY_FRAMES.length];
 		const spinner = done
 			? theme.fg(failed > 0 ? "warning" : "success", "✓")
-			: theme.fg("accent", ACTIVITY_FRAMES[this.activityFrame]);
+			: theme.fg("accent", frame);
 		const title = theme.bold(theme.fg(done ? "muted" : "accent", label));
 		const counts = [
-			running > 0 ? theme.fg("warning", `${running} active`) : undefined,
+			this.activityRunning > 0 ? theme.fg("warning", `${this.activityRunning} active`) : undefined,
 			completed > 0 ? theme.fg("success", `${completed} done`) : undefined,
 			failed > 0 ? theme.fg("error", `${failed} failed`) : undefined,
 		].filter((part): part is string => Boolean(part));
 		const separator = theme.fg("dim", " · ");
 		const hint = theme.fg("dim", "F6") + theme.fg("muted", " view");
+		return [` ${spinner}  ${title}   ${counts.join(separator)}   ${hint}`];
+	}
 
-		const line = `${spinner}  ${title}   ${counts.join(separator)}   ${hint}`;
-		ctx.ui.setWidget(ACTIVITY_WIDGET_KEY, [line], { placement: "aboveEditor" });
+	private updateActivitySection(): void {
+		const panel = this.activityPanel;
+		if (!panel || !this.activityGroup) return;
+		if (!this.activitySection) {
+			this.activitySection = panel.registerSection(ACTIVITY_SECTION, {
+				order: BOTTOM_PANEL_SECTION_ORDER.subagents,
+				maxLines: 1,
+				refreshIntervalMs: this.activityRunning > 0 ? ACTIVITY_FRAME_INTERVAL_MS : undefined,
+				render: (width, theme) => this.renderActivityLine(width, theme),
+			});
+			return;
+		}
+		this.activitySection.update({
+			refreshIntervalMs: this.activityRunning > 0 ? ACTIVITY_FRAME_INTERVAL_MS : null,
+		});
+	}
+
+	private renderActivityWidget(group: SubagentThreadGroup, running: number): void {
+		this.activityGroup = group;
+		this.activityRunning = running;
+		this.updateActivitySection();
 	}
 
 	private updateActivityWidget(): void {
 		const ctx = this.activityContext;
-		if (!ctx || ctx.mode !== "tui") return;
+		if (!ctx || ctx.mode !== "tui" || !this.activityPanel) return;
 		const groups = buildThreadGroups(this.allDashboardRuns());
 		const activeTeamKey = this.activeTeamRunId ? `team:${this.activeTeamRunId}` : undefined;
 		const activeTeamGroup = groups.find((group) => group.key === activeTeamKey);
@@ -1293,26 +1339,11 @@ export class SubagentRuntime {
 			this.activityGroupKey = group.key;
 			this.activityCompletionUntil = 0;
 			this.clearActivityCompletionTimer();
-			if (!this.activityTimer) {
-				this.activityTimer = setInterval(() => {
-					this.activityFrame = (this.activityFrame + 1) % ACTIVITY_FRAMES.length;
-					const current = buildThreadGroups(this.allDashboardRuns()).find(
-						(candidate) => candidate.key === this.activityGroupKey,
-					);
-					if (current)
-						this.renderActivityWidget(
-							current,
-							current.items.filter((item) => !item.result.done).length,
-						);
-				}, ACTIVITY_FRAME_INTERVAL_MS);
-				this.activityTimer.unref?.();
-			}
 			this.renderActivityWidget(group, running);
 			this.previousActivityRunning = running;
 			return;
 		}
 
-		this.stopActivityAnimation();
 		if (group && this.previousActivityRunning > 0) {
 			this.activityCompletionUntil = Date.now() + ACTIVITY_COMPLETION_MS;
 			this.clearActivityCompletionTimer();
@@ -1320,13 +1351,13 @@ export class SubagentRuntime {
 				this.activityCompletionTimer = undefined;
 				this.activityCompletionUntil = 0;
 				this.previousActivityRunning = 0;
-				this.activityContext?.ui.setWidget(ACTIVITY_WIDGET_KEY, undefined);
+				this.removeActivitySection();
 			}, ACTIVITY_COMPLETION_MS);
 			this.activityCompletionTimer.unref?.();
 		}
 		this.previousActivityRunning = 0;
 		if (group && this.activityCompletionUntil > Date.now()) this.renderActivityWidget(group, 0);
-		else ctx.ui.setWidget(ACTIVITY_WIDGET_KEY, undefined);
+		else this.removeActivitySection();
 	}
 }
 

@@ -93,5 +93,7 @@ export interface JobManagerApi {
 	setParentSettled(settled: boolean): void;
 	setWakeSuppressed(suppressed: boolean): void;
 	registerInvalidator(jobId: string, invalidate: () => void): () => void;
+	/** Optional lifecycle notifications for UI projections and final receipts. */
+	subscribe?(listener: () => void): () => void;
 	dispose(): Promise<void>;
 }

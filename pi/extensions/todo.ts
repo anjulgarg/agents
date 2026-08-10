@@ -17,11 +17,15 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import {
+	BOTTOM_PANEL_SECTION_ORDER,
 	ExpandableToolRender,
 	emptyCollapsedToolRender,
 	fullscreenOverlayOptions,
+	getBottomPanel,
 	getContentWidth,
 	renderFullscreenScreen,
+	type BottomPanel,
+	type BottomPanelSectionHandle,
 	ScrollViewportState,
 	shouldRevealToolDetails,
 } from "./lib/tui/index.ts";
@@ -358,6 +362,8 @@ export default function todoExtension(pi: ExtensionAPI) {
 	let todos: Todo[] = [];
 	let nextId = 1;
 	let currentCtx: ExtensionContext | undefined;
+	let todoPanel: BottomPanel | undefined;
+	let todoSection: BottomPanelSectionHandle | undefined;
 	let reconciliationQueued = false;
 	let reconciliationTurn = false;
 	let parentTurnAborted = false;
@@ -388,32 +394,40 @@ export default function todoExtension(pi: ExtensionAPI) {
 	};
 
 	const updateWidget = (ctx: ExtensionContext | undefined): void => {
-		if (!ctx || ctx.mode !== "tui") return;
+		const nextPanel = ctx?.mode === "tui" ? getBottomPanel(ctx) : undefined;
+		if (nextPanel !== todoPanel) {
+			todoSection?.remove();
+			todoSection = undefined;
+			todoPanel = nextPanel;
+		}
+		if (!todoPanel) return;
 		if (todos.length === 0 || todos.every((todo) => todo.status === "done")) {
-			ctx.ui.setWidget("todos", undefined);
+			todoSection?.remove();
+			todoSection = undefined;
 			return;
 		}
-		// Render as a component so each line is truncated to the actual width.
-		const items = cloneTodos(todos);
-		ctx.ui.setWidget("todos", (_tui, theme) => ({
-			render(width: number): string[] {
-				const pad = 1;
-				const innerWidth = Math.max(0, width - pad);
-				const lines = items.map((todo) => {
-					const check = colorTodoGlyph(theme, todo.status);
-					const id = theme.fg("dim", `#${todo.id}`);
-					const body =
-						todo.status === "done"
-							? theme.fg("muted", theme.strikethrough(todo.text))
-							: todo.status === "in_progress"
-								? theme.fg("warning", todo.text)
-								: theme.fg("text", todo.text);
-					return " ".repeat(pad) + truncateToWidth(`${check}  ${id}  ${body}`, innerWidth, "…");
-				});
-				return [...lines, ""];
-			},
-			invalidate() {},
-		}));
+		const renderItems = (_width: number, theme: Theme): string[] =>
+			cloneTodos(todos).map((todo) => {
+				const check = colorTodoGlyph(theme, todo.status);
+				const id = theme.fg("dim", `#${todo.id}`);
+				const body =
+					todo.status === "done"
+						? theme.fg("muted", theme.strikethrough(todo.text))
+						: todo.status === "in_progress"
+							? theme.fg("warning", todo.text)
+							: theme.fg("text", todo.text);
+				return ` ${check}  ${id}  ${body}`;
+			});
+		if (!todoSection) {
+			todoSection = todoPanel.registerSection("todos", {
+				order: BOTTOM_PANEL_SECTION_ORDER.todos,
+				maxLines: 6,
+				render: renderItems,
+				overflowLabel: (omitted, theme) => theme.fg("muted", `+ ${omitted} more`),
+			});
+			return;
+		}
+		todoSection.update({ render: renderItems });
 	};
 
 	/** Persist and refresh the widget after a state mutation. */
@@ -585,6 +599,13 @@ export default function todoExtension(pi: ExtensionAPI) {
 		resetReconciliationState();
 		reconstruct(ctx);
 		updateWidget(ctx);
+	});
+
+	pi.on("session_shutdown", () => {
+		todoSection?.remove();
+		todoSection = undefined;
+		todoPanel = undefined;
+		currentCtx = undefined;
 	});
 
 	pi.on("before_agent_start", (event) => {

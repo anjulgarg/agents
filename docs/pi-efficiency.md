@@ -48,6 +48,19 @@ stored as a muted, context-free receipt immediately before the final assistant m
 it. Failure labels and error coloring are omitted. Historical legacy announcement receipts remain
 readable.
 
+## Bottom activity panel
+
+Live async commands, subagent activity, and todos share one fixed panel above the editor instead of
+animating transcript rows. The panel is capped at 10 lines and inserts a blank line between visible
+sections. Async commands appear first with up to 3 lines, subagents next with 1 line, and todos last
+with up to 6 lines. When the combined cap applies, earlier sections reserve space for later ones and
+each overflowing section uses a `+ N more` hint.
+
+Extensions add declarative sections through the shared TUI bottom-panel compositor. It centralizes
+ordering, allocation, truncation, separators, repaint scheduling, and cleanup so future sections do
+not need another fixed widget or animation loop. Only running `& <command>` rows shimmer; completed
+jobs leave the panel and retain their final transcript receipt.
+
 ## Todo lifecycle
 
 The `todo` tool remains immediately available. Related status changes can be applied atomically with

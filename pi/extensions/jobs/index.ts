@@ -1,16 +1,35 @@
-import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
 import {
+	BOTTOM_PANEL_SECTION_ORDER,
+	getBottomPanel,
+	renderSynchronizedShimmerLine,
+	type BottomPanel,
+	type BottomPanelSectionHandle,
+} from "../lib/tui/index.ts";
+import {
 	JOB_MANAGEMENT_TOOLS,
+	isTerminalJobStatus,
 	type JobManagerApi,
 	type JobManagerOptions,
+	type JobSnapshot,
 	type JobWakeDelivery,
 	type PersistedJobRecord,
 } from "./contracts.ts";
 import { JobManager } from "./manager.ts";
 import { createJobProcess } from "./process.ts";
-import { CHAT_PADDING, registerJobTools, type JobToolOptions } from "./tools.ts";
+import {
+	CHAT_PADDING,
+	JobReceiptLine,
+	jobReceiptSegments,
+	registerJobTools,
+	type JobToolOptions,
+} from "./tools.ts";
 import { registerJobCommand } from "./command.ts";
 
 export {
@@ -33,6 +52,23 @@ export const INTERNAL_WAKE_GUIDANCE =
 export interface JobsExtensionOptions extends JobToolOptions {
 	/** Inject a manager in tests; defaults to the real JobManager. */
 	createManager?: (options: JobManagerOptions) => JobManagerApi;
+}
+
+const ASYNC_ACTIVITY_SECTION = "async-commands";
+const ASYNC_ACTIVITY_MAX_LINES = 3;
+const ASYNC_ACTIVITY_REFRESH_MS = 33;
+const ASYNC_SHIMMER_DELAY_MS = 220;
+const ASYNC_SHIMMER_FADE_IN_MS = 300;
+
+function renderAsyncActivityLine(job: JobSnapshot, width: number, theme: Theme): string {
+	const line =
+		new JobReceiptLine(theme, jobReceiptSegments({ ...job, label: "" })).render(width)[0] ?? "";
+	if (job.status !== "running") return line;
+	const amplitude = Math.max(
+		0,
+		Math.min(1, (job.durationMs - ASYNC_SHIMMER_DELAY_MS) / ASYNC_SHIMMER_FADE_IN_MS),
+	);
+	return renderSynchronizedShimmerLine(line, width, theme, Date.now(), amplitude);
 }
 
 /** Latest persisted record per job on the active branch (fork-safe). */
@@ -89,11 +125,72 @@ export function registerJobsExtension(
 		},
 	};
 	const manager = options.createManager?.(managerOptions) ?? new JobManager(managerOptions);
+	let activityPanel: BottomPanel | undefined;
+	let activitySection: BottomPanelSectionHandle | undefined;
 
-	registerJobTools(pi, manager, { isDirectory: options.isDirectory });
+	const clearActivityPanel = (): void => {
+		activitySection?.remove();
+		activitySection = undefined;
+		activityPanel = undefined;
+	};
+
+	const activeJobs = (): JobSnapshot[] => {
+		try {
+			return manager.status().filter((job) => !isTerminalJobStatus(job.status));
+		} catch {
+			return [];
+		}
+	};
+
+	const syncActivityPanel = (): void => {
+		const panel = activityPanel;
+		if (!panel) return;
+		const jobs = activeJobs();
+		if (jobs.length === 0) {
+			activitySection?.remove();
+			activitySection = undefined;
+			return;
+		}
+		const refreshIntervalMs = jobs.some((job) => job.status === "running")
+			? ASYNC_ACTIVITY_REFRESH_MS
+			: undefined;
+		if (!activitySection) {
+			activitySection = panel.registerSection(ASYNC_ACTIVITY_SECTION, {
+				order: BOTTOM_PANEL_SECTION_ORDER.asyncCommands,
+				maxLines: ASYNC_ACTIVITY_MAX_LINES,
+				refreshIntervalMs,
+				render: (width, theme) =>
+					activeJobs().map((job) => renderAsyncActivityLine(job, width, theme)),
+				overflowLabel: (omitted, theme) => theme.fg("muted", `+ ${omitted} more async commands`),
+			});
+			return;
+		}
+		activitySection.update({ refreshIntervalMs: refreshIntervalMs ?? null });
+	};
+
+	const useActivityContext = (ctx: ExtensionContext): void => {
+		const nextPanel = ctx.mode === "tui" ? getBottomPanel(ctx) : undefined;
+		if (nextPanel !== activityPanel) {
+			clearActivityPanel();
+			activityPanel = nextPanel;
+		}
+		syncActivityPanel();
+	};
+
+	const toolCleanup = registerJobTools(pi, manager, {
+		isDirectory: options.isDirectory,
+		onJobStarted: (job) => {
+			options.onJobStarted?.(job);
+			syncActivityPanel();
+		},
+	});
+	const unsubscribeManager = manager.subscribe?.(syncActivityPanel);
 
 	pi.on("session_start", (_event, ctx) => {
+		clearActivityPanel();
+		useActivityContext(ctx);
 		const restored = manager.restore(latestJobRecords(ctx));
+		syncActivityPanel();
 		const active = pi
 			.getActiveTools()
 			.filter(
@@ -132,7 +229,15 @@ export function registerJobsExtension(
 		manager.setWakeSuppressed(false);
 	});
 
+	pi.on("session_tree", (_event, ctx) => {
+		clearActivityPanel();
+		useActivityContext(ctx);
+	});
+
 	pi.on("session_shutdown", async () => {
+		clearActivityPanel();
+		toolCleanup();
+		unsubscribeManager?.();
 		await manager.dispose();
 	});
 

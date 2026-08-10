@@ -272,6 +272,7 @@ export class JobManager implements JobManagerApi {
 	private disposed = false;
 	private wakeFlushTimer?: NodeJS.Timeout;
 	private animationTimer?: NodeJS.Timeout;
+	private readonly listeners = new Set<() => void>();
 
 	constructor(options: JobManagerOptions) {
 		this.createProcess = options.createProcess;
@@ -324,6 +325,7 @@ export class JobManager implements JobManagerApi {
 		};
 		this.jobs.set(job.jobId, job);
 		this.persistJob(job);
+		this.notifyListeners();
 		this.pump();
 		return this.snapshot(job);
 	}
@@ -417,6 +419,17 @@ export class JobManager implements JobManagerApi {
 		return restored;
 	}
 
+	/** Subscribe to lifecycle changes without coupling consumers to the process runtime. */
+	subscribe(listener: () => void): () => void {
+		this.listeners.add(listener);
+		let removed = false;
+		return () => {
+			if (removed) return;
+			removed = true;
+			this.listeners.delete(listener);
+		};
+	}
+
 	/** Track whether the parent turn is idle, which selects the wake delivery mode. */
 	setParentSettled(settled: boolean): void {
 		this.parentSettled = settled;
@@ -480,6 +493,8 @@ export class JobManager implements JobManagerApi {
 			}
 		}
 		await Promise.allSettled(stopped);
+		this.notifyListeners();
+		this.listeners.clear();
 		process.removeListener("exit", this.onProcessExit);
 	}
 
@@ -589,6 +604,7 @@ export class JobManager implements JobManagerApi {
 			return;
 		}
 		job.pid = handle.pid;
+		this.notifyListeners();
 		// A process that reported its outcome during creation is already terminal.
 		if (isTerminalJobStatus(job.status)) return;
 		job.handle = handle;
@@ -653,6 +669,7 @@ export class JobManager implements JobManagerApi {
 		}
 		job.status = "stopping";
 		this.clearJobTimeout(job);
+		this.notifyListeners();
 		this.invalidate(job);
 		let termination: Promise<boolean>;
 		try {
@@ -741,6 +758,7 @@ export class JobManager implements JobManagerApi {
 		}
 		this.persistJob(job);
 		this.invalidate(job);
+		this.notifyListeners();
 		this.syncAnimationTimer();
 		job.pendingWake = true;
 		this.scheduleWakeFlush();
@@ -787,6 +805,16 @@ export class JobManager implements JobManagerApi {
 			return;
 		}
 		for (const job of pending) job.pendingWake = false;
+	}
+
+	private notifyListeners(): void {
+		for (const listener of this.listeners) {
+			try {
+				listener();
+			} catch {
+				this.listeners.delete(listener);
+			}
+		}
 	}
 
 	private invalidate(job: JobState): void {
