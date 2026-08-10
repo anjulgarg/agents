@@ -1,5 +1,9 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,6 +33,11 @@ interface CommandResult {
 }
 
 type PublishStrategy = "current" | "direct" | "pull-request";
+
+type PublishContext = Pick<
+	ExtensionCommandContext,
+	"cwd" | "signal" | "ui" | "model" | "modelRegistry" | "thinkingLevel"
+>;
 
 const DEFAULT_BRANCH_CHOICES = {
 	pullRequest: "Create branch and pull request (Recommended)",
@@ -130,11 +139,11 @@ export function pullRequestArgs(base: string, head: string): string[] {
 }
 
 async function chooseDefaultBranchStrategy(
-	ctx: ExtensionCommandContext,
+	ui: ExtensionUIContext,
 	branch: string,
 ): Promise<PublishStrategy | undefined> {
 	const directChoice = `Push directly to ${branch}`;
-	const choice = await ctx.ui.select(`Publish directly from ${branch}? Choose how to continue.`, [
+	const choice = await ui.select(`Publish directly from ${branch}? Choose how to continue.`, [
 		DEFAULT_BRANCH_CHOICES.pullRequest,
 		directChoice,
 		DEFAULT_BRANCH_CHOICES.cancel,
@@ -144,7 +153,21 @@ async function chooseDefaultBranchStrategy(
 	return undefined;
 }
 
-async function publish(args: string, ctx: ExtensionCommandContext): Promise<void> {
+export function capturePublishContext(ctx: ExtensionCommandContext): PublishContext {
+	// Command context properties are guarded lazy getters. Read every dependency
+	// synchronously so a reload during this long-running command cannot make a
+	// later notification or error handler dereference the stale context.
+	return {
+		cwd: ctx.cwd,
+		signal: ctx.signal,
+		ui: ctx.ui,
+		model: ctx.model,
+		modelRegistry: ctx.modelRegistry,
+		thinkingLevel: ctx.thinkingLevel,
+	};
+}
+
+async function publish(args: string, ctx: PublishContext): Promise<void> {
 	const cwd = ctx.cwd;
 	const signal = ctx.signal;
 
@@ -163,7 +186,7 @@ async function publish(args: string, ctx: ExtensionCommandContext): Promise<void
 	const base = await defaultBranch(cwd);
 	let strategy: PublishStrategy = "current";
 	if (isDefaultBranch(current, base)) {
-		const selected = await chooseDefaultBranchStrategy(ctx, current);
+		const selected = await chooseDefaultBranchStrategy(ctx.ui, current);
 		if (!selected) {
 			ctx.ui.notify("Publish cancelled.", "info");
 			return;
@@ -316,10 +339,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("git:publish", {
 		description: "Stage all changes, draft an AI commit message, commit, and push to origin",
 		handler: async (args, ctx) => {
+			const publishContext = capturePublishContext(ctx);
 			try {
-				await publish(args, ctx);
+				await publish(args, publishContext);
 			} catch (error) {
-				ctx.ui.notify(`Publish failed: ${(error as Error).message}`, "error");
+				publishContext.ui.notify(`Publish failed: ${(error as Error).message}`, "error");
 			}
 		},
 	});
