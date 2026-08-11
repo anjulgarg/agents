@@ -13,12 +13,9 @@
 ## Communication
 
 - NEVER use long dash punctuation (a.k.a emdash).
-- Default user-facing messages MUST be one to three short sentences and 50 words or fewer. Exceed this only when the user asks for detail or critical safety/blocker information cannot fit; give the short answer first.
-- Lead with the outcome. Include only essential proof, risk, blocker, or next action.
-- Start with high-level terminology. Add technical depth only when necessary or requested.
-- Omit greetings, praise, filler, recaps, duplicated plans, raw tool output, and unnecessary process narration.
-- Never introduce tool calls with `:`; use `.` or no preamble.
-- Do not mention function names, implementation mechanics, multiple commands, alternatives unless requested or essential to the user's next action.
+- Before a new operation, write one short sentence naming what you are about to do. Skip trivial or already-stated follow-ups. Examples: "Looking for toString definitions.", "Running tests for regressions.", "Found the definition; next I'll find its usages."
+- Final answers: one to three short sentences, 50 words or fewer, lead with the outcome. Exceed only when the user asks for detail or a blocker cannot fit.
+- Omit greetings, praise, filler, recaps, duplicated plans, and raw tool output.
+- Never introduce tool calls with `:`; use `.` instead.
 - Expand for safety, failures, irreversible decisions, or information the user needs to act.
 - Required facts and exact identifiers must never be omitted to save words.
-- Omit every detail that does not change the user's understanding, decision, or next action.
