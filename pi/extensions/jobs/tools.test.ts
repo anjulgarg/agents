@@ -1098,7 +1098,8 @@ async function testFixedActivityPanel(): Promise<void> {
 	assert(
 		"running async commands occupy the fixed panel with command text and overflow",
 		running.length === 3 &&
-			running[0]!.includes("& command-1") &&
+			running[0]!.includes("& command-1 · 4.2s") &&
+			!running[0]!.includes("running") &&
 			!running[0]!.includes("label-1") &&
 			running[2]!.includes("+ 3 more async commands"),
 		JSON.stringify(running),

@@ -26,6 +26,7 @@ import {
 	SynchronizedShimmerRender,
 	TOOL_CHAT_PADDING,
 	emptyCollapsedToolRender,
+	formatLiveToolDuration,
 	formatToolDuration,
 	renderSoftGroupedCall,
 	syncToolActivity,
@@ -72,6 +73,10 @@ function bashDurationMs(details: unknown, activity: ToolActivitySnapshot): numbe
 function durationSuffix(durationMs: number | undefined): string {
 	const duration = formatToolDuration(durationMs);
 	return duration ? ` · ${duration}` : "";
+}
+
+function liveDurationSuffix(activity: ToolActivitySnapshot): string {
+	return ` · ${formatLiveToolDuration(activity)}`;
 }
 
 function compactFailure(theme: Theme, message: string): Component {
@@ -145,22 +150,24 @@ export class MinimalCommand implements Component {
 		private readonly theme: Theme,
 		private readonly prefix = COMMAND_PREFIX,
 		/** Pre-styled suffix (exit status, duration). Appended after the muted body. */
-		private readonly statusSuffix = "",
+		private readonly statusSuffix: string | (() => string) = "",
 	) {}
 
 	render(width: number): string[] {
 		const renderWidth = Math.max(1, width);
+		const statusSuffix =
+			typeof this.statusSuffix === "function" ? this.statusSuffix() : this.statusSuffix;
 		const timeoutSuffix = this.timeout ? ` (timeout ${this.timeout}s)` : "";
 		const commandText =
 			`${this.command}${timeoutSuffix}`.replace(/\s+/g, " ").trim() || "(empty command)";
 		const prefixWidth = visibleWidth(this.prefix);
 		if (renderWidth <= prefixWidth) {
-			return [truncateToWidth(`${this.prefix}${commandText}${this.statusSuffix}`, renderWidth, "")];
+			return [truncateToWidth(`${this.prefix}${commandText}${statusSuffix}`, renderWidth, "")];
 		}
 		const bodyWidth = renderWidth - prefixWidth;
-		const suffixWidth = this.expanded ? 0 : visibleWidth(this.statusSuffix);
+		const suffixWidth = this.expanded ? 0 : visibleWidth(statusSuffix);
 		const lines = this.expanded
-			? `${commandText}${this.statusSuffix}`
+			? `${commandText}${statusSuffix}`
 					.split("\n")
 					.flatMap((line) => wrapTextWithAnsi(line || " ", bodyWidth))
 			: // Collapsed rows keep only two lines; pin the pre-styled status onto
@@ -177,7 +184,7 @@ export class MinimalCommand implements Component {
 					? this.theme.fg("toolTitle", this.theme.bold(this.prefix))
 					: " ".repeat(prefixWidth);
 			const isLast = index === lines.length - 1;
-			const suffix = !this.expanded && isLast ? this.statusSuffix : "";
+			const suffix = !this.expanded && isLast ? statusSuffix : "";
 			const room = Math.max(0, bodyWidth - visibleWidth(suffix));
 			const body = this.theme.fg("muted", suffix ? truncateToWidth(line, room, "") : line);
 			return `${prefix}${body}${suffix}`;
@@ -359,7 +366,7 @@ export function createMinimalToolPresentations(): MinimalToolPresentationBundle 
 						false,
 						theme,
 						COMMAND_PREFIX,
-						theme.fg("muted", ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`),
+						() => theme.fg("muted", liveDurationSuffix(activity)),
 					),
 				);
 				return new SynchronizedShimmerRender(container, shimmerTheme(theme), activity);
@@ -410,18 +417,19 @@ export function createMinimalToolPresentations(): MinimalToolPresentationBundle 
 				const path = shortenPath(String(args.path || "")) || "...";
 				const lineCount = typeof args.content === "string" ? args.content.split("\n").length : 0;
 				const lineInfo = lineCount > 0 ? ` · ${lineCount} lines` : "";
-				const running = activity.active
-					? ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`
-					: "";
 				const content = new Text(
 					`${theme.fg("toolTitle", theme.bold("write"))} ${theme.fg("muted", path)}` +
-						theme.fg("muted", `${lineInfo}${running}`),
+						theme.fg("muted", lineInfo),
 					CHAT_PADDING,
 					0,
 				);
-				if (context.expanded) return content;
+				if (context.expanded) {
+					return activity.active
+						? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity, true)
+						: content;
+				}
 				return activity.active
-					? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity)
+					? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity, true)
 					: emptyCollapsedToolRender();
 			},
 
@@ -467,18 +475,18 @@ export function createMinimalToolPresentations(): MinimalToolPresentationBundle 
 			renderCall(args, theme, context) {
 				const activity = syncToolActivity(withCallState(context));
 				const path = shortenPath(String(args.path || "")) || "...";
-				const running = activity.active
-					? ` · running ${formatToolDuration(activity.elapsedMs) ?? "0.0s"}`
-					: "";
 				const content = new Text(
-					`${theme.fg("toolTitle", theme.bold("edit"))} ${theme.fg("muted", path)}` +
-						theme.fg("muted", running),
+					`${theme.fg("toolTitle", theme.bold("edit"))} ${theme.fg("muted", path)}`,
 					CHAT_PADDING,
 					0,
 				);
-				if (context.expanded) return content;
+				if (context.expanded) {
+					return activity.active
+						? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity, true)
+						: content;
+				}
 				return activity.active
-					? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity)
+					? new SynchronizedShimmerRender(content, shimmerTheme(theme), activity, true)
 					: emptyCollapsedToolRender();
 			},
 

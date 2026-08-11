@@ -169,10 +169,16 @@ export type JobReceiptSegments = {
 	trailing: string;
 };
 
-export function jobReceiptSegments(job: JobSnapshot): JobReceiptSegments {
+export function jobReceiptSegments(
+	job: JobSnapshot,
+	options: { includeStatus?: boolean } = {},
+): JobReceiptSegments {
 	const name = jobDisplayName(job);
 	const duration = formatToolDuration(job.durationMs) ?? "0.0s";
-	if (job.status === "queued" || job.status === "running" || job.status === "stopping") {
+	if (
+		options.includeStatus !== false &&
+		(job.status === "queued" || job.status === "running" || job.status === "stopping")
+	) {
 		return { name, trailing: `${job.status} ${duration}` };
 	}
 	const outcome = jobOutcomeLabel(job);

@@ -103,8 +103,8 @@ const readBFirst = readTool.renderCall?.(readBArgs, theme, readB).render(80) ?? 
 const readAAfter = readTool.renderCall?.(readAArgs, theme, readA).render(80) ?? [];
 assert(
 	"same-name inspection calls form one consecutive group",
-	readAFirst.join("").includes("read src/a.ts · running") &&
-		readBFirst.join("").includes("read · running") &&
+	readAFirst.join("").includes("read src/a.ts · 0.0s") &&
+		readBFirst.join("").includes("read · 0.0s") &&
 		readBFirst.join("").includes("├─ src/a.ts") &&
 		readBFirst.join("").includes("└─ src/b.ts") &&
 		readAAfter.length === 0,
@@ -220,7 +220,7 @@ const pureGrep =
 	grepTool.renderCall?.(grepTwo, theme, renderContext("grep-2", grepTwo)).render(80) ?? [];
 assert(
 	"consecutive calls of one inspection tool group by exact name",
-	pureGrep.join("").includes("grep · running") &&
+	pureGrep.join("").includes("grep · 0.0s") &&
 		pureGrep.join("").includes("├─ /alpha/ in src") &&
 		pureGrep.join("").includes("└─ /beta/ in lib") &&
 		!pureGrep.join("").includes("inspect"),
@@ -338,7 +338,7 @@ const bashContext = renderContext("bash-running", bashArgs);
 const runningBash = bashTool.renderCall?.(bashArgs, theme, bashContext).render(100) ?? [];
 assert(
 	"running Bash calls are individually visible with elapsed state",
-	runningBash.join("\n").includes("$ bun test · running 0.0s"),
+	runningBash.join("\n").includes("$ bun test · 0.0s"),
 	JSON.stringify(runningBash),
 );
 
@@ -353,7 +353,7 @@ const longRunning =
 		.render(60) ?? [];
 assert(
 	"long commands keep the elapsed counter pinned to the last visible line",
-	longRunning.length === 2 && longRunning[1].trimEnd().endsWith("· running 0.0s"),
+	longRunning.length === 2 && longRunning[1].trimEnd().endsWith("· 0.0s"),
 	JSON.stringify(longRunning),
 );
 
@@ -404,9 +404,9 @@ bashTool
 	)
 	.render(100);
 assert(
-	"Bash running and duration suffixes use muted styling",
-	bashStyleCalls.some(({ color, text }) => color === "muted" && text.includes("· running")) &&
-		bashStyleCalls.some(({ color, text }) => color === "muted" && /· \d+\.\ds/.test(text)) &&
+	"Bash live and duration suffixes use muted styling",
+	bashStyleCalls.some(({ color, text }) => color === "muted" && /· \d+\.\ds/.test(text)) &&
+		!bashStyleCalls.some(({ text }) => text.includes("· running")) &&
 		bashStyleCalls.some(({ color, text }) => color === "error" && text.includes("· exit 1")),
 	JSON.stringify(bashStyleCalls),
 );
@@ -553,7 +553,7 @@ const completedEdit =
 		.render(100) ?? [];
 assert(
 	"mutations shimmer while active and settle into aligned diff receipts",
-	runningEdit.join("\n").includes("edit src/a.ts · running 0.0s") &&
+	runningEdit.join("\n").includes("edit src/a.ts · 0.0s") &&
 		completedEdit.join("\n").includes("edit src/a.ts · +2 −1 · 0.0s") &&
 		!completedEdit.join("\n").includes("✓"),
 	JSON.stringify({ runningEdit, completedEdit }),

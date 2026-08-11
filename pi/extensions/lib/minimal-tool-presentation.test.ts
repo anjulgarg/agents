@@ -624,7 +624,7 @@ function seededTranscript() {
 	);
 	assert(
 		"activity timing stays per view for the same tool-call ID",
-		!settledB.includes("· running") && runningA.includes("· running"),
+		!settledB.includes("· running") && /· \d+\.\ds/u.test(runningA),
 		JSON.stringify({ runningA, settledB }),
 	);
 }

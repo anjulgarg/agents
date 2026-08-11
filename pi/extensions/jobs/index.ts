@@ -62,7 +62,10 @@ const ASYNC_SHIMMER_FADE_IN_MS = 300;
 
 function renderAsyncActivityLine(job: JobSnapshot, width: number, theme: Theme): string {
 	const line =
-		new JobReceiptLine(theme, jobReceiptSegments({ ...job, label: "" })).render(width)[0] ?? "";
+		new JobReceiptLine(
+			theme,
+			jobReceiptSegments({ ...job, label: "" }, { includeStatus: job.status !== "running" }),
+		).render(width)[0] ?? "";
 	if (job.status !== "running") return line;
 	const amplitude = Math.max(
 		0,

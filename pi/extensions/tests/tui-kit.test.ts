@@ -592,7 +592,8 @@ function testToolRevealPolicy(): void {
 			noisy.render(40).join("").includes("details") &&
 			expanded.render(40).join("").includes("details") &&
 			active.render(40).join("").includes("details") &&
-			active.render(40).join("").includes("running") &&
+			/· \d+\.\ds/u.test(active.render(40).join("")) &&
+			!active.render(40).join("").includes("· running") &&
 			active.render(40).join("").includes("\x1b[35m") &&
 			settled.render(40).length === 0 &&
 			emptyCollapsedToolRender().render(40).length === 0,
@@ -754,7 +755,7 @@ function testSoftGroupTrees(): void {
 	);
 }
 
-function testRunningLabelPlacement(): void {
+function testLiveDurationPlacement(): void {
 	resetToolActivity();
 	const theme = {
 		fg: (_color: string, text: string) => text,
@@ -788,12 +789,12 @@ function testRunningLabelPlacement(): void {
 	);
 
 	assert(
-		"the running marker sits on the title row and leaves an ellipsis when clipping",
+		"the live duration sits on the title row and leaves an ellipsis when clipping",
 		collapsed.length === 1 &&
-			collapsed[0]!.endsWith("… · running") &&
+			/… · \d+\.\ds$/u.test(collapsed[0] ?? "") &&
 			visibleWidth(collapsed[0] ?? "") <= 60 &&
-			expanded[0]?.trim() === "web search · 3 queries · running" &&
-			expanded.slice(1).every((line) => !line.includes("running")) &&
+			/^(?:web search · 3 queries) · \d+\.\ds$/u.test(expanded[0]?.trim() ?? "") &&
+			expanded.slice(1).every((line) => !/· \d+\.\ds/u.test(line)) &&
 			expanded.some((line) => line.includes("3. site:example.com/docs")),
 		JSON.stringify({ collapsed, expanded }),
 	);
@@ -937,6 +938,6 @@ testShimmerGradientQuality();
 testToolRevealPolicy();
 testBodyPaddingX();
 testSoftGroupTrees();
-testRunningLabelPlacement();
+testLiveDurationPlacement();
 testSoftGroupLifecycleAndHistory();
 console.log("All tui-kit tests passed.");

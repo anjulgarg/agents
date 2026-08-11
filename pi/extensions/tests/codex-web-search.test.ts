@@ -433,8 +433,10 @@ const runningCall = codexTool
 	})
 	.render(80);
 assert(
-	"grouped rows retain the running marker",
-	runningCall.length === 1 && runningCall[0].includes("running"),
+	"grouped rows retain the live duration",
+	runningCall.length === 1 &&
+		/· \d+\.\ds/u.test(runningCall[0] ?? "") &&
+		!runningCall[0].includes("· running"),
 	JSON.stringify({ runningCall }),
 );
 codexTool.renderCall({ query: "running boundary query" }, theme, {

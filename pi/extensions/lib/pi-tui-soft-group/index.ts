@@ -26,8 +26,6 @@ const SHIMMER_BAND_MAX_COLUMNS = 22;
 const SHIMMER_TRAIL_STRETCH = 1.75;
 /** Quantisation steps between resting colour and highlight core. */
 const SHIMMER_LEVELS = 24;
-/** Live marker appended to the title row of a running tool. */
-const RUNNING_SUFFIX = " · running";
 /** Share of an elided tail spent on its end, where the basename lives. */
 const TAIL_END_SHARE = 0.6;
 /** Floor for the elidable head, so a search always shows part of its pattern. */
@@ -150,6 +148,23 @@ export function syncToolActivity(
 export function formatToolDuration(durationMs: number | undefined): string | undefined {
 	if (durationMs === undefined) return undefined;
 	return `${(Math.max(0, durationMs) / 1000).toFixed(1)}s`;
+}
+
+/** Read the current elapsed time for a live activity row, with a snapshot fallback. */
+export function liveToolElapsedMs(activity: ToolActivitySnapshot): number {
+	if (activity.active && activity.startedAt !== undefined && Number.isFinite(activity.startedAt)) {
+		return Math.max(0, Date.now() - activity.startedAt);
+	}
+	return Math.max(0, activity.elapsedMs ?? 0);
+}
+
+/** Format the elapsed time shown beside a live activity row. */
+export function formatLiveToolDuration(activity: ToolActivitySnapshot): string {
+	return formatToolDuration(liveToolElapsedMs(activity)) ?? "0.0s";
+}
+
+function liveDurationSuffix(activity: ToolActivitySnapshot): string {
+	return ` · ${formatLiveToolDuration(activity)}`;
 }
 
 function stripAnsi(text: string): string {
@@ -535,30 +550,33 @@ export class SynchronizedShimmerRender implements Component {
 		private readonly content: Component,
 		private readonly theme: ToolActivityTheme,
 		private readonly activity: ToolActivitySnapshot,
-		private readonly showRunningLabel = false,
+		private readonly showLiveDuration = false,
 	) {}
 
 	render(width: number): string[] {
 		let lines = this.content.render(width);
-		if (this.activity.active && this.showRunningLabel && lines.length > 0) {
-			// The marker belongs on the title row: appending it to the last row
-			// would tack "· running" onto the final detail line of expanded chrome.
+		const liveSuffix = liveDurationSuffix(this.activity);
+		if (this.activity.active && this.showLiveDuration && lines.length > 0) {
+			// The timer belongs on the title row: appending it to the last row
+			// would tack the live duration onto the final detail line of expanded chrome.
 			const firstContentLine = lines.findIndex((line) => stripAnsi(line).trim() !== "");
 			const index = firstContentLine === -1 ? lines.length - 1 : firstContentLine;
-			const suffixWidth = visibleWidth(RUNNING_SUFFIX);
+			const suffixWidth = visibleWidth(liveSuffix);
 			const content = trimRenderedLineEnd(lines[index] ?? "");
 			lines = [...lines];
 			if (width <= suffixWidth) {
-				lines[index] = this.theme.fg("muted", truncateToWidth(RUNNING_SUFFIX.trim(), width, "…"));
+				lines[index] = this.theme.fg("muted", truncateToWidth(liveSuffix.trim(), width, "…"));
 			} else {
 				const available = width - suffixWidth;
 				// Ellipsis, not a bare cut, so a clipped row still reads as clipped.
 				const fitted =
 					visibleWidth(content) <= available ? content : truncateToWidth(content, available, "…");
-				lines[index] = `${fitted}${this.theme.fg("muted", RUNNING_SUFFIX)}`;
+				lines[index] = `${fitted}${this.theme.fg("muted", liveSuffix)}`;
 			}
 		}
-		const elapsedMs = this.activity.elapsedMs ?? 0;
+		const elapsedMs = this.activity.active
+			? liveToolElapsedMs(this.activity)
+			: (this.activity.elapsedMs ?? 0);
 		if (!this.activity.active || elapsedMs < SHIMMER_DELAY_MS) return lines;
 		const amplitude = clamp01((elapsedMs - SHIMMER_DELAY_MS) / SHIMMER_FADE_IN_MS);
 		const now = Date.now();
@@ -809,6 +827,10 @@ export class SoftGroupTracker {
 		}
 		const last = streak[streak.length - 1]!;
 		const activeItems = streak.filter((item) => item.activity?.active);
+		const longestActive = activeItems.reduce<SoftGroupItem | undefined>((longest, item) => {
+			if (!longest) return item;
+			return (item.activity?.elapsedMs ?? 0) >= (longest.activity?.elapsedMs ?? 0) ? item : longest;
+		}, undefined);
 		const labels = new Set(streak.map((item) => item.label));
 		return {
 			items: streak,
@@ -818,13 +840,13 @@ export class SoftGroupTracker {
 			lastSummaryTail: last.summaryTail,
 			lastLabel: last.label,
 			uniformLabel: labels.size === 1 ? last.label : undefined,
-			activity:
-				activeItems.length > 0
-					? {
-							active: true,
-							elapsedMs: Math.max(...activeItems.map((item) => item.activity?.elapsedMs ?? 0)),
-						}
-					: { active: false },
+			activity: longestActive
+				? {
+						active: true,
+						elapsedMs: longestActive.activity?.elapsedMs ?? 0,
+						startedAt: longestActive.activity?.startedAt,
+					}
+				: { active: false },
 		};
 	}
 }
@@ -930,9 +952,9 @@ function collapsedChrome(
 					? ` ${titleText(theme, label)}${sep}${theme.fg("muted", String(count))}${sep}`
 					: ` ${titleText(theme, label)} `;
 			const name = toolName ? `${theme.fg("muted", toolName)} ` : "";
-			// Budget for the running marker so the summary keeps its own ellipsis
+			// Budget for the live timer so the summary keeps its own ellipsis
 			// instead of being cut mid-word by the shimmer wrapper.
-			const reserved = activity.active ? visibleWidth(RUNNING_SUFFIX) : 0;
+			const reserved = activity.active ? visibleWidth(liveDurationSuffix(activity)) : 0;
 			const available = Math.max(1, width - visibleWidth(chrome) - visibleWidth(name) - reserved);
 			return [`${chrome}${name}${summaryText(theme, last, tail, available)}`];
 		},
@@ -990,7 +1012,7 @@ function treeChrome(
 	const content: Component = {
 		render(width: number): string[] {
 			if (width <= 0) return [];
-			const reserved = activity.active ? visibleWidth(RUNNING_SUFFIX) : 0;
+			const reserved = activity.active ? visibleWidth(liveDurationSuffix(activity)) : 0;
 			const parentWidth = Math.max(1, width - reserved);
 			const parent = ` ${titleText(theme, label)}`;
 			const lines = [
