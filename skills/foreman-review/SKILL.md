@@ -48,7 +48,7 @@ Record `BASE`, `HEAD`, and merge base. Review only `BASE...HEAD`. Use a clean ch
 
 ## Start persistent worker
 
-Read [../foreman-worker/SKILL.md](../foreman-worker/SKILL.md) and only its selected adapter. Explicitly request `TRANSPORT=auto`, `MODE=persistent`, `ACCESS=read-only`, and the pinned review checkout. Auto transport prefers a qualifying native resumable subagent and otherwise uses one reviewed CLI adapter. If no model or reasoning recommendation exists, omit those options and use the worker default.
+Read [../foreman-worker/SKILL.md](../foreman-worker/SKILL.md). Explicitly request `TRANSPORT=auto`, `MODE=persistent`, `ACCESS=read-only`, and the pinned review checkout. If the host's active, documented tools provide persistent, resumable, long-running child tasks or subagents that return each turn's result, use that native adapter. Otherwise ask the user which reviewed CLI to use and wait for explicit consent, unless they already named a CLI in the prompt. Read only the chosen adapter. If no model or reasoning recommendation exists, omit those options and use the worker default.
 
 Build the first `PROMPT_FILE` without printing its contents:
 

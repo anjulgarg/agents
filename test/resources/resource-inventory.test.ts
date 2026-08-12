@@ -41,13 +41,27 @@ describe("approved first-party inventory", () => {
 		expect(worker).toContain("references/native-subagent.md");
 		expect(worker).toContain("A failed persistent resume never creates a replacement worker");
 		expect(worker).toContain("fall back only when no child session or invocation was created");
-		expect(native).toContain("If any required capability is absent or uncertain");
-		expect(native).toContain("resume that exact session by identifier");
-		expect(native).toContain("`subagent_resume`");
-		expect(native).toContain("`subagent_result`");
+		expect(worker).toContain(
+			"persistent, resumable, long-running child tasks or subagents that return each turn's result",
+		);
+		expect(worker).toContain(
+			"Ask the user which reviewed CLI to use and wait for explicit consent",
+		);
+		expect(native).toContain(
+			"persistent, resumable, long-running child tasks or subagents that return each turn's result",
+		);
+		expect(native).toContain("If it is absent or undocumented, this adapter is ineligible");
+		expect(native).not.toContain("`subagent_resume`");
+		expect(native).not.toContain("`subagent_result`");
 		expect(review).toContain("`TRANSPORT=auto`");
 		expect(review).toContain("same exact session");
 		expect(review).toContain("transport, harness, and session ID");
+		expect(review).toContain(
+			"persistent, resumable, long-running child tasks or subagents that return each turn's result",
+		);
+		expect(review).toContain(
+			"ask the user which reviewed CLI to use and wait for explicit consent",
+		);
 		expect(review).not.toContain("`subagent_resume`");
 	});
 });
