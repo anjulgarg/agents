@@ -304,6 +304,7 @@ let customStreamCalls = 0;
 const customResponse = await completeDirectRequest(
 	{
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: { test: "1" }, env: {} }),
+		getProviderAuth: async () => undefined,
 		getRegisteredProviderConfig: () => ({
 			streamSimple: (_model: unknown, context: unknown, requestOptions: unknown) => ({
 				result: async () => {
@@ -357,6 +358,7 @@ const ctx = {
 	sessionManager: { getBranch: () => branch },
 	modelRegistry: {
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: { test: "1" }, env: {} }),
+		getProviderAuth: async () => undefined,
 		find: (provider: string, id: string) =>
 			provider === utilityModel.provider && id === utilityModel.id ? utilityModel : undefined,
 		getRegisteredProviderConfig: () => undefined,

@@ -38,9 +38,9 @@ function withCancellation<T>(promise: Promise<T>, signal: AbortSignal | undefine
  * 2. Caller-supplied `override` complete function
  * 3. Default `completeSimple`
  *
- * Resolves auth via getApiKeyAndHeaders, throws on auth failure, and injects
- * apiKey/headers/env into the request options. Does not add tools or mutate
- * the model context or session.
+ * Resolves request credentials and the provider's credential-derived base URL,
+ * then injects apiKey/headers/env into the request options. Does not add tools
+ * or mutate the model context or session.
  */
 export async function completeDirectRequest(
 	modelRegistry: ModelRegistry,
@@ -57,6 +57,13 @@ export async function completeDirectRequest(
 	if (!auth.ok) throw new Error(auth.error);
 	throwIfAborted(requestOptions.signal);
 
+	const providerAuth = await withCancellation(
+		modelRegistry.getProviderAuth(model.provider),
+		requestOptions.signal,
+	);
+	const requestModel = providerAuth?.auth.baseUrl
+		? { ...model, baseUrl: providerAuth.auth.baseUrl }
+		: model;
 	const options: SimpleStreamOptions = {
 		...requestOptions,
 		apiKey: auth.apiKey,
@@ -66,8 +73,13 @@ export async function completeDirectRequest(
 
 	const customStream = modelRegistry.getRegisteredProviderConfig(model.provider)?.streamSimple;
 	if (customStream) {
-		return withCancellation(customStream(model, context, options).result(), requestOptions.signal);
+		return withCancellation(
+			customStream(requestModel, context, options).result(),
+			requestOptions.signal,
+		);
 	}
-	if (override) return withCancellation(override(model, context, options), requestOptions.signal);
-	return withCancellation(completeSimple(model, context, options), requestOptions.signal);
+	if (override) {
+		return withCancellation(override(requestModel, context, options), requestOptions.signal);
+	}
+	return withCancellation(completeSimple(requestModel, context, options), requestOptions.signal);
 }

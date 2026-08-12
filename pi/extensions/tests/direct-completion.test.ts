@@ -41,7 +41,7 @@ const assistant = {
 };
 
 async function testAuthPropagation(): Promise<void> {
-	let captured: { options: Record<string, unknown> } | undefined;
+	let captured: { model: typeof model; options: Record<string, unknown> } | undefined;
 	const context = Object.freeze({
 		systemPrompt: "sys",
 		messages: Object.freeze([]),
@@ -55,19 +55,26 @@ async function testAuthPropagation(): Promise<void> {
 				headers: { authorization: "Bearer x" },
 				env: { PI_TEST: "1" },
 			}),
+			getProviderAuth: async () => ({
+				auth: { baseUrl: "https://api.enterprise.githubcopilot.com" },
+			}),
 			getRegisteredProviderConfig: () => undefined,
 		} as never,
 		model as never,
 		context as never,
 		requestOptions as never,
-		(async (_model, _context, options) => {
-			captured = { options: options as Record<string, unknown> };
+		(async (requestModel, _context, options) => {
+			captured = {
+				model: requestModel as typeof model,
+				options: options as Record<string, unknown>,
+			};
 			return assistant;
 		}) as never,
 	);
 	assert(
-		"propagates auth apiKey, headers, and env into request options",
+		"propagates auth apiKey, headers, env, and credential-derived base URL",
 		response.stopReason === "stop" &&
+			captured?.model.baseUrl === "https://api.enterprise.githubcopilot.com" &&
 			captured?.options.apiKey === "secret-key" &&
 			(captured?.options.headers as { authorization?: string })?.authorization === "Bearer x" &&
 			(captured?.options.env as { PI_TEST?: string })?.PI_TEST === "1" &&
@@ -82,6 +89,7 @@ async function testRegisteredProviderPath(): Promise<void> {
 	const response = await completeDirectRequest(
 		{
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {}, env: {} }),
+			getProviderAuth: async () => undefined,
 			getRegisteredProviderConfig: () => ({
 				streamSimple: () => ({
 					result: async () => {
@@ -114,6 +122,7 @@ async function testOverridePath(): Promise<void> {
 	const response = await completeDirectRequest(
 		{
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {}, env: {} }),
+			getProviderAuth: async () => undefined,
 			getRegisteredProviderConfig: () => undefined,
 		} as never,
 		model as never,
@@ -160,6 +169,7 @@ async function testCancellationSettlesIgnoringOverride(): Promise<void> {
 	const request = completeDirectRequest(
 		{
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {}, env: {} }),
+			getProviderAuth: async () => undefined,
 			getRegisteredProviderConfig: () => undefined,
 		} as never,
 		model as never,
@@ -217,6 +227,7 @@ async function testNoContextMutation(): Promise<void> {
 	await completeDirectRequest(
 		{
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {}, env: {} }),
+			getProviderAuth: async () => undefined,
 			getRegisteredProviderConfig: () => undefined,
 		} as never,
 		model as never,
