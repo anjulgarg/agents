@@ -98,7 +98,7 @@ function syncTimer(state: ProcessAnimationState): void {
 
 /**
  * Join the one process-wide visual frame clock. Requested cadences are rounded
- * up to 150ms multiples so independently loaded extensions share frame
+ * up to 100ms multiples so independently loaded extensions share frame
  * boundaries and Pi TUI coalesces their synchronous render requests.
  */
 export function subscribeProcessAnimation(

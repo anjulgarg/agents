@@ -133,11 +133,11 @@ function numbered(prefix: string, count: number): string[] {
 	const section = panel.registerSection("animated", {
 		order: 1,
 		maxLines: 1,
-		refreshIntervalMs: 150,
+		refreshIntervalMs: 100,
 		render: () => ["animated"],
 	});
 	const immediateRenders = renders;
-	await new Promise((resolve) => setTimeout(resolve, 250));
+	await new Promise((resolve) => setTimeout(resolve, 200));
 	const subscriptionsMounted = getProcessAnimationDiagnostics().subscriptionCount;
 	section.remove();
 	const subscriptionsRemoved = getProcessAnimationDiagnostics().subscriptionCount;

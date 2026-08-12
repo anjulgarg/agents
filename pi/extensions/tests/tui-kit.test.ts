@@ -364,9 +364,9 @@ function testResponsiveSplitPane(): void {
 
 function testShimmerTimingContract(): void {
 	assert(
-		"shared shimmer timing is frozen at a 150ms repaint cadence",
+		"shared shimmer timing is frozen at a 100ms repaint cadence",
 		Object.isFrozen(SHIMMER_TIMING) &&
-			SHIMMER_TIMING.frameIntervalMs === 150 &&
+			SHIMMER_TIMING.frameIntervalMs === 100 &&
 			SHIMMER_TIMING.delayMs === 220 &&
 			SHIMMER_TIMING.fadeInMs === 300,
 		JSON.stringify(SHIMMER_TIMING),
