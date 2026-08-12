@@ -1,5 +1,6 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { subscribeProcessAnimation } from "../animation-coordinator.ts";
 
 export const BOTTOM_PANEL_WIDGET_KEY = "activity-panel";
 export const BOTTOM_PANEL_MAX_LINES = 10;
@@ -77,7 +78,7 @@ export class BottomPanel {
 	private interactive = false;
 	private mounted = false;
 	private host?: BottomPanelHost;
-	private refreshTimer?: ReturnType<typeof setInterval>;
+	private unsubscribeRefresh?: () => void;
 	private refreshIntervalMs?: number;
 
 	attach(context: PanelContext): void {
@@ -96,7 +97,7 @@ export class BottomPanel {
 		const section: StoredSection = { id: key, ...normalizeSection(options) };
 		this.sections.set(key, section);
 		this.mount();
-		this.syncRefreshTimer();
+		this.syncRefreshSubscription();
 		this.requestRender();
 
 		return {
@@ -116,13 +117,13 @@ export class BottomPanel {
 		if (!current) return;
 		Object.assign(current, normalizePatch(patch));
 		this.mount();
-		this.syncRefreshTimer();
+		this.syncRefreshSubscription();
 		this.requestRender();
 	}
 
 	removeSection(id: string): void {
 		if (!this.sections.delete(id)) return;
-		this.syncRefreshTimer();
+		this.syncRefreshSubscription();
 		if (this.sections.size === 0) this.unmount();
 		else this.requestRender();
 	}
@@ -186,7 +187,7 @@ export class BottomPanel {
 		if (this.host !== host) return;
 		this.host = undefined;
 		this.mounted = false;
-		this.stopRefreshTimer();
+		this.stopRefreshSubscription();
 	}
 
 	private mount(): void {
@@ -199,7 +200,7 @@ export class BottomPanel {
 				(tui, theme) => {
 					const host = new BottomPanelHost(this, tui, theme);
 					this.host = host;
-					this.syncRefreshTimer();
+					this.syncRefreshSubscription();
 					return host;
 				},
 				{ placement: "aboveEditor" },
@@ -215,7 +216,7 @@ export class BottomPanel {
 		const ui = this.ui;
 		this.mounted = false;
 		this.host = undefined;
-		this.stopRefreshTimer();
+		this.stopRefreshSubscription();
 		if (ui) ui.setWidget(BOTTOM_PANEL_WIDGET_KEY, undefined);
 	}
 
@@ -223,7 +224,7 @@ export class BottomPanel {
 		this.host?.getTui().requestRender();
 	}
 
-	private syncRefreshTimer(): void {
+	private syncRefreshSubscription(): void {
 		const requested = [...this.sections.values()]
 			.map((section) => section.refreshIntervalMs)
 			.filter((interval): interval is number => interval !== undefined && interval > 0)
@@ -231,19 +232,20 @@ export class BottomPanel {
 				(minimum, interval) => Math.min(minimum ?? interval, interval),
 				undefined,
 			);
-		if (requested === this.refreshIntervalMs && (requested === undefined || this.refreshTimer))
+		if (
+			requested === this.refreshIntervalMs &&
+			(requested === undefined || this.unsubscribeRefresh)
+		)
 			return;
-		this.stopRefreshTimer();
+		this.stopRefreshSubscription();
 		this.refreshIntervalMs = requested;
 		if (!requested || !this.host) return;
-		const timer = setInterval(() => this.requestRender(), requested);
-		timer.unref?.();
-		this.refreshTimer = timer;
+		this.unsubscribeRefresh = subscribeProcessAnimation(() => this.requestRender(), requested);
 	}
 
-	private stopRefreshTimer(): void {
-		if (this.refreshTimer) clearInterval(this.refreshTimer);
-		this.refreshTimer = undefined;
+	private stopRefreshSubscription(): void {
+		this.unsubscribeRefresh?.();
+		this.unsubscribeRefresh = undefined;
 		this.refreshIntervalMs = undefined;
 	}
 }

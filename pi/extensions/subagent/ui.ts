@@ -35,6 +35,7 @@ import {
 	type MinimalToolPresentations,
 	type ToolRenderContext,
 } from "../lib/minimal-tool-presentation.ts";
+import { subscribeProcessAnimation } from "../lib/animation-coordinator.ts";
 import { WORKING_FRAMES, WORKING_FRAME_INTERVAL_MS } from "../announce-step.ts";
 import { isTransientProviderFailure } from "../lib/provider-retry.ts";
 import { STATUS_KEY as TOKEN_SPEED_STATUS_KEY } from "../token-speed.ts";
@@ -819,7 +820,7 @@ export class SubagentThreadView implements Component {
 	private selectedGroupKey?: string;
 	private readonly selectedByGroup = new Map<string, number>();
 	private spinnerFrame = 0;
-	private animationTimer: ReturnType<typeof setInterval>;
+	private unsubscribeAnimation: () => void;
 	private unsubscribe: () => void;
 
 	constructor(
@@ -848,12 +849,11 @@ export class SubagentThreadView implements Component {
 			this.selectedByGroup.set(initialGroup.key, this.selection.selected);
 		}
 		this.unsubscribe = subscribe(() => this.tui.requestRender());
-		this.animationTimer = setInterval(() => {
+		this.unsubscribeAnimation = subscribeProcessAnimation(() => {
 			if (!this.groups().some((group) => group.items.some((item) => !item.result.done))) return;
 			this.spinnerFrame = (this.spinnerFrame + 1) % WORKING_FRAMES.length;
 			this.tui.requestRender();
 		}, WORKING_FRAME_INTERVAL_MS);
-		this.animationTimer.unref?.();
 	}
 
 	private groups(): SubagentThreadGroup[] {
@@ -1237,7 +1237,7 @@ export class SubagentThreadView implements Component {
 	invalidate(): void {}
 
 	dispose(): void {
-		clearInterval(this.animationTimer);
+		this.unsubscribeAnimation();
 		this.unsubscribe();
 	}
 }

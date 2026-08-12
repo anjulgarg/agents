@@ -4,9 +4,15 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
+import {
+	PROCESS_ANIMATION_FRAME_INTERVAL_MS,
+	subscribeProcessAnimation,
+} from "./lib/animation-coordinator.ts";
 
 export const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-export const WORKING_FRAME_INTERVAL_MS = 120;
+export const WORKING_FRAME_INTERVAL_MS = PROCESS_ANIMATION_FRAME_INTERVAL_MS;
+/** Perceptually faster rotation without increasing the shared repaint cadence. */
+export const WORKING_FRAME_ADVANCE = 2;
 
 export const ACTIVITY_ENTRY_TYPE = "announce-step-activity";
 export const WORKING_PHASE = "Working";
@@ -179,6 +185,19 @@ function safeWorkingMessage(context: ExtensionContext | undefined, message: stri
 	}
 }
 
+function safeWorkingFrame(context: ExtensionContext | undefined, frame: string): void {
+	if (!context || context.mode !== "tui") return;
+	try {
+		// A one-frame indicator disables Pi's private 80ms Loader timer. The
+		// process coordinator advances the same Braille spinner instead. Custom
+		// Loader frames render verbatim, so retain the host's accent explicitly.
+		const themedFrame = context.ui.theme?.fg("accent", frame) ?? frame;
+		context.ui.setWorkingIndicator({ frames: [themedFrame] });
+	} catch {
+		// Limited UI contexts can omit indicator customization safely.
+	}
+}
+
 function clearWorkingMessage(context: ExtensionContext | undefined): void {
 	if (!context || (context.mode !== "tui" && context.mode !== "rpc")) return;
 	try {
@@ -255,11 +274,15 @@ function reconcileLegacyEntries(ctx: ExtensionContext): void {
 export default function announceStepExtension(pi: ExtensionAPI): void {
 	let activeRun: ActiveRun | undefined;
 	let sliceTimer: ReturnType<typeof setInterval> | undefined;
+	let unsubscribeWorkingAnimation: (() => void) | undefined;
+	let workingFrame = 0;
 	let workingContext: ExtensionContext | undefined;
 
 	const stopSliceTimer = (): void => {
 		if (sliceTimer !== undefined) clearInterval(sliceTimer);
 		sliceTimer = undefined;
+		unsubscribeWorkingAnimation?.();
+		unsubscribeWorkingAnimation = undefined;
 	};
 
 	const updateWorkingLine = (now = Date.now()): void => {
@@ -281,16 +304,27 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 	const startSliceTimer = (): void => {
 		if (
 			sliceTimer !== undefined ||
+			unsubscribeWorkingAnimation !== undefined ||
 			!activeRun ||
 			!workingContext ||
 			(workingContext.mode !== "tui" && workingContext.mode !== "rpc")
 		)
 			return;
+		if (workingContext.mode === "tui") {
+			workingFrame = 0;
+			safeWorkingFrame(workingContext, WORKING_FRAMES[workingFrame] ?? "");
+			unsubscribeWorkingAnimation = subscribeProcessAnimation((now) => {
+				workingFrame = (workingFrame + WORKING_FRAME_ADVANCE) % WORKING_FRAMES.length;
+				safeWorkingFrame(workingContext, WORKING_FRAMES[workingFrame] ?? "");
+				updateWorkingLine(now);
+			}, WORKING_FRAME_INTERVAL_MS);
+			return;
+		}
 		sliceTimer = setInterval(() => {
 			try {
 				updateWorkingLine();
 			} catch {
-				// Timer updates are best-effort and must not surface as agent errors.
+				// RPC status updates are best-effort and must not surface as agent errors.
 			}
 		}, ACTIVITY_TIMER_INTERVAL_MS);
 	};
@@ -442,7 +476,8 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		// Normally session_shutdown has already run. This guard also makes a
 		// direct replacement event safe and prevents a stale timer from surviving.
-		if (activeRun || sliceTimer !== undefined || workingContext) clearRuntime();
+		if (activeRun || sliceTimer !== undefined || unsubscribeWorkingAnimation || workingContext)
+			clearRuntime();
 		reconcileLegacyEntries(ctx);
 	});
 

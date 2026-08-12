@@ -7,6 +7,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Markdown, matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
+import { subscribeProcessAnimation } from "../lib/animation-coordinator.ts";
 import { completeDirectRequest, type DirectCompleteFunction } from "../lib/direct-completion.ts";
 import {
 	resolvePreferredUtilityModel,
@@ -63,7 +64,6 @@ interface GenerationFailure {
 type GenerationResult = GenerationSuccess | GenerationFailure | null;
 
 const RECAP_SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
-const RECAP_SPINNER_INTERVAL_MS = 120;
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -173,7 +173,7 @@ export class RecapView implements Component {
 export class RecapLoadingView implements Component {
 	private frame = 0;
 	private disposed = false;
-	private readonly timer: ReturnType<typeof setInterval>;
+	private readonly unsubscribeAnimation: () => void;
 	readonly controller = new AbortController();
 
 	constructor(
@@ -183,12 +183,11 @@ export class RecapLoadingView implements Component {
 		private readonly done: (result: GenerationResult) => void,
 		private readonly effort = "off",
 	) {
-		this.timer = setInterval(() => {
+		this.unsubscribeAnimation = subscribeProcessAnimation(() => {
 			if (this.disposed) return;
 			this.frame = (this.frame + 1) % RECAP_SPINNER_FRAMES.length;
 			this.tui.requestRender();
-		}, RECAP_SPINNER_INTERVAL_MS);
-		this.timer.unref?.();
+		});
 	}
 
 	render(width: number): string[] {
@@ -231,7 +230,7 @@ export class RecapLoadingView implements Component {
 	dispose(): void {
 		this.disposed = true;
 		this.controller.abort();
-		clearInterval(this.timer);
+		this.unsubscribeAnimation();
 	}
 }
 

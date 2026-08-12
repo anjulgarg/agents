@@ -1,4 +1,11 @@
 export {
+	PROCESS_ANIMATION_FRAME_INTERVAL_MS,
+	getProcessAnimationDiagnostics,
+	subscribeProcessAnimation,
+	type ProcessAnimationCallback,
+	type ProcessAnimationDiagnostics,
+} from "../animation-coordinator.ts";
+export {
 	fillLine,
 	frameScreen,
 	getContentWidth,

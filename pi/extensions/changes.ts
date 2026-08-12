@@ -14,6 +14,7 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 
+import { subscribeProcessAnimation } from "./lib/animation-coordinator.ts";
 import { completeDirectRequest, type DirectCompleteFunction } from "./lib/direct-completion.ts";
 import {
 	createGlobalUtilityModelStore,
@@ -41,7 +42,6 @@ const MAX_MODEL_FILES = 240;
 const MAX_MODEL_TEXT_CHARS = 1_000;
 const MAX_DISPLAY_TEXT_CHARS = 2_000;
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
-const SPINNER_INTERVAL_MS = 120;
 
 export type ChangeScope = "uncommitted" | "unpushed";
 
@@ -990,7 +990,7 @@ const VIEW_HINTS = [
 /** Full-screen, scroll-only Git changes view with no selection or pointer state. */
 export class ChangesView implements Component {
 	private readonly viewport = new ScrollViewportState();
-	private readonly timer: ReturnType<typeof setInterval>;
+	private readonly unsubscribeAnimation: () => void;
 	private controller?: AbortController;
 	private requestId = 0;
 	private spinnerFrame = 0;
@@ -1004,12 +1004,11 @@ export class ChangesView implements Component {
 		private readonly theme: Theme,
 		private readonly options: ChangesViewOptions,
 	) {
-		this.timer = setInterval(() => {
+		this.unsubscribeAnimation = subscribeProcessAnimation(() => {
 			if (!this.loading || this.disposed) return;
 			this.spinnerFrame = (this.spinnerFrame + 1) % SPINNER_FRAMES.length;
 			this.tui.requestRender();
-		}, SPINNER_INTERVAL_MS);
-		this.timer.unref?.();
+		});
 		void this.refresh();
 	}
 
@@ -1163,13 +1162,13 @@ export class ChangesView implements Component {
 
 	dispose(): void {
 		if (this.disposed) {
-			clearInterval(this.timer);
+			this.unsubscribeAnimation();
 			this.controller?.abort();
 			return;
 		}
 		this.disposed = true;
 		this.controller?.abort();
-		clearInterval(this.timer);
+		this.unsubscribeAnimation();
 	}
 }
 

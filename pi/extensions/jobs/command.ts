@@ -20,6 +20,7 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { subscribeProcessAnimation } from "../lib/animation-coordinator.ts";
 import {
 	formatToolDuration,
 	fullscreenOverlayOptions,
@@ -357,13 +358,13 @@ export class JobLogView implements Component {
  *
  * Jobs are listed by start time, most recently invoked first, each row showing
  * the wall-clock time it was invoked. The list is capped at STATUS_LIST_LIMIT
- * via the manager's status() result. A polling interval keeps the view live
- * while open; it is cleared when the view closes.
+ * via the manager's status() result. A coordinator subscription keeps the view
+ * live while open and is removed when the view closes.
  */
 export class JobsListView implements Component {
 	private readonly selection = new SelectableViewportState();
 	private readonly kill: KillController;
-	private readonly pollTimer: ReturnType<typeof setInterval>;
+	private readonly unsubscribePoll: () => void;
 	private jobs: JobSnapshot[] = [];
 	private log?: JobLogView;
 
@@ -375,12 +376,11 @@ export class JobsListView implements Component {
 	) {
 		this.kill = new KillController(manager, () => this.tui.requestRender());
 		this.refresh();
-		this.pollTimer = setInterval(() => {
+		this.unsubscribePoll = subscribeProcessAnimation(() => {
 			this.refresh();
 			this.log?.refresh();
 			this.tui.requestRender();
 		}, POLL_INTERVAL_MS);
-		this.pollTimer.unref?.();
 	}
 
 	private refresh(): void {
@@ -527,7 +527,7 @@ export class JobsListView implements Component {
 	invalidate(): void {}
 
 	dispose(): void {
-		clearInterval(this.pollTimer);
+		this.unsubscribePoll();
 	}
 }
 

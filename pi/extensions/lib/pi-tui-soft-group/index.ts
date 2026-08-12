@@ -5,6 +5,7 @@ import {
 	wrapTextWithAnsi,
 	type Component,
 } from "@earendil-works/pi-tui";
+import { subscribeProcessAnimation } from "../animation-coordinator.ts";
 import { SHIMMER_TIMING } from "./timing.ts";
 
 export { SHIMMER_TIMING } from "./timing.ts";
@@ -62,11 +63,11 @@ type ToolActivityState = {
 
 const activeInvalidators = new Map<string, () => void>();
 const fallbackActivityStates = new Map<string, ToolActivityState>();
-let shimmerTimer: ReturnType<typeof setInterval> | undefined;
+let unsubscribeShimmerClock: (() => void) | undefined;
 
 function startShimmerClock(): void {
-	if (shimmerTimer || activeInvalidators.size === 0) return;
-	shimmerTimer = setInterval(() => {
+	if (unsubscribeShimmerClock || activeInvalidators.size === 0) return;
+	unsubscribeShimmerClock = subscribeProcessAnimation(() => {
 		for (const [toolCallId, invalidate] of activeInvalidators) {
 			try {
 				invalidate();
@@ -76,13 +77,11 @@ function startShimmerClock(): void {
 		}
 		if (activeInvalidators.size === 0) stopShimmerClock();
 	}, SHIMMER_TIMING.frameIntervalMs);
-	const timer = shimmerTimer as ReturnType<typeof setInterval> & { unref?: () => void };
-	timer.unref?.();
 }
 
 function stopShimmerClock(): void {
-	if (shimmerTimer) clearInterval(shimmerTimer);
-	shimmerTimer = undefined;
+	unsubscribeShimmerClock?.();
+	unsubscribeShimmerClock = undefined;
 }
 
 function activityState(context: ToolActivityRenderContext): ToolActivityState | undefined {

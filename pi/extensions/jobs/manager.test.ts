@@ -99,7 +99,7 @@ function assert(name: string, condition: boolean, detail: string): void {
 
 assert(
 	"job invalidation derives its cadence from the shared shimmer contract",
-	INVALIDATE_INTERVAL_MS === SHIMMER_TIMING.frameIntervalMs && INVALIDATE_INTERVAL_MS === 250,
+	INVALIDATE_INTERVAL_MS === SHIMMER_TIMING.frameIntervalMs && INVALIDATE_INTERVAL_MS === 200,
 	JSON.stringify({ INVALIDATE_INTERVAL_MS, SHIMMER_TIMING }),
 );
 
@@ -771,8 +771,8 @@ async function testInvalidation(): Promise<void> {
 	}
 }
 
-async function testInvalidatorUnregisterStopsTimer(): Promise<void> {
-	const name = "unregistering the last invalidator stops the animation timer";
+async function testInvalidatorUnregisterStopsSubscription(): Promise<void> {
+	const name = "unregistering the last invalidator stops its animation subscription";
 	const { manager } = harness();
 	try {
 		const started = manager.start(spec());
@@ -1186,7 +1186,7 @@ async function main(): Promise<void> {
 		testRestore,
 		testMalformedRestoreIsSanitized,
 		testInvalidation,
-		testInvalidatorUnregisterStopsTimer,
+		testInvalidatorUnregisterStopsSubscription,
 		testDispose,
 		testRestoreReactivatesDisposedManager,
 		testPersistsOnlyLifecycleTransitions,

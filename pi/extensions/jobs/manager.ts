@@ -4,13 +4,14 @@
  * `start()` returns a durable job id immediately; the parent agent keeps working and
  * is woken once per batch of completions. The manager owns queueing, bounded output
  * capture, timeouts, cancellation, persistence of lifecycle transitions, and the
- * animation timer used by persistent transcript components. It never touches the
- * TUI, the tool layer, or the process implementation directly: processes arrive
+ * animation subscription used by persistent transcript components. It never touches
+ * the TUI, tool layer, or process implementation directly: processes arrive
  * through `options.createProcess`, which tests replace with a deterministic fake.
  */
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
+import { subscribeProcessAnimation } from "../lib/animation-coordinator.ts";
 import { SHIMMER_TIMING } from "../lib/pi-tui-soft-group/timing.ts";
 import {
 	isTerminalJobStatus,
@@ -269,7 +270,7 @@ export class JobManager implements JobManagerApi {
 	private wakeSuppressed = false;
 	private disposed = false;
 	private wakeFlushTimer?: NodeJS.Timeout;
-	private animationTimer?: NodeJS.Timeout;
+	private unsubscribeAnimation?: () => void;
 	private readonly listeners = new Set<() => void>();
 
 	constructor(options: JobManagerOptions) {
@@ -443,18 +444,18 @@ export class JobManager implements JobManagerApi {
 
 	/**
 	 * Drive a persistent transcript component for one job. The returned function
-	 * unregisters it; the shared animation timer stops once no live job needs it.
+	 * unregisters it; the shared animation subscription stops once no live job needs it.
 	 */
 	registerInvalidator(jobId: string, invalidate: () => void): () => void {
 		const job = this.requireJob(jobId);
 		job.invalidators.add(invalidate);
-		this.syncAnimationTimer();
+		this.syncAnimationSubscription();
 		let removed = false;
 		return () => {
 			if (removed) return;
 			removed = true;
 			job.invalidators.delete(invalidate);
-			this.syncAnimationTimer();
+			this.syncAnimationSubscription();
 		};
 	}
 
@@ -467,10 +468,8 @@ export class JobManager implements JobManagerApi {
 			clearTimeout(this.wakeFlushTimer);
 			this.wakeFlushTimer = undefined;
 		}
-		if (this.animationTimer) {
-			clearInterval(this.animationTimer);
-			this.animationTimer = undefined;
-		}
+		this.unsubscribeAnimation?.();
+		this.unsubscribeAnimation = undefined;
 		const stopped: Array<Promise<unknown>> = [];
 		for (const job of this.jobs.values()) {
 			job.invalidators.clear();
@@ -611,7 +610,7 @@ export class JobManager implements JobManagerApi {
 		job.timeoutTimer = timer;
 		this.persistJob(job);
 		this.invalidate(job);
-		this.syncAnimationTimer();
+		this.syncAnimationSubscription();
 	}
 
 	private onOutput(job: JobState, chunk: Buffer, stream: "stdout" | "stderr"): void {
@@ -757,7 +756,7 @@ export class JobManager implements JobManagerApi {
 		this.persistJob(job);
 		this.invalidate(job);
 		this.notifyListeners();
-		this.syncAnimationTimer();
+		this.syncAnimationSubscription();
 		job.pendingWake = true;
 		this.scheduleWakeFlush();
 		this.pump();
@@ -825,21 +824,22 @@ export class JobManager implements JobManagerApi {
 		}
 	}
 
-	private syncAnimationTimer(): void {
+	private syncAnimationSubscription(): void {
 		const needed =
 			!this.disposed &&
 			[...this.jobs.values()].some(
 				(job) => !isTerminalJobStatus(job.status) && job.invalidators.size > 0,
 			);
-		if (needed && !this.animationTimer) {
-			const timer = setInterval(() => this.tickAnimation(), INVALIDATE_INTERVAL_MS);
-			timer.unref?.();
-			this.animationTimer = timer;
+		if (needed && !this.unsubscribeAnimation) {
+			this.unsubscribeAnimation = subscribeProcessAnimation(
+				() => this.tickAnimation(),
+				INVALIDATE_INTERVAL_MS,
+			);
 			return;
 		}
-		if (!needed && this.animationTimer) {
-			clearInterval(this.animationTimer);
-			this.animationTimer = undefined;
+		if (!needed && this.unsubscribeAnimation) {
+			this.unsubscribeAnimation();
+			this.unsubscribeAnimation = undefined;
 		}
 	}
 

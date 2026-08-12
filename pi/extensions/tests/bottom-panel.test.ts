@@ -1,4 +1,8 @@
-import { BottomPanel, BOTTOM_PANEL_MAX_LINES } from "../lib/tui/index.ts";
+import {
+	BottomPanel,
+	BOTTOM_PANEL_MAX_LINES,
+	getProcessAnimationDiagnostics,
+} from "../lib/tui/index.ts";
 
 function assert(name: string, condition: boolean, details: string): void {
 	if (!condition) throw new Error(`FAIL: ${name}\n${details}`);
@@ -109,6 +113,40 @@ function numbered(prefix: string, count: number): string[] {
 		"section handles update one host and remove it cleanly",
 		updated.join("|") === "two" && clears === 1 && renders >= 1 && mounted === undefined,
 		JSON.stringify({ updated, clears, renders, mounted: Boolean(mounted) }),
+	);
+}
+
+{
+	const panel = new BottomPanel();
+	let mounted: any;
+	let renders = 0;
+	const tui = { requestRender: () => renders++ } as any;
+	const ui = {
+		theme,
+		setWidget: (_key: string, content: any) => {
+			mounted?.dispose?.();
+			mounted = typeof content === "function" ? content(tui, theme) : undefined;
+		},
+	} as any;
+	const subscriptionsBefore = getProcessAnimationDiagnostics().subscriptionCount;
+	panel.attach({ mode: "tui", ui });
+	const section = panel.registerSection("animated", {
+		order: 1,
+		maxLines: 1,
+		refreshIntervalMs: 200,
+		render: () => ["animated"],
+	});
+	const immediateRenders = renders;
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	const subscriptionsMounted = getProcessAnimationDiagnostics().subscriptionCount;
+	section.remove();
+	const subscriptionsRemoved = getProcessAnimationDiagnostics().subscriptionCount;
+	assert(
+		"animated sections use and release the process-wide frame coordinator",
+		renders > immediateRenders &&
+			subscriptionsMounted === subscriptionsBefore + 1 &&
+			subscriptionsRemoved === subscriptionsBefore,
+		JSON.stringify({ renders, immediateRenders, subscriptionsBefore, subscriptionsMounted }),
 	);
 }
 

@@ -15,6 +15,7 @@ import {
 	type Focusable,
 	type TUI,
 } from "@earendil-works/pi-tui";
+import { subscribeProcessAnimation } from "./lib/animation-coordinator.ts";
 import { completeDirectRequest, type DirectCompleteFunction } from "./lib/direct-completion.ts";
 import {
 	resolvePreferredUtilityModel,
@@ -42,7 +43,6 @@ const MAX_STATE_CHARS = 4_000;
 const MAX_HISTORY_CHARS = 12_000;
 const OMISSION_RESERVE = 100;
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
-const SPINNER_INTERVAL_MS = 120;
 
 const BTW_SYSTEM_PROMPT = `You answer ephemeral sidechannel questions about a coding session.
 Answer concisely from the supplied session evidence, extension state, and prior Q&A.
@@ -336,7 +336,7 @@ export class BtwChatOverlay implements Component, Focusable {
 	private answerController?: AbortController;
 	private readonly turns: BtwChatTurn[] = [];
 	private readonly viewport = new ScrollViewportState();
-	private readonly timer: ReturnType<typeof setInterval>;
+	private readonly unsubscribeAnimation: () => void;
 	private readonly editor: Editor;
 	readonly closeController = new AbortController();
 
@@ -362,12 +362,11 @@ export class BtwChatOverlay implements Component, Focusable {
 		this.editor.onSubmit = (value) => {
 			void this.submitQuestion(value);
 		};
-		this.timer = setInterval(() => {
+		this.unsubscribeAnimation = subscribeProcessAnimation(() => {
 			if (!this.generating || this.disposed) return;
 			this.frame = (this.frame + 1) % SPINNER_FRAMES.length;
 			this.tui.requestRender();
-		}, SPINNER_INTERVAL_MS);
-		this.timer.unref?.();
+		});
 	}
 
 	get focused(): boolean {
@@ -617,7 +616,7 @@ export class BtwChatOverlay implements Component, Focusable {
 		this.answerController?.abort();
 		this.editor.focused = false;
 		this.editor.disableSubmit = true;
-		clearInterval(this.timer);
+		this.unsubscribeAnimation();
 	}
 }
 

@@ -310,7 +310,7 @@ function testSmokeRenderOutput(): void {
 	const lines = extractLines(view);
 	const allText = lines.join("\n");
 
-	// Must dispose before assertions to clear the poll timer
+	// Must dispose before assertions to release the poll subscription
 	view.dispose();
 
 	assert(

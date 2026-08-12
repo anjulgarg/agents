@@ -1,4 +1,11 @@
-import announceStep, { ACTIVITY_ENTRY_TYPE, WORKING_PHASE, formatSlice } from "../announce-step.ts";
+import announceStep, {
+	ACTIVITY_ENTRY_TYPE,
+	WORKING_FRAME_ADVANCE,
+	WORKING_FRAME_INTERVAL_MS,
+	WORKING_PHASE,
+	formatSlice,
+} from "../announce-step.ts";
+import { getProcessAnimationDiagnostics } from "../lib/animation-coordinator.ts";
 
 function assert(name: string, condition: boolean, details: string): void {
 	if (!condition) throw new Error(`FAIL: ${name}\n${details}`);
@@ -18,6 +25,7 @@ interface Harness {
 
 function createContext(mode: "tui" | "rpc" | "print" | "json", entries: unknown[] = []) {
 	const workingMessages: Array<string | undefined> = [];
+	const workingIndicators: Array<{ frames?: string[]; intervalMs?: number } | undefined> = [];
 	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
 	const context = {
 		mode,
@@ -26,11 +34,12 @@ function createContext(mode: "tui" | "rpc" | "print" | "json", entries: unknown[
 			setWorkingMessage: (message?: string) => workingMessages.push(message),
 			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
 			setWorkingVisible: () => undefined,
-			setWorkingIndicator: () => undefined,
+			setWorkingIndicator: (indicator?: { frames?: string[]; intervalMs?: number }) =>
+				workingIndicators.push(indicator),
 		},
 		sessionManager: { getEntries: () => entries },
 	};
-	return { context, workingMessages, statusCalls };
+	return { context, workingMessages, workingIndicators, statusCalls };
 }
 
 function createHarness(): Harness {
@@ -134,6 +143,16 @@ assert(
 	"live status always uses Working",
 	tui.workingMessages.at(-1)?.startsWith("Working...") === true,
 	JSON.stringify(tui.workingMessages),
+);
+const workingAnimation = getProcessAnimationDiagnostics();
+assert(
+	"Working joins the coordinator with two-phase advancement and no private loader clock",
+	WORKING_FRAME_INTERVAL_MS === 200 &&
+		WORKING_FRAME_ADVANCE === 2 &&
+		tui.workingIndicators.at(-1)?.frames?.length === 1 &&
+		workingAnimation.subscriptionCount === 1 &&
+		workingAnimation.timerIntervalMs === 200,
+	JSON.stringify({ indicators: tui.workingIndicators, workingAnimation }),
 );
 now += 1_234;
 harness.emit(
@@ -326,8 +345,14 @@ assert(
 harness.emit("agent_settled", { type: "agent_settled" }, tui.context);
 assert(
 	"settlement clears live activity without appending a trailing duplicate",
-	harness.appended.length === 1 && tui.workingMessages.at(-1) === undefined,
-	JSON.stringify({ appended: harness.appended, workingMessages: tui.workingMessages }),
+	harness.appended.length === 1 &&
+		tui.workingMessages.at(-1) === undefined &&
+		getProcessAnimationDiagnostics().subscriptionCount === 0,
+	JSON.stringify({
+		appended: harness.appended,
+		workingMessages: tui.workingMessages,
+		animation: getProcessAnimationDiagnostics(),
+	}),
 );
 
 const noToolHarness = createHarness();
@@ -433,7 +458,7 @@ assert(
 );
 failureHarness.emit("agent_settled", { type: "agent_settled" }, failureContext.context);
 assert(
-	"abort settlement clears the timer-owned working message",
+	"abort settlement clears the coordinator-owned working message",
 	failureHarness.appended.length === 0 && failureContext.workingMessages.at(-1) === undefined,
 	JSON.stringify({ appended: failureHarness.appended, working: failureContext.workingMessages }),
 );

@@ -48,9 +48,13 @@ each overflowing section uses a `+ N more` hint.
 
 Extensions add declarative sections through the shared TUI bottom-panel compositor. It centralizes
 ordering, allocation, truncation, separators, repaint scheduling, and cleanup so future sections do
-not need another fixed widget or animation loop. Tool rows and running `& <command>` rows derive their
-shimmer timing from one frozen contract with a 250 ms repaint cadence; completed jobs leave the panel
-and retain their final transcript receipt.
+not need another fixed widget or animation loop. A Jiti-safe process-wide coordinator owns every
+project-controlled visual frame source and synchronously batches their render requests onto 200 ms
+boundaries; slower requests round up to a multiple of that cadence. Tool and job shimmer, panel
+activity, and full-screen extension spinners all subscribe to that clock. The `Working` indicator uses
+single-frame updates from the same coordinator instead of Pi's independent 80 ms loader timer. It
+advances two glyph phases per shared frame for faster apparent rotation without extra repaints.
+Completed jobs leave the panel and retain their final transcript receipt.
 
 ## Todo lifecycle
 

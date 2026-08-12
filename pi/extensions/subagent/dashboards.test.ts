@@ -75,6 +75,7 @@ const {
 	selectWorktreeUsageRow,
 } = await import("." + "/ui.ts");
 const { TeamDashboard } = await import(".." + "/team/index.ts");
+const { getProcessAnimationDiagnostics } = await import(".." + "/lib/animation-coordinator.ts");
 type SubagentDetails = import("./index.ts").SubagentDetails;
 type SubagentResultView = import("./index.ts").SubagentResultView;
 type SubagentThreadGroup = import("./ui.ts").SubagentThreadGroup;
@@ -1367,18 +1368,18 @@ function testSubagentDashboard(): void {
 			!mergedOutput.includes("1 turns, 2 tokens"),
 	);
 
-	// ---------- thread: disposal clears the animation timer ----------
-	const originalClearInterval = globalThis.clearInterval;
-	const clearedHandles: unknown[] = [];
-	(globalThis as any).clearInterval = (handle: unknown) => {
-		clearedHandles.push(handle);
-		originalClearInterval(handle as any);
-	};
+	// ---------- thread: disposal clears the animation subscription ----------
+	const subscriptionsBefore = getProcessAnimationDiagnostics().subscriptionCount;
 	const disposable = makeThread([subagentTask()]);
+	const subscriptionsMounted = getProcessAnimationDiagnostics().subscriptionCount;
 	disposable.dispose();
 	disposable.dispose();
-	(globalThis as any).clearInterval = originalClearInterval;
-	check("thread: dispose clears the animation timer", clearedHandles.length >= 1);
+	const subscriptionsDisposed = getProcessAnimationDiagnostics().subscriptionCount;
+	check(
+		"thread: dispose clears the animation subscription",
+		subscriptionsMounted === subscriptionsBefore + 1 &&
+			subscriptionsDisposed === subscriptionsBefore,
+	);
 
 	// ---------- dashboard narrow-width wrapped-footer ----------
 	const narrowDashTui = {
