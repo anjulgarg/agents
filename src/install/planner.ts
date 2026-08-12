@@ -204,6 +204,10 @@ async function desiredSettings(
 	);
 	if (!relevant) return undefined;
 	const settings = await parseObject(path);
+	// Model scope is user/runtime state, not an Agents-managed default. Installing
+	// any component that updates Pi settings also retires the legacy field while
+	// preserving every other unrelated setting.
+	if (operation === "install") delete settings.enabledModels;
 	for (const component of components.filter((item) => selected.has(item.id))) {
 		const source = sourceFor(component, sourceRoot);
 		for (const output of component.outputs)

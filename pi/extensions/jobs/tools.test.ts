@@ -60,7 +60,7 @@ const directories = new Set(["/repo", "/repo/sub", "/elsewhere"]);
 
 assert(
 	"job activity derives its repaint cadence from the shared shimmer contract",
-	ASYNC_ACTIVITY_REFRESH_MS === SHIMMER_TIMING.frameIntervalMs && ASYNC_ACTIVITY_REFRESH_MS === 200,
+	ASYNC_ACTIVITY_REFRESH_MS === SHIMMER_TIMING.frameIntervalMs && ASYNC_ACTIVITY_REFRESH_MS === 150,
 	JSON.stringify({ ASYNC_ACTIVITY_REFRESH_MS, SHIMMER_TIMING }),
 );
 

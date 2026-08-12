@@ -6,6 +6,8 @@ test/
 docs/plans/
 pi/config/settings.json
 pi/config/mcp.json
+pi/config/models.json
+pi/config/models-store.json
 tsconfig.json
 tsconfig.build.json
 eslint.config.js

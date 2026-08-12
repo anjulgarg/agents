@@ -99,7 +99,7 @@ function assert(name: string, condition: boolean, detail: string): void {
 
 assert(
 	"job invalidation derives its cadence from the shared shimmer contract",
-	INVALIDATE_INTERVAL_MS === SHIMMER_TIMING.frameIntervalMs && INVALIDATE_INTERVAL_MS === 200,
+	INVALIDATE_INTERVAL_MS === SHIMMER_TIMING.frameIntervalMs && INVALIDATE_INTERVAL_MS === 150,
 	JSON.stringify({ INVALIDATE_INTERVAL_MS, SHIMMER_TIMING }),
 );
 

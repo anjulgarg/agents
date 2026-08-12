@@ -97,6 +97,7 @@ describe("component registry", () => {
 			"pi-team:product",
 			"instructions:shared",
 		]);
+		expect(JSON.stringify(components)).not.toMatch(/(?:enabledModels|models(?:-store)?\.json)/);
 	});
 
 	it("resolves exact deterministic profile closures", () => {

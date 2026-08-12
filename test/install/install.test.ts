@@ -92,6 +92,9 @@ describe("transactional install", () => {
 		await applyPlan({ home: target, sourceRoot, operationId: () => "success" }, first);
 		const before = await inventory(target);
 		const settings = await object(join(target, ".pi/agent/settings.json"));
+		expect(settings).not.toHaveProperty("enabledModels");
+		expect(await exists(join(target, ".pi/agent/models.json"))).toBe(false);
+		expect(await exists(join(target, ".pi/agent/models-store.json"))).toBe(false);
 		const local = settings.packages.find(
 			(entry: any) => typeof entry === "object" && entry.source === sourceRoot,
 		);
@@ -170,6 +173,34 @@ describe("transactional install", () => {
 		expect(settings.packages).toEqual(["npm:other@1"]);
 		expect(receipt.components["pi-config:settings"]).toBeUndefined();
 		expect(receipt.components["skill:foreman-plan"]).toBeDefined();
+	});
+
+	it("removes legacy model scope without deleting user or runtime model files", async () => {
+		const target = await home();
+		const agentDir = join(target, ".pi/agent");
+		await mkdir(agentDir, { recursive: true });
+		await writeFile(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				enabledModels: ["provider/model"],
+				custom: { keep: true },
+				packages: ["npm:other@1"],
+			}),
+		);
+		await writeFile(join(agentDir, "models.json"), "custom-model-config\n");
+		await writeFile(join(agentDir, "models-store.json"), "runtime-model-cache\n");
+
+		await applyPlan(
+			{ home: target, sourceRoot },
+			await planInstall({ home: target, sourceRoot, now: fixed }, ["pi-extension:todo"]),
+		);
+
+		const settings = await object(join(agentDir, "settings.json"));
+		expect(settings).not.toHaveProperty("enabledModels");
+		expect(settings.custom).toEqual({ keep: true });
+		expect(settings.packages).toContain("npm:other@1");
+		expect(await text(join(agentDir, "models.json"))).toBe("custom-model-config\n");
+		expect(await text(join(agentDir, "models-store.json"))).toBe("runtime-model-cache\n");
 	});
 
 	it.skipIf(!localPiConfigFiles.mcp)(

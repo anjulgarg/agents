@@ -11,8 +11,8 @@ import {
 
 export const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const WORKING_FRAME_INTERVAL_MS = PROCESS_ANIMATION_FRAME_INTERVAL_MS;
-/** Perceptually faster rotation without increasing the shared repaint cadence. */
-export const WORKING_FRAME_ADVANCE = 2;
+/** Advance every glyph in sequence without skipping frames. */
+export const WORKING_FRAME_ADVANCE = 1;
 
 export const ACTIVITY_ENTRY_TYPE = "announce-step-activity";
 export const WORKING_PHASE = "Working";

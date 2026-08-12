@@ -146,12 +146,12 @@ assert(
 );
 const workingAnimation = getProcessAnimationDiagnostics();
 assert(
-	"Working joins the coordinator with two-phase advancement and no private loader clock",
-	WORKING_FRAME_INTERVAL_MS === 200 &&
-		WORKING_FRAME_ADVANCE === 2 &&
+	"Working joins the coordinator without frame skipping or a private loader clock",
+	WORKING_FRAME_INTERVAL_MS === 150 &&
+		WORKING_FRAME_ADVANCE === 1 &&
 		tui.workingIndicators.at(-1)?.frames?.length === 1 &&
 		workingAnimation.subscriptionCount === 1 &&
-		workingAnimation.timerIntervalMs === 200,
+		workingAnimation.timerIntervalMs === 150,
 	JSON.stringify({ indicators: tui.workingIndicators, workingAnimation }),
 );
 now += 1_234;

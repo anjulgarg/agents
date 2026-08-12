@@ -66,9 +66,20 @@ describe("package and repository safety", () => {
 		expect(files).not.toContainEqual(
 			expect.stringMatching(/^(?:test|src|scripts|docs\/plans)(?:\/|$)/),
 		);
-		for (const privateConfig of ["pi/config/settings.json", "pi/config/mcp.json"]) {
+		for (const privateConfig of [
+			"pi/config/settings.json",
+			"pi/config/mcp.json",
+			"pi/config/models.json",
+			"pi/config/models-store.json",
+		]) {
 			expect(files).not.toContain(privateConfig);
 		}
+		const { stdout: trackedModelFiles } = await execFileAsync(
+			"git",
+			["ls-files", "--", "pi/config/models.json", "pi/config/models-store.json"],
+			{ cwd: sourceRoot },
+		);
+		expect(trackedModelFiles.trim()).toBe("");
 		expect(files).not.toContainEqual(
 			expect.stringMatching(
 				/(?:^|\/)(?:sessions|state|npm|git|credentials|node_modules|__pycache__)(?:\/|$)/,
@@ -84,12 +95,19 @@ describe("package and repository safety", () => {
 		await mkdir(join(home, ".pi/agent"), { recursive: true });
 		await writeFile(
 			settingsPath,
-			JSON.stringify({ custom: { keep: true }, packages: ["npm:other@1"] }),
+			JSON.stringify({
+				enabledModels: ["provider/model"],
+				custom: { keep: true },
+				packages: ["npm:other@1"],
+			}),
 		);
+		await writeFile(join(home, ".pi/agent/models.json"), "custom-model-config\n");
+		await writeFile(join(home, ".pi/agent/models-store.json"), "runtime-model-cache\n");
 
 		const result = await runAgents(home, ["install", "--profile", "pi", "--yes", "--json"]);
 		expect(result, result.stderr).toMatchObject({ code: 0, stderr: "" });
 		const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+			enabledModels?: string[];
 			custom: { keep: boolean };
 			packages: unknown[];
 		};
@@ -100,8 +118,15 @@ describe("package and repository safety", () => {
 		const loaderFilters = localPackages.flatMap((entry) =>
 			(entry.extensions ?? []).filter((filter) => filter === "+pi/extensions/tool-loader.ts"),
 		);
+		expect(settings.enabledModels).toBeUndefined();
 		expect(settings.custom).toEqual({ keep: true });
 		expect(settings.packages).toContain("npm:other@1");
+		expect(await readFile(join(home, ".pi/agent/models.json"), "utf8")).toBe(
+			"custom-model-config\n",
+		);
+		expect(await readFile(join(home, ".pi/agent/models-store.json"), "utf8")).toBe(
+			"runtime-model-cache\n",
+		);
 		expect(localPackages).toHaveLength(1);
 		expect(loaderFilters).toEqual(["+pi/extensions/tool-loader.ts"]);
 	});

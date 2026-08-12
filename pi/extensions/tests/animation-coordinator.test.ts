@@ -31,7 +31,7 @@ assert(
 		afterFirst.subscriptionCount === 1 &&
 		afterSecond.subscriptionCount === 2 &&
 		afterSecond.timerActive &&
-		afterSecond.timerIntervalMs === 200 &&
+		afterSecond.timerIntervalMs === 150 &&
 		afterSecond.timerStarts === afterFirst.timerStarts,
 	JSON.stringify({ initial, afterFirst, afterSecond }),
 );
@@ -61,8 +61,8 @@ const unsubscribeSlower = firstModule.subscribeProcessAnimation(() => undefined,
 const slower = secondModule.getProcessAnimationDiagnostics();
 unsubscribeSlower();
 assert(
-	"off-cadence requests round up to a shared 200ms frame multiple",
-	slower.subscriptionCount === 1 && slower.timerIntervalMs === 400,
+	"off-cadence requests round up to a shared 150ms frame multiple",
+	slower.subscriptionCount === 1 && slower.timerIntervalMs === 450,
 	JSON.stringify(slower),
 );
 
