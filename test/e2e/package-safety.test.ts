@@ -118,7 +118,7 @@ describe("package and repository safety", () => {
 		const loaderFilters = localPackages.flatMap((entry) =>
 			(entry.extensions ?? []).filter((filter) => filter === "+pi/extensions/tool-loader.ts"),
 		);
-		expect(settings.enabledModels).toBeUndefined();
+		expect(settings.enabledModels).toEqual(["provider/model"]);
 		expect(settings.custom).toEqual({ keep: true });
 		expect(settings.packages).toContain("npm:other@1");
 		expect(await readFile(join(home, ".pi/agent/models.json"), "utf8")).toBe(

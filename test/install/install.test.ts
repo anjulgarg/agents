@@ -175,7 +175,7 @@ describe("transactional install", () => {
 		expect(receipt.components["skill:foreman-plan"]).toBeDefined();
 	});
 
-	it("removes legacy model scope without deleting user or runtime model files", async () => {
+	it("preserves user-owned model scope and runtime model files", async () => {
 		const target = await home();
 		const agentDir = join(target, ".pi/agent");
 		await mkdir(agentDir, { recursive: true });
@@ -196,7 +196,7 @@ describe("transactional install", () => {
 		);
 
 		const settings = await object(join(agentDir, "settings.json"));
-		expect(settings).not.toHaveProperty("enabledModels");
+		expect(settings.enabledModels).toEqual(["provider/model"]);
 		expect(settings.custom).toEqual({ keep: true });
 		expect(settings.packages).toContain("npm:other@1");
 		expect(await text(join(agentDir, "models.json"))).toBe("custom-model-config\n");

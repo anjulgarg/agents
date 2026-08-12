@@ -68,7 +68,7 @@ export function registerSubagentLifecycle(pi: ExtensionAPI, runtime: SubagentRun
 			systemPrompt:
 				event.systemPrompt +
 				`\n\nAvailable subagent models: ${catalog}. ` +
-				"The subagent tool rejects models outside enabledModels.",
+				"The subagent tool rejects models outside the active Pi model scope.",
 		};
 	});
 

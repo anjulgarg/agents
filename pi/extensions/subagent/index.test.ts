@@ -301,6 +301,7 @@ function fakeCtx(overrides: Record<string, unknown> = {}) {
 		cwd: "/tmp",
 		mode: "rpc",
 		model: { provider: "test", id: "model", name: "model" },
+		scopedModels: [],
 		modelRegistry: {},
 		isProjectTrusted: () => false,
 		sessionManager: {
@@ -1464,24 +1465,47 @@ async function testSubagentUpdateShape(): Promise<void> {
 }
 
 async function testGetScopedExport(): Promise<void> {
-	const name = "c. getScopedSubagentModels is still exported and callable";
+	const name = "c. getScopedSubagentModels uses Pi's resolved native scope";
+	const scoped = {
+		provider: "luna",
+		id: "max",
+		name: "Luna Max",
+		reasoning: true,
+	};
+	let registryReads = 0;
+	const models = await getScopedSubagentModels(
+		fakeCtx({
+			scopedModels: [{ model: scoped, thinkingLevel: "high" }],
+			modelRegistry: {
+				getAvailable: () => {
+					registryReads++;
+					return [];
+				},
+			},
+		}) as any,
+	);
 	assert(
 		name,
-		typeof getScopedSubagentModels === "function",
-		`typeof=${typeof getScopedSubagentModels}`,
+		typeof getScopedSubagentModels === "function" &&
+			models.length === 1 &&
+			models[0] === scoped &&
+			registryReads === 0,
+		JSON.stringify({ models, registryReads }),
 	);
-	let threw = false;
+
 	let message = "";
 	try {
-		await getScopedSubagentModels(fakeCtx() as any);
+		await getScopedSubagentModels(fakeCtx({ scopedModels: [] }) as any);
 	} catch (error) {
-		threw = true;
 		message = error instanceof Error ? error.message : String(error);
 	}
 	assert(
-		`${name} (callable)`,
-		threw && /enabledModels|Cannot read|settings|modelRegistry|getAvailable/i.test(message),
-		`threw=${threw} message=${message}`,
+		`${name} (empty scope guidance)`,
+		message.includes("--models <provider/model,...>") &&
+			message.includes("enabledModels") &&
+			message.includes("/scoped-models") &&
+			message.includes("restart"),
+		message,
 	);
 }
 

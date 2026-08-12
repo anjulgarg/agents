@@ -1,72 +1,20 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-
 import type { Model } from "@earendil-works/pi-ai";
-import {
-	CONFIG_DIR_NAME,
-	getAgentDir,
-	resolveModelScopeWithDiagnostics,
-	type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export function modelKey(model: Model<any>): string {
 	return `${model.provider}/${model.id}`;
 }
 
-function readSettings(pathname: string): Record<string, unknown> | undefined {
-	try {
-		const value = JSON.parse(fs.readFileSync(pathname, "utf8")) as unknown;
-		if (!value || typeof value !== "object" || Array.isArray(value)) {
-			throw new Error("settings must be a JSON object");
-		}
-		return value as Record<string, unknown>;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Cannot read subagent model scope from ${pathname}: ${message}`);
-	}
-}
-
-function enabledModelPatterns(ctx: ExtensionContext): string[] {
-	const globalPath = path.join(getAgentDir(), "settings.json");
-	const globalSettings = readSettings(globalPath);
-	let configured = globalSettings?.enabledModels;
-	let source = globalPath;
-
-	if (ctx.isProjectTrusted()) {
-		const projectPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "settings.json");
-		const projectSettings = readSettings(projectPath);
-		if (projectSettings && Object.hasOwn(projectSettings, "enabledModels")) {
-			configured = projectSettings.enabledModels;
-			source = projectPath;
-		}
-	}
-
-	if (
-		!Array.isArray(configured) ||
-		configured.length === 0 ||
-		configured.some((item) => typeof item !== "string" || !item.trim())
-	) {
-		throw new Error(`Subagent execution requires a non-empty enabledModels list in ${source}`);
-	}
-	return configured as string[];
-}
-
 export async function getScopedSubagentModels(ctx: ExtensionContext): Promise<Model<any>[]> {
-	const patterns = enabledModelPatterns(ctx);
-	const { scopedModels: resolved, diagnostics } = await resolveModelScopeWithDiagnostics(
-		patterns,
-		ctx.modelRegistry,
-	);
-	if (resolved.length === 0) {
-		const details = diagnostics
-			.map((diagnostic: { message: string }) => diagnostic.message)
-			.join("; ");
+	const models = (ctx.scopedModels ?? []).map(({ model }) => model);
+	if (models.length === 0) {
 		throw new Error(
-			`No enabledModels entries resolve to available subagent models${details ? `: ${details}` : ""}`,
+			"Subagent execution requires an explicit Pi model scope. Start Pi with " +
+				"--models <provider/model,...> or set Pi's native enabledModels setting, then restart. " +
+				"Run /scoped-models to verify the active scope before using subagents.",
 		);
 	}
-	return resolved.map((item: { model: Model<any> }) => item.model);
+	return models;
 }
 
 function normalizeModelName(value: string): string {

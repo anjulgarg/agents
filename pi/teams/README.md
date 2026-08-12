@@ -274,8 +274,9 @@ npm run test:extensions
 Common failures:
 
 - **No `/team:<name>` command:** rebuild, reload Pi, and inspect startup errors.
-- **Unavailable model:** add it to `enabledModels`, authenticate its provider, or change the
-  team definition.
+- **Unavailable model:** start Pi with a matching `--models` scope or set its native
+  `enabledModels`, verify with `/scoped-models`, authenticate the provider, or change the team
+  definition.
 - **Plan rejected:** include dependent review and verification tasks and check for dependency
   cycles.
 - **Role cannot run concurrently:** raise `maxInstances` only when ownership is safely split.

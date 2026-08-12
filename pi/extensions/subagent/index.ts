@@ -56,7 +56,7 @@ export interface SubagentExtensionOptions {
 	createSupervisor?: (options: ConstructorParameters<typeof Supervisor>[0]) => Supervisor;
 	createChild?: ChildFactory;
 	proc?: ProcAccess;
-	/** Inject model resolution in tests (skips enabledModels / registry I/O). */
+	/** Inject model resolution in tests instead of using the native Pi model scope. */
 	getModels?: (ctx: ExtensionContext) => Promise<Model<any>[]>;
 	/** Disable process-exit handlers in tests (Supervisor still installs its own). */
 	watchdogTickMs?: number;
