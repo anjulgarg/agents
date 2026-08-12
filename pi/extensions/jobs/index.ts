@@ -9,6 +9,7 @@ import {
 	BOTTOM_PANEL_SECTION_ORDER,
 	getBottomPanel,
 	renderSynchronizedShimmerLine,
+	SHIMMER_TIMING,
 	type BottomPanel,
 	type BottomPanelSectionHandle,
 } from "../lib/tui/index.ts";
@@ -56,9 +57,15 @@ export interface JobsExtensionOptions extends JobToolOptions {
 
 const ASYNC_ACTIVITY_SECTION = "async-commands";
 const ASYNC_ACTIVITY_MAX_LINES = 3;
-const ASYNC_ACTIVITY_REFRESH_MS = 33;
-const ASYNC_SHIMMER_DELAY_MS = 220;
-const ASYNC_SHIMMER_FADE_IN_MS = 300;
+/** Derived from the shared contract so job and tool shimmer cannot drift. */
+export const ASYNC_ACTIVITY_REFRESH_MS = SHIMMER_TIMING.frameIntervalMs;
+
+function shimmerTheme(theme: Theme) {
+	return {
+		fg: (name: string, text: string) => theme.fg(name as Parameters<Theme["fg"]>[0], text),
+		bold: (text: string) => theme.bold(text),
+	};
+}
 
 function renderAsyncActivityLine(job: JobSnapshot, width: number, theme: Theme): string {
 	const line =
@@ -69,9 +76,9 @@ function renderAsyncActivityLine(job: JobSnapshot, width: number, theme: Theme):
 	if (job.status !== "running") return line;
 	const amplitude = Math.max(
 		0,
-		Math.min(1, (job.durationMs - ASYNC_SHIMMER_DELAY_MS) / ASYNC_SHIMMER_FADE_IN_MS),
+		Math.min(1, (job.durationMs - SHIMMER_TIMING.delayMs) / SHIMMER_TIMING.fadeInMs),
 	);
-	return renderSynchronizedShimmerLine(line, width, theme, Date.now(), amplitude);
+	return renderSynchronizedShimmerLine(line, width, shimmerTheme(theme), Date.now(), amplitude);
 }
 
 /** Latest persisted record per job on the active branch (fork-safe). */

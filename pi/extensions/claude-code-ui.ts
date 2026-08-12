@@ -149,8 +149,80 @@ export function formatEditorTopBorder(width: number, sessionTitle: string | unde
 	return `${"─".repeat(Math.max(2, width - visibleWidth(suffix)))}${suffix}`;
 }
 
+const CONTEXT_USAGE_TTL_MS = 200;
+
+type ContextUsage = ReturnType<ExtensionContext["getContextUsage"]>;
+
+interface ContextUsageMemo {
+	ctx: ExtensionContext;
+	model: ExtensionContext["model"];
+	modelId: string | undefined;
+	modelName: string | undefined;
+	modelProvider: string | undefined;
+	contextWindow: number | undefined;
+	usage: ContextUsage;
+	expiresAt: number;
+}
+
+let contextUsageMemo: ContextUsageMemo | undefined;
+
+function getMemoizedContextUsage(ctx: ExtensionContext): ContextUsage {
+	const model = ctx.model;
+	const modelId = model?.id;
+	const modelName = model?.name;
+	const modelProvider = model?.provider;
+	const contextWindow = model?.contextWindow;
+	const now = Date.now();
+	if (
+		!contextUsageMemo ||
+		contextUsageMemo.ctx !== ctx ||
+		contextUsageMemo.model !== model ||
+		contextUsageMemo.modelId !== modelId ||
+		contextUsageMemo.modelName !== modelName ||
+		contextUsageMemo.modelProvider !== modelProvider ||
+		contextUsageMemo.contextWindow !== contextWindow ||
+		now >= contextUsageMemo.expiresAt
+	) {
+		contextUsageMemo = {
+			ctx,
+			model,
+			modelId,
+			modelName,
+			modelProvider,
+			contextWindow,
+			usage: ctx.getContextUsage(),
+			expiresAt: now + CONTEXT_USAGE_TTL_MS,
+		};
+	}
+	return contextUsageMemo.usage;
+}
+
+/**
+ * The host resolves the session name by filtering every session entry and
+ * scanning the copy in reverse, so a per-frame call is O(session). The title
+ * only changes on rename or when the title extension names a new session, and
+ * a sub-second refresh is imperceptible on the editor border.
+ */
+const SESSION_NAME_TTL_MS = 500;
+
+let sessionNameMemo: { name: string | undefined; expiresAt: number } | undefined;
+
+export function getMemoizedSessionName(read: () => string | undefined): string | undefined {
+	const now = Date.now();
+	if (!sessionNameMemo || now >= sessionNameMemo.expiresAt) {
+		sessionNameMemo = { name: read(), expiresAt: now + SESSION_NAME_TTL_MS };
+	}
+	return sessionNameMemo.name;
+}
+
+/** Drop every per-frame memo whose input a lifecycle event can have changed. */
+function invalidateFrameCaches(ctx: ExtensionContext): void {
+	if (contextUsageMemo?.ctx === ctx) contextUsageMemo = undefined;
+	sessionNameMemo = undefined;
+}
+
 export function contextRailPercent(ctx: ExtensionContext): number | undefined {
-	const usage = ctx.getContextUsage();
+	const usage = getMemoizedContextUsage(ctx);
 	const contextWindow = ctx.model?.contextWindow;
 	if (!usage || usage.percent === null || !contextWindow) return undefined;
 	return Math.min(100, Math.max(0, usage.percent));
@@ -216,7 +288,7 @@ export function readGitContext(cwd: string): GitContext {
 }
 
 function formatContext(ctx: ExtensionContext): string | undefined {
-	const usage = ctx.getContextUsage();
+	const usage = getMemoizedContextUsage(ctx);
 	const contextWindow = ctx.model?.contextWindow;
 	if (!usage || usage.percent === null || !contextWindow) return undefined;
 	const used = Math.round(usage.tokens / 1000);
@@ -532,11 +604,25 @@ export default function (pi: ExtensionAPI) {
 		return { ...event.payload, service_tier: "priority" };
 	});
 
+	pi.on("message_end", (_event, ctx) => {
+		invalidateFrameCaches(ctx);
+	});
+
 	pi.on("agent_end", (_event, ctx) => {
+		invalidateFrameCaches(ctx);
 		void refreshCodexQuota(ctx);
 	});
 
+	pi.on("agent_settled", (_event, ctx) => {
+		invalidateFrameCaches(ctx);
+	});
+
+	pi.on("session_compact", (_event, ctx) => {
+		invalidateFrameCaches(ctx);
+	});
+
 	pi.on("model_select", (_event, ctx) => {
+		invalidateFrameCaches(ctx);
 		installFooter(ctx);
 		void refreshCodexQuota(ctx);
 	});
@@ -549,6 +635,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
+		invalidateFrameCaches(ctx);
 		if (ctx.mode !== "tui") return;
 
 		if (usagePollTimer) clearInterval(usagePollTimer);
@@ -567,7 +654,7 @@ export default function (pi: ExtensionAPI) {
 					tui,
 					theme,
 					keybindings,
-					() => pi.getSessionName(),
+					() => getMemoizedSessionName(() => pi.getSessionName()),
 					() => contextRailPercent(ctx),
 				),
 		);

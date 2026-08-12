@@ -143,6 +143,19 @@ function pinSuffix(lines: string[], suffix: string, bodyWidth: number): string[]
 }
 
 export class MinimalCommand implements Component {
+	private cachedRender:
+		| {
+				width: number;
+				expanded: boolean;
+				prefix: string;
+				command: string;
+				timeout: number | undefined;
+				statusSuffix: string;
+				theme: Theme;
+				lines: string[];
+		  }
+		| undefined;
+
 	constructor(
 		private readonly command: string,
 		private readonly timeout: number | undefined,
@@ -154,44 +167,75 @@ export class MinimalCommand implements Component {
 	) {}
 
 	render(width: number): string[] {
-		const renderWidth = Math.max(1, width);
 		const statusSuffix =
 			typeof this.statusSuffix === "function" ? this.statusSuffix() : this.statusSuffix;
+		const cached = this.cachedRender;
+		if (
+			cached &&
+			cached.width === width &&
+			cached.expanded === this.expanded &&
+			cached.prefix === this.prefix &&
+			cached.command === this.command &&
+			cached.timeout === this.timeout &&
+			cached.statusSuffix === statusSuffix &&
+			cached.theme === this.theme
+		) {
+			return cached.lines;
+		}
+
+		const renderWidth = Math.max(1, width);
 		const timeoutSuffix = this.timeout ? ` (timeout ${this.timeout}s)` : "";
 		const commandText =
 			`${this.command}${timeoutSuffix}`.replace(/\s+/g, " ").trim() || "(empty command)";
 		const prefixWidth = visibleWidth(this.prefix);
+		let renderedLines: string[];
 		if (renderWidth <= prefixWidth) {
-			return [truncateToWidth(`${this.prefix}${commandText}${statusSuffix}`, renderWidth, "")];
+			renderedLines = [
+				truncateToWidth(`${this.prefix}${commandText}${statusSuffix}`, renderWidth, ""),
+			];
+		} else {
+			const bodyWidth = renderWidth - prefixWidth;
+			const suffixWidth = this.expanded ? 0 : visibleWidth(statusSuffix);
+			const lines = this.expanded
+				? `${commandText}${statusSuffix}`
+						.split("\n")
+						.flatMap((line) => wrapTextWithAnsi(line || " ", bodyWidth))
+				: // Collapsed rows keep only two lines; pin the pre-styled status onto
+					// the last line after muting the command body so exit/duration colors
+					// are not wiped by a second theme wrap.
+					pinSuffix(
+						wrapTextWithAnsi(commandText, Math.max(1, bodyWidth - suffixWidth)).slice(0, 2),
+						"",
+						bodyWidth,
+					);
+			renderedLines = lines.map((line, index) => {
+				const prefix =
+					index === 0
+						? this.theme.fg("toolTitle", this.theme.bold(this.prefix))
+						: " ".repeat(prefixWidth);
+				const isLast = index === lines.length - 1;
+				const suffix = !this.expanded && isLast ? statusSuffix : "";
+				const room = Math.max(0, bodyWidth - visibleWidth(suffix));
+				const body = this.theme.fg("muted", suffix ? truncateToWidth(line, room, "") : line);
+				return `${prefix}${body}${suffix}`;
+			});
 		}
-		const bodyWidth = renderWidth - prefixWidth;
-		const suffixWidth = this.expanded ? 0 : visibleWidth(statusSuffix);
-		const lines = this.expanded
-			? `${commandText}${statusSuffix}`
-					.split("\n")
-					.flatMap((line) => wrapTextWithAnsi(line || " ", bodyWidth))
-			: // Collapsed rows keep only two lines; pin the pre-styled status onto
-				// the last line after muting the command body so exit/duration colors
-				// are not wiped by a second theme wrap.
-				pinSuffix(
-					wrapTextWithAnsi(commandText, Math.max(1, bodyWidth - suffixWidth)).slice(0, 2),
-					"",
-					bodyWidth,
-				);
-		return lines.map((line, index) => {
-			const prefix =
-				index === 0
-					? this.theme.fg("toolTitle", this.theme.bold(this.prefix))
-					: " ".repeat(prefixWidth);
-			const isLast = index === lines.length - 1;
-			const suffix = !this.expanded && isLast ? statusSuffix : "";
-			const room = Math.max(0, bodyWidth - visibleWidth(suffix));
-			const body = this.theme.fg("muted", suffix ? truncateToWidth(line, room, "") : line);
-			return `${prefix}${body}${suffix}`;
-		});
+		this.cachedRender = {
+			width,
+			expanded: this.expanded,
+			prefix: this.prefix,
+			command: this.command,
+			timeout: this.timeout,
+			statusSuffix,
+			theme: this.theme,
+			lines: renderedLines,
+		};
+		return renderedLines;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cachedRender = undefined;
+	}
 }
 
 /** Render one stable inspection call through the shared consecutive grouper. */

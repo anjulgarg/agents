@@ -68,6 +68,7 @@ const {
 	SelectableViewportState,
 	shouldRevealToolDetails,
 	SoftGroupTracker,
+	SHIMMER_TIMING,
 	bindSoftGroupTracker,
 	formatToolDuration,
 	renderSoftGroupedCall,
@@ -358,6 +359,17 @@ function testResponsiveSplitPane(): void {
 			layout.rightWidth === 11 &&
 			widths.join(",") === "6,11,8",
 		JSON.stringify({ wide, narrow, layout, widths }),
+	);
+}
+
+function testShimmerTimingContract(): void {
+	assert(
+		"shared shimmer timing is frozen at a 250ms repaint cadence",
+		Object.isFrozen(SHIMMER_TIMING) &&
+			SHIMMER_TIMING.frameIntervalMs === 250 &&
+			SHIMMER_TIMING.delayMs === 220 &&
+			SHIMMER_TIMING.fadeInMs === 300,
+		JSON.stringify(SHIMMER_TIMING),
 	);
 }
 
@@ -755,6 +767,247 @@ function testSoftGroupTrees(): void {
 	);
 }
 
+function testSoftGroupRenderCaches(): void {
+	resetToolActivity();
+	const trackedTheme = (tag: string) => {
+		let calls = 0;
+		const themeColor =
+			16 + ([...tag].reduce((total, character) => total + character.charCodeAt(0), 0) % 216);
+		return {
+			theme: {
+				fg: (_color: string, text: string) => {
+					calls++;
+					return `\x1b[38;5;${themeColor}m${text}\x1b[0m`;
+				},
+				bold: (text: string) => {
+					calls++;
+					return `\x1b[1m${text}\x1b[0m`;
+				},
+			},
+			calls: () => calls,
+		};
+	};
+	const cacheTheme = trackedTheme("cache");
+	const row = renderSoftGroupedCall({
+		tracker: new SoftGroupTracker(),
+		groupId: "cache",
+		label: "read",
+		summary: "src/cache.ts",
+		theme: cacheTheme.theme,
+		context: {
+			toolCallId: "cache-row",
+			executionStarted: true,
+			isPartial: false,
+		},
+	});
+	const first = row.render(40);
+	const callsAfterFirst = cacheTheme.calls();
+	const repeated = row.render(40);
+	const callsAfterRepeated = cacheTheme.calls();
+	const narrower = row.render(30);
+	const callsAfterWidthChange = cacheTheme.calls();
+	row.invalidate();
+	const invalidated = row.render(30);
+	assert(
+		"soft-group rows reuse same-width content lines and invalidate cleanly",
+		first === repeated &&
+			callsAfterRepeated === callsAfterFirst &&
+			narrower !== repeated &&
+			callsAfterWidthChange > callsAfterRepeated &&
+			invalidated !== narrower &&
+			cacheTheme.calls() > callsAfterWidthChange,
+		JSON.stringify({ first, repeated, narrower, invalidated, callsAfterFirst, callsAfterRepeated }),
+	);
+
+	const treeTheme = trackedTheme("tree-cache");
+	const treeTracker = new SoftGroupTracker();
+	renderSoftGroupedCall({
+		tracker: treeTracker,
+		groupId: "cache-tree",
+		label: "read",
+		summary: "first item",
+		theme: treeTheme.theme,
+		context: { toolCallId: "tree-1", executionStarted: true, isPartial: false },
+	});
+	const treeRow = renderSoftGroupedCall({
+		tracker: treeTracker,
+		groupId: "cache-tree",
+		label: "read",
+		summary: "second item",
+		theme: treeTheme.theme,
+		context: { toolCallId: "tree-2", executionStarted: true, isPartial: false },
+	});
+	const treeFirst = treeRow.render(40);
+	const treeCalls = treeTheme.calls();
+	const treeRepeated = treeRow.render(40);
+	const treeCallsAfterRepeated = treeTheme.calls();
+	const treeNarrow = treeRow.render(30);
+	assert(
+		"tree rows reuse content lines and width changes rerender them",
+		treeFirst === treeRepeated &&
+			treeCallsAfterRepeated === treeCalls &&
+			treeNarrow !== treeRepeated &&
+			treeTheme.calls() > treeCallsAfterRepeated,
+		JSON.stringify({ treeFirst, treeRepeated, treeNarrow, treeCalls, treeCallsAfterRepeated }),
+	);
+
+	const summaryTracker = new SoftGroupTracker();
+	const summaryTheme = trackedTheme("summary");
+	const summaryBefore = renderSoftGroupedCall({
+		tracker: summaryTracker,
+		groupId: "summary",
+		label: "read",
+		summary: "before",
+		theme: summaryTheme.theme,
+		context: { toolCallId: "summary-row", executionStarted: true, isPartial: false },
+	}).render(40);
+	const summaryAfter = renderSoftGroupedCall({
+		tracker: summaryTracker,
+		groupId: "summary",
+		label: "read",
+		summary: "after",
+		theme: summaryTheme.theme,
+		context: { toolCallId: "summary-row", executionStarted: true, isPartial: false },
+	}).render(40);
+	const changedTreeTracker = new SoftGroupTracker();
+	const changedTreeTheme = trackedTheme("item");
+	renderSoftGroupedCall({
+		tracker: changedTreeTracker,
+		groupId: "items",
+		label: "read",
+		summary: "first",
+		theme: changedTreeTheme.theme,
+		context: { toolCallId: "item-1", executionStarted: true, isPartial: false },
+	});
+	const treeBefore = renderSoftGroupedCall({
+		tracker: changedTreeTracker,
+		groupId: "items",
+		label: "read",
+		summary: "second",
+		theme: changedTreeTheme.theme,
+		context: { toolCallId: "item-2", executionStarted: true, isPartial: false },
+	}).render(40);
+	const treeAfter = renderSoftGroupedCall({
+		tracker: changedTreeTracker,
+		groupId: "items",
+		label: "read",
+		summary: "updated",
+		theme: changedTreeTheme.theme,
+		context: { toolCallId: "item-2", executionStarted: true, isPartial: false },
+	}).render(40);
+	assert(
+		"summary and tree item changes recompute content",
+		summaryBefore.join("\n") !== summaryAfter.join("\n") &&
+			summaryAfter.join("\n").includes("after") &&
+			treeBefore.join("\n") !== treeAfter.join("\n") &&
+			treeAfter.join("\n").includes("updated"),
+		JSON.stringify({ summaryBefore, summaryAfter, treeBefore, treeAfter }),
+	);
+
+	const themeA = trackedTheme("theme-a");
+	const themeB = trackedTheme("theme-b");
+	const themeRowA = renderSoftGroupedCall({
+		tracker: new SoftGroupTracker(),
+		groupId: "theme",
+		label: "read",
+		summary: "same",
+		theme: themeA.theme,
+		context: { toolCallId: "theme-a", executionStarted: false },
+	});
+	const themeRowB = renderSoftGroupedCall({
+		tracker: new SoftGroupTracker(),
+		groupId: "theme",
+		label: "read",
+		summary: "same",
+		theme: themeB.theme,
+		context: { toolCallId: "theme-b", executionStarted: false },
+	});
+	const themedA = themeRowA.render(40);
+	const themedB = themeRowB.render(40);
+	assert(
+		"different theme identities do not reuse cached content",
+		themeA.calls() > 0 && themeB.calls() > 0 && themedA.join("\n") !== themedB.join("\n"),
+		JSON.stringify({ themedA, themedB, themeACalls: themeA.calls(), themeBCalls: themeB.calls() }),
+	);
+
+	const expandedTheme = trackedTheme("expanded-cache");
+	const expandedRow = renderSoftGroupedCall({
+		tracker: new SoftGroupTracker(),
+		groupId: "expanded",
+		label: "read",
+		summary: "expanded details that wrap",
+		theme: expandedTheme.theme,
+		context: { expanded: true },
+	});
+	const expandedFirst = expandedRow.render(40);
+	const expandedRepeated = expandedRow.render(40);
+	const expandedNarrow = expandedRow.render(25);
+	expandedRow.invalidate();
+	const expandedInvalidated = expandedRow.render(25);
+	assert(
+		"expanded rows cache width-specific content and honor invalidate",
+		expandedFirst === expandedRepeated &&
+			expandedNarrow !== expandedRepeated &&
+			expandedInvalidated !== expandedNarrow,
+		JSON.stringify({ expandedFirst, expandedRepeated, expandedNarrow, expandedInvalidated }),
+	);
+
+	const plain = (line: string): string => line.replace(/\x1b\[[0-9;]*m/g, "");
+	const terminal = { ...process.env };
+	const realNow = Date.now;
+	process.env.TERM = "xterm-256color";
+	process.env.COLORTERM = "truecolor";
+	delete process.env.NO_COLOR;
+	try {
+		const activeTheme = {
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+			shimmerRamp: ["#000000", "#ffffff"] as const,
+		};
+		let now = 0;
+		Date.now = () => now;
+		const activeRow = renderSoftGroupedCall({
+			tracker: new SoftGroupTracker(),
+			groupId: "active-cache",
+			label: "read",
+			summary: "1234567",
+			theme: activeTheme,
+			context: {
+				toolCallId: "active-cache",
+				executionStarted: true,
+				isPartial: true,
+				state: {},
+				invalidate: () => undefined,
+			},
+		});
+		const atZero = plain(activeRow.render(20)[0] ?? "");
+		now = 10_000;
+		const atTenSeconds = plain(activeRow.render(20)[0] ?? "");
+		const durationNormalized = (line: string): string =>
+			line.replace(/ · \d+\.\ds$/u, " · <duration>");
+		now = 700;
+		const animatedFirst = activeRow.render(40).map(durationNormalized).join("\n");
+		now = 900;
+		const animatedSecond = activeRow.render(40).map(durationNormalized).join("\n");
+		assert(
+			"active rows reserve growing live durations without caching the suffix",
+			atZero.includes("1234567 · 0.0s") &&
+				atTenSeconds.includes("12345… · 10.0s") &&
+				atZero !== atTenSeconds,
+			JSON.stringify({ atZero, atTenSeconds }),
+		);
+		assert(
+			"active rows still animate across Date.now changes",
+			animatedFirst !== animatedSecond,
+			JSON.stringify({ animatedFirst, animatedSecond }),
+		);
+	} finally {
+		Date.now = realNow;
+		process.env = terminal;
+		resetToolActivity();
+	}
+}
+
 function testLiveDurationPlacement(): void {
 	resetToolActivity();
 	const theme = {
@@ -933,11 +1186,13 @@ function testSoftGroupLifecycleAndHistory(): void {
 	);
 }
 
+testShimmerTimingContract();
 testSynchronizedToolActivity();
 testShimmerGradientQuality();
 testToolRevealPolicy();
 testBodyPaddingX();
 testSoftGroupTrees();
+testSoftGroupRenderCaches();
 testLiveDurationPlacement();
 testSoftGroupLifecycleAndHistory();
 console.log("All tui-kit tests passed.");

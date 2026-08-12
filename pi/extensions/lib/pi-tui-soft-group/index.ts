@@ -5,19 +5,13 @@ import {
 	wrapTextWithAnsi,
 	type Component,
 } from "@earendil-works/pi-tui";
+import { SHIMMER_TIMING } from "./timing.ts";
+
+export { SHIMMER_TIMING } from "./timing.ts";
 
 /** Matches host TOOL_CHAT_PADDING / MCP CHAT_PADDING. */
 const CHAT_PADDING = 1;
-/** ~30fps. Position is interpolated in colour, so extra frames buy nothing. */
-const SHIMMER_FRAME_INTERVAL_MS = 33;
-/** Rows that settle faster than this never animate, so they cannot flash. */
-const SHIMMER_DELAY_MS = 220;
-/** Amplitude ramp so the band grows in instead of popping on. */
-const SHIMMER_FADE_IN_MS = 300;
-/** One travel across the row, then a rest with the band parked off-screen. */
-const SHIMMER_SWEEP_MS = 1_250;
-const SHIMMER_REST_MS = 320;
-const SHIMMER_CYCLE_MS = SHIMMER_SWEEP_MS + SHIMMER_REST_MS;
+const SHIMMER_CYCLE_MS = SHIMMER_TIMING.sweepMs + SHIMMER_TIMING.restMs;
 /** Band half-width relative to row width, clamped for narrow and wide rows. */
 const SHIMMER_BAND_RATIO = 0.2;
 const SHIMMER_BAND_MIN_COLUMNS = 6;
@@ -81,7 +75,7 @@ function startShimmerClock(): void {
 			}
 		}
 		if (activeInvalidators.size === 0) stopShimmerClock();
-	}, SHIMMER_FRAME_INTERVAL_MS);
+	}, SHIMMER_TIMING.frameIntervalMs);
 	const timer = shimmerTimer as ReturnType<typeof setInterval> & { unref?: () => void };
 	timer.unref?.();
 }
@@ -443,7 +437,7 @@ function bandIntensity(offset: number, radius: number): number {
  */
 function sweepCenter(now: number, width: number, radius: number): number {
 	const phase = ((now % SHIMMER_CYCLE_MS) + SHIMMER_CYCLE_MS) % SHIMMER_CYCLE_MS;
-	const progress = Math.min(1, phase / SHIMMER_SWEEP_MS);
+	const progress = Math.min(1, phase / SHIMMER_TIMING.sweepMs);
 	const eased = 0.5 * progress + 0.5 * (progress * progress * (3 - 2 * progress));
 	const start = -radius;
 	const end = width + radius * SHIMMER_TRAIL_STRETCH;
@@ -577,8 +571,8 @@ export class SynchronizedShimmerRender implements Component {
 		const elapsedMs = this.activity.active
 			? liveToolElapsedMs(this.activity)
 			: (this.activity.elapsedMs ?? 0);
-		if (!this.activity.active || elapsedMs < SHIMMER_DELAY_MS) return lines;
-		const amplitude = clamp01((elapsedMs - SHIMMER_DELAY_MS) / SHIMMER_FADE_IN_MS);
+		if (!this.activity.active || elapsedMs < SHIMMER_TIMING.delayMs) return lines;
+		const amplitude = clamp01((elapsedMs - SHIMMER_TIMING.delayMs) / SHIMMER_TIMING.fadeInMs);
 		const now = Date.now();
 		return lines.map((line: string) =>
 			renderSynchronizedShimmerLine(line, width, this.theme, now, amplitude),
@@ -923,6 +917,34 @@ function summaryText(
 	return theme.fg("muted", `${head} ${fittedTail}`);
 }
 
+type RenderCache = {
+	key?: readonly unknown[];
+	lines?: string[];
+};
+
+function sameRenderCacheKey(
+	cachedKey: readonly unknown[] | undefined,
+	key: readonly unknown[],
+): boolean {
+	return (
+		cachedKey !== undefined &&
+		cachedKey.length === key.length &&
+		cachedKey.every((value, index) => Object.is(value, key[index]))
+	);
+}
+
+function renderCached(
+	cache: RenderCache,
+	key: readonly unknown[],
+	render: () => string[],
+): string[] {
+	if (cache.lines !== undefined && sameRenderCacheKey(cache.key, key)) return cache.lines;
+	const lines = render();
+	cache.key = key;
+	cache.lines = lines;
+	return lines;
+}
+
 function emptyCollapsed(): Component {
 	return {
 		render: () => [],
@@ -941,24 +963,31 @@ function collapsedChrome(
 	activity: ToolActivitySnapshot = { active: false },
 ): Component {
 	const last = summary.replace(/\s+/g, " ").trim() || (tail ? "" : "...");
+	const cache: RenderCache = {};
 	const content: Component = {
 		render(width: number): string[] {
-			// A count of one says nothing; only real groups earn a number.
-			// Separators and the count match the muted summary/path styling; only
-			// the group label keeps toolTitle emphasis.
-			const sep = theme.fg("muted", " · ");
-			const chrome =
-				count > 1
-					? ` ${titleText(theme, label)}${sep}${theme.fg("muted", String(count))}${sep}`
-					: ` ${titleText(theme, label)} `;
-			const name = toolName ? `${theme.fg("muted", toolName)} ` : "";
 			// Budget for the live timer so the summary keeps its own ellipsis
 			// instead of being cut mid-word by the shimmer wrapper.
 			const reserved = activity.active ? visibleWidth(liveDurationSuffix(activity)) : 0;
-			const available = Math.max(1, width - visibleWidth(chrome) - visibleWidth(name) - reserved);
-			return [`${chrome}${name}${summaryText(theme, last, tail, available)}`];
+			const key = [theme, width, label, count, last, tail, toolName, reserved];
+			return renderCached(cache, key, () => {
+				// A count of one says nothing; only real groups earn a number.
+				// Separators and the count match the muted summary/path styling; only
+				// the group label keeps toolTitle emphasis.
+				const sep = theme.fg("muted", " · ");
+				const chrome =
+					count > 1
+						? ` ${titleText(theme, label)}${sep}${theme.fg("muted", String(count))}${sep}`
+						: ` ${titleText(theme, label)} `;
+				const name = toolName ? `${theme.fg("muted", toolName)} ` : "";
+				const available = Math.max(1, width - visibleWidth(chrome) - visibleWidth(name) - reserved);
+				return [`${chrome}${name}${summaryText(theme, last, tail, available)}`];
+			});
 		},
-		invalidate() {},
+		invalidate() {
+			cache.key = undefined;
+			cache.lines = undefined;
+		},
 	};
 	return new SynchronizedShimmerRender(content, theme, activity, true);
 }
@@ -1009,55 +1038,65 @@ function treeChrome(
 	mixed: boolean,
 	activity: ToolActivitySnapshot,
 ): Component {
+	const cache: RenderCache = {};
 	const content: Component = {
 		render(width: number): string[] {
 			if (width <= 0) return [];
 			const reserved = activity.active ? visibleWidth(liveDurationSuffix(activity)) : 0;
-			const parentWidth = Math.max(1, width - reserved);
-			const parent = ` ${titleText(theme, label)}`;
-			const lines = [
-				visibleWidth(parent) <= parentWidth ? parent : truncateToWidth(parent, parentWidth, "…"),
-			];
+			const key: unknown[] = [theme, width, label, mixed, reserved, items.length];
+			for (const item of items) {
+				key.push(item.summary, item.summaryTail, item.label);
+			}
+			return renderCached(cache, key, () => {
+				const parentWidth = Math.max(1, width - reserved);
+				const parent = ` ${titleText(theme, label)}`;
+				const lines = [
+					visibleWidth(parent) <= parentWidth ? parent : truncateToWidth(parent, parentWidth, "…"),
+				];
 
-			for (const [index, item] of items.entries()) {
-				const glyph = index === items.length - 1 ? "└─" : "├─";
-				const branch = ` ${glyph} `;
-				const branchWidth = visibleWidth(branch);
-				if (width <= branchWidth) {
-					lines.push(theme.fg("muted", truncateToWidth(branch, width, "")));
-					continue;
-				}
+				for (const [index, item] of items.entries()) {
+					const glyph = index === items.length - 1 ? "└─" : "├─";
+					const branch = ` ${glyph} `;
+					const branchWidth = visibleWidth(branch);
+					if (width <= branchWidth) {
+						lines.push(theme.fg("muted", truncateToWidth(branch, width, "")));
+						continue;
+					}
 
-				const available = width - branchWidth;
-				let childLabel = "";
-				let summaryWidth = available;
-				if (mixed && item.label) {
-					const fullLabel = `${item.label} `;
-					const minimumSummary = Math.min(12, Math.max(1, available - 1));
-					const labelBudget = Math.min(
-						visibleWidth(fullLabel),
-						Math.max(0, available - minimumSummary),
-					);
-					if (labelBudget > 0) {
-						childLabel =
-							visibleWidth(fullLabel) <= labelBudget
-								? fullLabel
-								: `${clipEnd(item.label, labelBudget).trimEnd()} `;
-						summaryWidth = Math.max(1, available - visibleWidth(childLabel));
+					const available = width - branchWidth;
+					let childLabel = "";
+					let summaryWidth = available;
+					if (mixed && item.label) {
+						const fullLabel = `${item.label} `;
+						const minimumSummary = Math.min(12, Math.max(1, available - 1));
+						const labelBudget = Math.min(
+							visibleWidth(fullLabel),
+							Math.max(0, available - minimumSummary),
+						);
+						if (labelBudget > 0) {
+							childLabel =
+								visibleWidth(fullLabel) <= labelBudget
+									? fullLabel
+									: `${clipEnd(item.label, labelBudget).trimEnd()} `;
+							summaryWidth = Math.max(1, available - visibleWidth(childLabel));
+						}
+					}
+					const summaryLines = treeSummaryLines(theme, item, summaryWidth);
+					for (const [lineIndex, summaryLine] of summaryLines.entries()) {
+						const rail = lineIndex === 0 ? branch : index === items.length - 1 ? "    " : " │  ";
+						const label = lineIndex === 0 ? childLabel : " ".repeat(visibleWidth(childLabel));
+						lines.push(`${theme.fg("muted", `${rail}${label}`)}${summaryLine}`);
 					}
 				}
-				const summaryLines = treeSummaryLines(theme, item, summaryWidth);
-				for (const [lineIndex, summaryLine] of summaryLines.entries()) {
-					const rail = lineIndex === 0 ? branch : index === items.length - 1 ? "    " : " │  ";
-					const label = lineIndex === 0 ? childLabel : " ".repeat(visibleWidth(childLabel));
-					lines.push(`${theme.fg("muted", `${rail}${label}`)}${summaryLine}`);
-				}
-			}
-			return lines.map((line) =>
-				visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…"),
-			);
+				return lines.map((line) =>
+					visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…"),
+				);
+			});
 		},
-		invalidate() {},
+		invalidate() {
+			cache.key = undefined;
+			cache.lines = undefined;
+		},
 	};
 	return new SynchronizedShimmerRender(content, theme, activity, true);
 }
@@ -1076,6 +1115,8 @@ function expandedChrome(
 			: [`${label} ${summary}`];
 	const [head = label, ...rest] = lines;
 	const styled = [titleText(theme, head), ...rest.map((line) => theme.fg("muted", line))];
+	// `Text` already caches by `(text, width)` and clears on `invalidate`, so an
+	// extra wrapper cache here would only duplicate that bookkeeping.
 	return new Text(styled.join("\n"), CHAT_PADDING, 0);
 }
 

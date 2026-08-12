@@ -111,3 +111,40 @@ function numbered(prefix: string, count: number): string[] {
 		JSON.stringify({ updated, clears, renders, mounted: Boolean(mounted) }),
 	);
 }
+
+{
+	const modulePath = "../lib/tui/bottom-panel.ts";
+	const jobsModule = await import(`${modulePath}?owner=jobs`);
+	const todosModule = await import(`${modulePath}?owner=todos`);
+	let mounted: any;
+	let mounts = 0;
+	const tui = { requestRender: () => undefined } as any;
+	const ui = {
+		theme,
+		setWidget: (_key: string, content: any) => {
+			mounted?.dispose?.();
+			mounted = typeof content === "function" ? content(tui, theme) : undefined;
+			if (content !== undefined) mounts++;
+		},
+	} as any;
+	const context = { mode: "tui" as const, ui };
+	const jobsPanel = jobsModule.getBottomPanel(context);
+	const todosPanel = todosModule.getBottomPanel(context);
+	jobsPanel.registerSection("async", {
+		order: 10,
+		maxLines: 1,
+		render: () => ["async"],
+	});
+	todosPanel.registerSection("todos", {
+		order: 30,
+		maxLines: 1,
+		render: () => ["todo"],
+	});
+	const rendered = mounted.render(80);
+	assert(
+		"separately loaded extensions share one panel without displacing active todos",
+		jobsPanel === todosPanel && mounts === 1 && rendered.join("|") === "async||todo",
+		JSON.stringify({ samePanel: jobsPanel === todosPanel, mounts, rendered }),
+	);
+	jobsPanel.clear();
+}

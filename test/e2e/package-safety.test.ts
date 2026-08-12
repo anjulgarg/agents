@@ -66,11 +66,7 @@ describe("package and repository safety", () => {
 		expect(files).not.toContainEqual(
 			expect.stringMatching(/^(?:test|src|scripts|docs\/plans)(?:\/|$)/),
 		);
-		for (const privateConfig of [
-			"pi/config/settings.json",
-			"pi/config/models.json",
-			"pi/config/mcp.json",
-		]) {
+		for (const privateConfig of ["pi/config/settings.json", "pi/config/mcp.json"]) {
 			expect(files).not.toContain(privateConfig);
 		}
 		expect(files).not.toContainEqual(

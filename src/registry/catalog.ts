@@ -16,7 +16,6 @@ const repositoryRoot = basename(moduleRoot) === "dist" ? resolve(moduleRoot, "..
 const localPiConfigRoot = resolve(repositoryRoot, "pi/config");
 
 export const localPiConfigFiles = {
-	models: existsSync(resolve(localPiConfigRoot, "models.json")),
 	mcp: existsSync(resolve(localPiConfigRoot, "mcp.json")),
 } as const;
 
@@ -113,27 +112,6 @@ const block = (destination: string, content = "{{resource:pi/AGENTS.md}}") => ({
 });
 
 const otherComponents: ComponentDefinition[] = [
-	{
-		id: "pi-config:models",
-		category: "pi-config",
-		label: "Pi Models",
-		description: "Approved provider model overrides.",
-		resources: [{ path: "pi/config/models.json", kind: "file" }],
-		outputs: [
-			{
-				strategy: "owned-json",
-				destination: ".pi/agent/models.json",
-				pointers: [
-					"/providers/kimi-coding/modelOverrides/k3/contextWindow",
-					"/providers/openai-codex/modelOverrides/gpt-5.6-luna/contextWindow",
-					"/providers/openai-codex/modelOverrides/gpt-5.6-sol/contextWindow",
-					"/providers/openai-codex/modelOverrides/gpt-5.6-terra/contextWindow",
-				],
-			},
-		],
-		dependsOn: [],
-		requirements: [NODE, PI],
-	},
 	{
 		id: "pi-config:keybindings",
 		category: "pi-config",
@@ -254,7 +232,6 @@ const otherComponents: ComponentDefinition[] = [
 ];
 
 const localOnlyComponentFiles: Partial<Record<ComponentId, keyof typeof localPiConfigFiles>> = {
-	"pi-config:models": "models",
 	"pi-package:mcp-adapter": "mcp",
 	"pi-config:mcp-sentry": "mcp",
 };

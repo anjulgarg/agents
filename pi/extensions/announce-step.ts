@@ -9,35 +9,18 @@ export const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", 
 export const WORKING_FRAME_INTERVAL_MS = 120;
 
 export const ACTIVITY_ENTRY_TYPE = "announce-step-activity";
-export const ACTIVITY_PHASES = [
-	"Working",
-	"Inspecting",
-	"Editing",
-	"Running tests",
-	"Building",
-	"Running command",
-] as const;
+export const WORKING_PHASE = "Working";
 
-export type ActivityPhase = (typeof ACTIVITY_PHASES)[number];
 export type ActivityStatus = "completed" | "failed" | "aborted";
-
-type ActivePhaseStatus = "running" | "failed" | "aborted";
 
 const LEGACY_ANNOUNCEMENT_ENTRY_TYPE = "announce-step-duration";
 const LEGACY_ANNOUNCEMENT_UPDATE_ENTRY_TYPE = "announce-step-duration-update";
 const ACTIVITY_STATUS_KEY = "working";
-const WORKING_PHASE = "Working";
 const CHAT_PADDING = 1;
 const ACTIVITY_TIMER_INTERVAL_MS = 1000;
 const MAX_CHANGED_FILES = 64;
 const MAX_PATH_LENGTH = 240;
 const MAX_TOOL_COUNT = 100_000;
-
-const TEST_COMMAND_TOKEN =
-	/(?:^|[^A-Za-z0-9_])(?:test|tests|check|checks|pytest)(?:$|[^A-Za-z0-9_])/i;
-const BUILD_COMMAND_TOKEN = /(?:^|[^A-Za-z0-9_])(?:build|compile|tsc)(?:$|[^A-Za-z0-9_])/i;
-
-const INSPECTION_TOOLS = new Set(["read", "grep", "find", "ls", "lsp"]);
 const EDITING_TOOLS = new Set(["edit", "write"]);
 
 interface TokenCounters {
@@ -48,7 +31,6 @@ interface TokenCounters {
 interface SliceActivity {
 	toolCount?: number;
 	changedFiles?: string[];
-	status?: ActivePhaseStatus | ActivityStatus;
 }
 
 interface AnnouncementEntry {
@@ -62,7 +44,7 @@ interface AnnouncementEntry {
 }
 
 export interface ActivityEntry {
-	phase: ActivityPhase;
+	phase: typeof WORKING_PHASE;
 	durationMs: number;
 	status: ActivityStatus;
 	receivedTokens: number;
@@ -72,14 +54,9 @@ export interface ActivityEntry {
 
 interface ActiveRun extends TokenCounters {
 	startedAt: number;
-	phase: ActivityPhase;
-	phaseStatus: ActivePhaseStatus;
 	toolCount: number;
 	changedFiles: Set<string>;
-	activeTools: Map<string, ActivityPhase>;
-	toolFailure: boolean;
-	assistantFailure: boolean;
-	aborted: boolean;
+	seenToolIds: Set<string>;
 	receiptAppended: boolean;
 }
 
@@ -136,31 +113,6 @@ export function formatSlice(
 	return formatLiveSlice(step, durationMs, receivedTokens, activity);
 }
 
-/** Classify a shell command using the fixed, ordered passive checks. */
-export function classifyCommand(command: unknown): ActivityPhase {
-	if (typeof command !== "string") return "Running command";
-	if (TEST_COMMAND_TOKEN.test(command)) return "Running tests";
-	if (BUILD_COMMAND_TOKEN.test(command)) return "Building";
-	return "Running command";
-}
-
-/** Classify a tool event without inspecting its output or inventing task semantics. */
-export function classifyTool(toolName: unknown, args?: unknown): ActivityPhase {
-	if (typeof toolName !== "string") return "Running command";
-	if (INSPECTION_TOOLS.has(toolName)) return "Inspecting";
-	if (EDITING_TOOLS.has(toolName)) return "Editing";
-	if (toolName === "bash" || toolName === "job") {
-		const command =
-			args &&
-			typeof args === "object" &&
-			typeof (args as { command?: unknown }).command === "string"
-				? (args as { command: string }).command
-				: undefined;
-		return classifyCommand(command);
-	}
-	return "Running command";
-}
-
 function createTokenCounters(): TokenCounters {
 	return { receivedTokens: 0, currentReceivedEstimate: 0 };
 }
@@ -168,14 +120,9 @@ function createTokenCounters(): TokenCounters {
 function createActiveRun(startedAt: number): ActiveRun {
 	return {
 		startedAt,
-		phase: WORKING_PHASE,
-		phaseStatus: "running",
 		toolCount: 0,
 		changedFiles: new Set(),
-		activeTools: new Map(),
-		toolFailure: false,
-		assistantFailure: false,
-		aborted: false,
+		seenToolIds: new Set(),
 		receiptAppended: false,
 		...createTokenCounters(),
 	};
@@ -183,10 +130,6 @@ function createActiveRun(startedAt: number): ActiveRun {
 
 function tokenTotal(counters: TokenCounters): number {
 	return counters.receivedTokens + counters.currentReceivedEstimate;
-}
-
-function currentLivePhase(run: ActiveRun): ActivityPhase | typeof WORKING_PHASE {
-	return [...run.activeTools.values()].at(-1) ?? WORKING_PHASE;
 }
 
 function safeNumber(value: unknown): number | undefined {
@@ -219,14 +162,6 @@ function pathFromToolEvent(toolName: unknown, args: unknown): string | undefined
 	if (!EDITING_TOOLS.has(typeof toolName === "string" ? toolName : "")) return undefined;
 	if (!args || typeof args !== "object") return undefined;
 	return boundedPath((args as { path?: unknown }).path);
-}
-
-function isAssistantFailure(message: unknown): "aborted" | "failed" | undefined {
-	if (!message || typeof message !== "object") return undefined;
-	const stopReason = (message as { stopReason?: unknown }).stopReason;
-	if (stopReason === "aborted") return "aborted";
-	if (stopReason === "error") return "failed";
-	return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -263,8 +198,6 @@ function activityEntryData(entry: unknown): ActivityEntry | undefined {
 	if (!isRecord(entry) || !isRecord(entry.data)) return undefined;
 	const data = entry.data as Record<string, unknown>;
 	if (
-		typeof data.phase !== "string" ||
-		!ACTIVITY_PHASES.includes(data.phase as ActivityPhase) ||
 		typeof data.durationMs !== "number" ||
 		typeof data.status !== "string" ||
 		!(["completed", "failed", "aborted"] as string[]).includes(data.status) ||
@@ -272,15 +205,12 @@ function activityEntryData(entry: unknown): ActivityEntry | undefined {
 		!Array.isArray(data.changedFiles)
 	)
 		return undefined;
-	const toolCount = Math.max(0, data.toolCount);
-	const phase =
-		data.phase === "Running command" && toolCount === 0 ? WORKING_PHASE : (data.phase as ActivityPhase);
 	return {
-		phase,
+		phase: WORKING_PHASE,
 		durationMs: Math.max(0, data.durationMs),
 		status: data.status as ActivityStatus,
 		receivedTokens: safeNumber(data.receivedTokens) ?? 0,
-		toolCount,
+		toolCount: Math.max(0, data.toolCount),
 		changedFiles: data.changedFiles.filter((path): path is string => typeof path === "string"),
 	};
 }
@@ -334,18 +264,16 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 
 	const updateWorkingLine = (now = Date.now()): void => {
 		if (!activeRun) return;
-		const details: SliceActivity = {
-			toolCount: activeRun.toolCount,
-			changedFiles: [...activeRun.changedFiles],
-			status: activeRun.phaseStatus,
-		};
 		safeWorkingMessage(
 			workingContext,
 			formatLiveSlice(
-				currentLivePhase(activeRun),
+				WORKING_PHASE,
 				Math.max(0, now - activeRun.startedAt),
 				tokenTotal(activeRun),
-				details,
+				{
+					toolCount: activeRun.toolCount,
+					changedFiles: [...activeRun.changedFiles],
+				},
 			),
 		);
 	};
@@ -377,7 +305,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		run.receiptAppended = true;
 		try {
 			pi.appendEntry<ActivityEntry>(ACTIVITY_ENTRY_TYPE, {
-				phase: run.phase,
+				phase: WORKING_PHASE,
 				durationMs: Math.max(0, completedAt - run.startedAt),
 				status: "completed",
 				receivedTokens: tokenTotal(run),
@@ -391,7 +319,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 
 	const finishActiveRun = (): void => {
 		if (!activeRun) return;
-		activeRun.activeTools.clear();
+		activeRun.seenToolIds.clear();
 		activeRun = undefined;
 	};
 
@@ -447,27 +375,18 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		if (ctx) workingContext = ctx;
 		const run = ensureRun(Date.now());
 		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
-		if (toolCallId && run.activeTools.has(toolCallId)) return;
-		const phase = classifyTool(event.toolName, event.args);
-		run.phase = phase;
-		run.phaseStatus = "running";
+		if (toolCallId && run.seenToolIds.has(toolCallId)) return;
+		if (toolCallId) run.seenToolIds.add(toolCallId);
 		run.toolCount = Math.min(MAX_TOOL_COUNT, run.toolCount + 1);
 		const path = pathFromToolEvent(event.toolName, event.args);
 		if (path && run.changedFiles.size < MAX_CHANGED_FILES) run.changedFiles.add(path);
-		if (toolCallId) run.activeTools.set(toolCallId, phase);
 		updateWorkingLine();
 		startSliceTimer();
 	});
 
-	pi.on("tool_execution_end", (event, ctx) => {
+	pi.on("tool_execution_end", (_event, ctx) => {
 		if (!activeRun) return;
 		if (ctx) workingContext = ctx;
-		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
-		if (toolCallId) activeRun.activeTools.delete(toolCallId);
-		if (event.isError) {
-			activeRun.toolFailure = true;
-			activeRun.phaseStatus = "failed";
-		}
 		updateWorkingLine();
 	});
 
@@ -480,12 +399,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", (_event, ctx) => {
 		workingContext = ctx;
-		const run = ensureRun(Date.now());
-		// A retry or queued continuation starts a fresh assistant cycle without
-		// losing the aggregate tool/file counts for the settled run.
-		run.assistantFailure = false;
-		run.aborted = false;
-		run.phaseStatus = "running";
+		ensureRun(Date.now());
 		updateWorkingLine();
 		startSliceTimer();
 	});
@@ -504,14 +418,6 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 	pi.on("message_end", (event, ctx) => {
 		if (!activeRun || event.message.role !== "assistant") return;
 		if (ctx) workingContext = ctx;
-		const outcome = isAssistantFailure(event.message);
-		if (outcome === "aborted") {
-			activeRun.aborted = true;
-			activeRun.phaseStatus = "aborted";
-		} else if (outcome === "failed") {
-			activeRun.assistantFailure = true;
-			activeRun.phaseStatus = "failed";
-		}
 		const output = messageOutputTokens(event.message);
 		activeRun.receivedTokens +=
 			output ?? Math.max(activeRun.currentReceivedEstimate, estimateMessageTokens(event.message));
@@ -522,36 +428,14 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		updateWorkingLine();
 	});
 
-	pi.on("agent_end", (event, ctx) => {
+	pi.on("agent_end", (_event, ctx) => {
 		if (!activeRun) return;
 		if (ctx) workingContext = ctx;
-		const eventRecord = event as unknown as Record<string, unknown>;
-		const messages = Array.isArray(eventRecord.messages) ? eventRecord.messages : [];
-		const assistant = [...messages]
-			.reverse()
-			.find((message) => isRecord(message) && message.role === "assistant");
-		const outcome = isAssistantFailure(assistant);
-		if (eventRecord.aborted === true || outcome === "aborted") {
-			activeRun.aborted = true;
-			activeRun.phaseStatus = "aborted";
-		} else if (eventRecord.isError === true || outcome === "failed") {
-			activeRun.assistantFailure = true;
-			activeRun.phaseStatus = "failed";
-		}
 		updateWorkingLine();
 	});
 
-	pi.on("agent_settled", (event, ctx) => {
+	pi.on("agent_settled", (_event, ctx) => {
 		if (ctx) workingContext = ctx;
-		const eventRecord = event as unknown as Record<string, unknown>;
-		if (activeRun && eventRecord.aborted === true) {
-			activeRun.aborted = true;
-			activeRun.phaseStatus = "aborted";
-		}
-		if (activeRun && eventRecord.isError === true) {
-			activeRun.assistantFailure = true;
-			activeRun.phaseStatus = "failed";
-		}
 		clearRuntime();
 	});
 

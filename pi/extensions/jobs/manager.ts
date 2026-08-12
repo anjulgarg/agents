@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
+import { SHIMMER_TIMING } from "../lib/pi-tui-soft-group/timing.ts";
 import {
 	isTerminalJobStatus,
 	type JobManagerApi,
@@ -31,11 +32,8 @@ export const DEFAULT_MAX_ACTIVE_JOBS = 4;
 export const DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024;
 /** Output carried on every snapshot; keeps `status()` cheap for many jobs. */
 export const SNAPSHOT_TAIL_BYTES = 2 * 1024;
-/**
- * Match the shared tool shimmer at approximately 30 frames per second so
- * long-lived job receipts move smoothly despite transcript reflow.
- */
-export const INVALIDATE_INTERVAL_MS = 33;
+/** Derived from the shared contract for any persistent job receipt animation. */
+export const INVALIDATE_INTERVAL_MS = SHIMMER_TIMING.frameIntervalMs;
 /** Cap for `status()` with no jobId; explicit-id lookup still reaches older receipts. */
 export const STATUS_LIST_LIMIT = 20;
 

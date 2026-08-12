@@ -1,10 +1,4 @@
-import announceStep, {
-	ACTIVITY_ENTRY_TYPE,
-	ACTIVITY_PHASES,
-	classifyCommand,
-	classifyTool,
-	formatSlice,
-} from "../announce-step.ts";
+import announceStep, { ACTIVITY_ENTRY_TYPE, WORKING_PHASE, formatSlice } from "../announce-step.ts";
 
 function assert(name: string, condition: boolean, details: string): void {
 	if (!condition) throw new Error(`FAIL: ${name}\n${details}`);
@@ -109,7 +103,7 @@ assert(
 	harness.registerToolCalls === 0 &&
 		harness.activeToolReads === 0 &&
 		!harness.handlers.has("before_agent_start") &&
-		ACTIVITY_PHASES.length === 6 &&
+		WORKING_PHASE === "Working" &&
 		!harness.handlers.has("promptGuidelines"),
 	JSON.stringify({
 		handlers: [...harness.handlers.keys()],
@@ -137,9 +131,8 @@ assert(
 
 harness.emit("agent_start", { type: "agent_start" }, tui.context);
 assert(
-	"model work uses a generic live phase until a tool starts",
-	tui.workingMessages.at(-1)?.startsWith("Working...") === true &&
-		tui.workingMessages.at(-1)?.includes("Running command") !== true,
+	"live status always uses Working",
+	tui.workingMessages.at(-1)?.startsWith("Working...") === true,
 	JSON.stringify(tui.workingMessages),
 );
 now += 1_234;
@@ -208,9 +201,10 @@ harness.emit(
 	tui.context,
 );
 assert(
-	"file lifecycle events show inspection and editing with deduplicated counts",
-	tui.workingMessages.some((message) => message?.startsWith("Inspecting...")) &&
-		tui.workingMessages.at(-1)?.includes("Editing...") === true &&
+	"tool lifecycle keeps Working and tracks deduplicated counts",
+	tui.workingMessages.every(
+		(message) => message === undefined || message.startsWith("Working..."),
+	) &&
 		tui.workingMessages.at(-1)?.includes("4 tools") === true &&
 		tui.workingMessages.at(-1)?.includes("2 files") === true,
 	JSON.stringify(tui.workingMessages),
@@ -259,7 +253,7 @@ harness.emit(
 	tui.context,
 );
 assert(
-	"model work resumes after the final tool completes",
+	"Working remains after the final tool completes",
 	tui.workingMessages.at(-1)?.startsWith("Working...") === true,
 	JSON.stringify(tui.workingMessages),
 );
@@ -276,7 +270,7 @@ const completedActivity = harness.appended.at(-1);
 assert(
 	"final assistant completion appends the ordered receipt before settlement",
 	completedActivity?.type === ACTIVITY_ENTRY_TYPE &&
-		completedActivity.data.phase === "Editing" &&
+		completedActivity.data.phase === WORKING_PHASE &&
 		completedActivity.data.durationMs === 3_234 &&
 		completedActivity.data.receivedTokens === 88 &&
 		completedActivity.data.toolCount === 4 &&
@@ -296,7 +290,7 @@ const activityRendered = harness.renderers
 	.render(100) as string[];
 assert(
 	"completed activity receipt renders muted without failure details",
-	activityRendered.join("\n").includes("Editing") &&
+	activityRendered.join("\n").includes("Working") &&
 		activityRendered.join("\n").includes("4 tools") &&
 		!activityRendered.join("\n").includes("failed") &&
 		activityColors.includes("muted") &&
@@ -315,6 +309,19 @@ assert(
 	"historical failed receipts also omit failure text and error color",
 	!historicalFailureRendered.join("\n").includes("failed") && !activityColors.includes("error"),
 	JSON.stringify({ historicalFailureRendered, activityColors }),
+);
+const historicalPhaseRendered = harness.renderers
+	.get(ACTIVITY_ENTRY_TYPE)?.(
+		{ data: { ...completedActivity?.data, phase: "Editing" } },
+		{},
+		activityTheme,
+	)
+	.render(100) as string[];
+assert(
+	"historical phase labels normalize to Working",
+	historicalPhaseRendered.join("\n").includes("Working...") &&
+		!historicalPhaseRendered.join("\n").includes("Editing"),
+	JSON.stringify(historicalPhaseRendered),
 );
 harness.emit("agent_settled", { type: "agent_settled" }, tui.context);
 assert(
@@ -338,64 +345,22 @@ const noToolActivity = noToolHarness.appended.at(-1);
 const noToolRendered = noToolHarness.renderers
 	.get(ACTIVITY_ENTRY_TYPE)?.({ data: noToolActivity?.data }, {}, theme)
 	.render(100) as string[];
-const staleNoToolRendered = noToolHarness.renderers
-	.get(ACTIVITY_ENTRY_TYPE)?.(
-		{ data: { ...noToolActivity?.data, phase: "Running command" } },
-		{},
-		theme,
-	)
-	.render(100) as string[];
 assert(
-	"tool-free history receipts use the generic working phase",
-	noToolActivity?.data.phase === "Working" &&
+	"tool-free history receipts use Working",
+	noToolActivity?.data.phase === WORKING_PHASE &&
 		noToolActivity.data.toolCount === 0 &&
-		noToolRendered.join("\n").includes("Working...") &&
-		!noToolRendered.join("\n").includes("Running command") &&
-		staleNoToolRendered.join("\n").includes("Working...") &&
-		!staleNoToolRendered.join("\n").includes("Running command"),
-	JSON.stringify({ noToolActivity, noToolRendered, staleNoToolRendered }),
+		noToolRendered.join("\n").includes("Working..."),
+	JSON.stringify({ noToolActivity, noToolRendered }),
 );
 noToolHarness.emit("agent_settled", { type: "agent_settled" }, noToolContext.context);
 
-const commandCases: Array<[string, string]> = [
-	["npm test", "Running tests"],
-	["npm run check", "Running tests"],
-	["pytest -q", "Running tests"],
-	["cargo test --workspace", "Running tests"],
-	["npm run build", "Building"],
-	["tsc -p tsconfig.json", "Building"],
-	["printf 'nothing'", "Running command"],
-];
-for (const [command, expected] of commandCases) {
-	assert(
-		`command classification: ${command}`,
-		classifyCommand(command) === expected,
-		classifyCommand(command),
-	);
-}
 assert(
-	"command checks use standalone tokens and deterministic test-first ordering",
-	classifyCommand("echo contest") === "Running command" &&
-		classifyCommand("echo buildable") === "Running command" &&
-		classifyCommand("npm run build && npm test") === "Running tests" &&
-		classifyTool("bash", { command: "npm run build" }) === "Building" &&
-		classifyTool("job", { command: "cargo test" }) === "Running tests" &&
-		classifyTool("read", {}) === "Inspecting" &&
-		classifyTool("edit", {}) === "Editing",
-	JSON.stringify({
-		contest: classifyCommand("echo contest"),
-		buildable: classifyCommand("echo buildable"),
-		mixed: classifyCommand("npm run build && npm test"),
-	}),
-);
-assert(
-	"unknown tool arguments fall back to the approved command phase",
-	classifyTool("unknown-tool", { value: "safe fallback" }) === "Running command" &&
-		formatSlice("Running command", 1_500, 0, {
-			toolCount: 1,
-			changedFiles: [],
-		}).includes("1 tool"),
-	formatSlice("Running command", 1_500, 0, { toolCount: 1, changedFiles: [] }),
+	"formatSlice keeps compact tool counts",
+	formatSlice(WORKING_PHASE, 1_500, 0, {
+		toolCount: 1,
+		changedFiles: [],
+	}).includes("1 tool"),
+	formatSlice(WORKING_PHASE, 1_500, 0, { toolCount: 1, changedFiles: [] }),
 );
 
 const failureHarness = createHarness();
@@ -424,7 +389,7 @@ failureHarness.emit(
 );
 assert(
 	"tool failures do not appear in the live status",
-	failureContext.workingMessages.at(-1)?.includes("Working") === true &&
+	failureContext.workingMessages.at(-1)?.startsWith("Working...") === true &&
 		failureContext.workingMessages.at(-1)?.includes("failed") !== true,
 	JSON.stringify(failureContext.workingMessages),
 );
@@ -488,7 +453,7 @@ rpcHarness.emit(
 );
 assert(
 	"RPC mode uses status updates",
-	rpc.statusCalls.some(({ key, text }) => key === "working" && text?.includes("Building")),
+	rpc.statusCalls.some(({ key, text }) => key === "working" && text?.startsWith("Working...")),
 	JSON.stringify(rpc.statusCalls),
 );
 rpcHarness.emit("agent_settled", { type: "agent_settled" }, rpc.context);
@@ -525,7 +490,8 @@ assert(
 	print.workingMessages.length === 0 &&
 		print.statusCalls.length === 0 &&
 		printHarness.appended.length === 1 &&
-		printHarness.appended[0]?.type === ACTIVITY_ENTRY_TYPE,
+		printHarness.appended[0]?.type === ACTIVITY_ENTRY_TYPE &&
+		printHarness.appended[0]?.data.phase === WORKING_PHASE,
 	JSON.stringify({
 		working: print.workingMessages,
 		status: print.statusCalls,

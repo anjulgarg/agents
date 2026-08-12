@@ -11,12 +11,14 @@ import {
 	type PersistedJobRecord,
 } from "./contracts.ts";
 import {
+	ASYNC_ACTIVITY_REFRESH_MS,
 	JOB_STATE_ENTRY_TYPE,
 	JOB_WAKE_MESSAGE_TYPE,
 	latestJobRecords,
 	registerJobsExtension,
 	default as jobsExtensionDefault,
 } from "./index.ts";
+import { SHIMMER_TIMING } from "../lib/tui/index.ts";
 import {
 	DEFAULT_JOB_TIMEOUT_SECONDS,
 	JOB_TOOLS,
@@ -55,6 +57,12 @@ const taggedTheme = {
 } as any;
 
 const directories = new Set(["/repo", "/repo/sub", "/elsewhere"]);
+
+assert(
+	"job activity derives its repaint cadence from the shared shimmer contract",
+	ASYNC_ACTIVITY_REFRESH_MS === SHIMMER_TIMING.frameIntervalMs && ASYNC_ACTIVITY_REFRESH_MS === 250,
+	JSON.stringify({ ASYNC_ACTIVITY_REFRESH_MS, SHIMMER_TIMING }),
+);
 
 function makeSnapshot(overrides: Partial<JobSnapshot> = {}): JobSnapshot {
 	return {

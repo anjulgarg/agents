@@ -32,21 +32,11 @@ capability does not connect to a server, expose configuration, or perform an ext
 
 ## Passive activity
 
-Long-running work displays a coarse phase derived from actual model and tool lifecycle events:
-
-- `Working` when no tool is active
-- `Inspecting`
-- `Editing`
-- `Running tests`
-- `Building`
-- `Running command`
-
-When no tool is active, the live status uses `Working` rather than guessing `Running command`. The
-status includes bounded elapsed time and activity counts. It is passive: no progress tool call,
-prompt instruction, follow-up message, or additional model turn is created. Completed activity is
-stored as a muted, context-free receipt immediately before the final assistant message, never after
-it. Failure labels and error coloring are omitted. Historical legacy announcement receipts remain
-readable.
+Long-running work displays a fixed `Working` status with bounded elapsed time and activity counts
+(tools, changed files, received tokens). It is passive: no progress tool call, prompt instruction,
+follow-up message, or additional model turn is created. Completed activity is stored as a muted,
+context-free receipt immediately before the final assistant message, never after it. Failure labels
+and error coloring are omitted. Historical legacy announcement receipts remain readable.
 
 ## Bottom activity panel
 
@@ -58,8 +48,9 @@ each overflowing section uses a `+ N more` hint.
 
 Extensions add declarative sections through the shared TUI bottom-panel compositor. It centralizes
 ordering, allocation, truncation, separators, repaint scheduling, and cleanup so future sections do
-not need another fixed widget or animation loop. Only running `& <command>` rows shimmer; completed
-jobs leave the panel and retain their final transcript receipt.
+not need another fixed widget or animation loop. Tool rows and running `& <command>` rows derive their
+shimmer timing from one frozen contract with a 250 ms repaint cadence; completed jobs leave the panel
+and retain their final transcript receipt.
 
 ## Todo lifecycle
 

@@ -82,9 +82,7 @@ async function errorCode(action: () => Promise<unknown>): Promise<string | undef
 describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
-		expect(components.length).toBe(
-			35 + (localPiConfigFiles.models ? 1 : 0) + 1 + (localPiConfigFiles.mcp ? 2 : 0) + 5,
-		);
+		expect(components.length).toBe(35 + 1 + (localPiConfigFiles.mcp ? 2 : 0) + 5);
 		expect(components.filter(({ category }) => category === "skill").map(({ id }) => id)).toEqual(
 			skillIds,
 		);
@@ -92,7 +90,6 @@ describe("component registry", () => {
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
 		expect(components.slice(36).map(({ id }) => id)).toEqual([
-			...(localPiConfigFiles.models ? ["pi-config:models"] : []),
 			"pi-config:keybindings",
 			...(localPiConfigFiles.mcp ? ["pi-package:mcp-adapter", "pi-config:mcp-sentry"] : []),
 			"pi-theme:claude-code",

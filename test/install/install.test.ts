@@ -172,7 +172,7 @@ describe("transactional install", () => {
 		expect(receipt.components["skill:foreman-plan"]).toBeDefined();
 	});
 
-	it.skipIf(!localPiConfigFiles.models || !localPiConfigFiles.mcp)(
+	it.skipIf(!localPiConfigFiles.mcp)(
 		"preserves unknown JSON, hooks, blocks, skills, and files",
 		async () => {
 			const target = await home();
@@ -180,10 +180,6 @@ describe("transactional install", () => {
 			await writeFile(
 				join(target, ".pi/agent/settings.json"),
 				JSON.stringify({ custom: { tokenRef: "env:X" }, packages: ["npm:other@1"] }),
-			);
-			await writeFile(
-				join(target, ".pi/agent/models.json"),
-				JSON.stringify({ providers: { local: { apiKey: "env:LOCAL" } } }),
 			);
 			await writeFile(
 				join(target, ".pi/agent/mcp.json"),
@@ -198,7 +194,7 @@ describe("transactional install", () => {
 			await writeFile(join(target, ".agents/skills/foreman-planivate/SKILL.md"), "private");
 			await mkdir(join(target, ".codex"), { recursive: true });
 			await writeFile(join(target, ".codex/AGENTS.md"), "local preface\n");
-			const ids: ComponentId[] = ["pi-config:models", "pi-config:mcp-sentry"];
+			const ids: ComponentId[] = ["pi-config:mcp-sentry"];
 			await applyPlan(
 				{ home: target, sourceRoot },
 				await planInstall({ home: target, sourceRoot, now: fixed }, ids),
@@ -210,9 +206,6 @@ describe("transactional install", () => {
 			expect((await object(join(target, ".pi/agent/settings.json"))).packages).toEqual([
 				"npm:other@1",
 			]);
-			expect((await object(join(target, ".pi/agent/models.json"))).providers.local.apiKey).toBe(
-				"env:LOCAL",
-			);
 			expect((await object(join(target, ".pi/agent/mcp.json"))).mcpServers.private.command).toBe(
 				"private",
 			);

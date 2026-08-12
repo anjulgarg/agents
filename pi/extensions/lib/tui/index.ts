@@ -70,6 +70,7 @@ export {
 export {
 	SoftGroupTracker,
 	SynchronizedShimmerRender,
+	SHIMMER_TIMING,
 	bindSoftGroupTracker,
 	formatLiveToolDuration,
 	formatToolDuration,

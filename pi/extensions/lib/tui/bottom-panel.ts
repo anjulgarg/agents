@@ -248,9 +248,19 @@ export class BottomPanel {
 	}
 }
 
-const panelsByUi = new WeakMap<object, BottomPanel>();
+const BOTTOM_PANEL_REGISTRY_KEY = Symbol.for("@anjulgarg/agents.bottom-panel-registry.v1");
+
+function sharedPanelRegistry(): WeakMap<object, BottomPanel> {
+	const scope = globalThis as typeof globalThis & Record<symbol, unknown>;
+	const existing = scope[BOTTOM_PANEL_REGISTRY_KEY];
+	if (existing instanceof WeakMap) return existing as WeakMap<object, BottomPanel>;
+	const registry = new WeakMap<object, BottomPanel>();
+	scope[BOTTOM_PANEL_REGISTRY_KEY] = registry;
+	return registry;
+}
 
 export function getBottomPanel(context: PanelContext): BottomPanel {
+	const panelsByUi = sharedPanelRegistry();
 	const key = context.ui as object;
 	let panel = panelsByUi.get(key);
 	if (!panel) {

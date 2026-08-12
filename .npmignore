@@ -5,7 +5,6 @@ scripts/
 test/
 docs/plans/
 pi/config/settings.json
-pi/config/models.json
 pi/config/mcp.json
 tsconfig.json
 tsconfig.build.json

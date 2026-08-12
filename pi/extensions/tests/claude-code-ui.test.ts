@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
-import {
+import claudeCodeUi, {
 	contextRailPercent,
 	createFooter,
 	findEditorRuleIndex,
@@ -12,6 +12,7 @@ import {
 	formatExtensionStatuses,
 	formatGitBranch,
 	formatModelStatus,
+	getMemoizedSessionName,
 	isBareSlashCommandContext,
 	isEmptySlashArgumentContext,
 	isSlashCommandNamePrefix,
@@ -163,6 +164,169 @@ assert(
 	]),
 );
 
+const noop = (): any => undefined;
+const alwaysFalse = () => false;
+const emptyString = () => "";
+
+// ---- Memoized context usage tests ----
+
+let lookupCount = 0;
+const memoCtx: any = {
+	cwd: "/home/test",
+	model: { name: "gpt-4", id: "gpt-4", provider: "openai", contextWindow: 272_000 },
+	getContextUsage: () => {
+		lookupCount++;
+		return { tokens: 34_000, percent: 12.5 };
+	},
+};
+const memoFooter = createFooter(
+	memoCtx,
+	makeFooterData([], null),
+	alwaysFalse,
+	emptyString,
+	alwaysFalse,
+	noop,
+	noop,
+	noop,
+);
+memoFooter.render(120);
+contextRailPercent(memoCtx);
+memoFooter.render(120);
+contextRailPercent(memoCtx);
+assert(
+	"footer and editor context renders share one lookup inside the TTL",
+	lookupCount === 1,
+	`getContextUsage calls: ${lookupCount}`,
+);
+memoFooter.dispose();
+
+const fixedFooterCtx: any = {
+	cwd: "/home/test",
+	model: { name: "gpt-4", id: "gpt-4", provider: "openai", contextWindow: 272_000 },
+	getContextUsage: () => ({ tokens: 34_000, percent: 12.5 }),
+};
+const fixedFooter = createFooter(
+	fixedFooterCtx,
+	makeFooterData([], null),
+	alwaysFalse,
+	emptyString,
+	alwaysFalse,
+	noop,
+	noop,
+	noop,
+);
+const fixedFooterString = fixedFooter.render(120).join("");
+assert(
+	"fixed usage keeps the current rendered footer string",
+	fixedFooterString ===
+		"\x1b[38;5;78mauto\x1b[39m · " +
+			"\x1b[38;5;117m/home/test\x1b[39m · " +
+			"\x1b[38;5;183mgpt-4 \x1b[39m · " +
+			"\x1b[38;5;117m34k/272k (13%)\x1b[39m",
+	fixedFooterString,
+);
+fixedFooter.dispose();
+
+let modelLookupCount = 0;
+const modelCtx: any = {
+	model: { name: "first", id: "first", provider: "openai", contextWindow: 100_000 },
+	getContextUsage: () => {
+		modelLookupCount++;
+		return modelCtx.model.id === "first"
+			? { tokens: 10_000, percent: 10 }
+			: { tokens: 20_000, percent: 20 };
+	},
+};
+const firstModelPercent = contextRailPercent(modelCtx);
+modelCtx.model = { ...modelCtx.model, name: "second", id: "second" };
+const secondModelPercent = contextRailPercent(modelCtx);
+assert(
+	"a changed model is reflected without waiting for the TTL",
+	firstModelPercent === 10 && secondModelPercent === 20 && modelLookupCount === 2,
+	JSON.stringify({ firstModelPercent, secondModelPercent, modelLookupCount }),
+);
+
+let windowLookupCount = 0;
+const windowCtx: any = {
+	model: { name: "gpt-4", id: "gpt-4", provider: "openai", contextWindow: 100_000 },
+	getContextUsage: () => {
+		windowLookupCount++;
+		return windowCtx.model.contextWindow === 100_000
+			? { tokens: 10_000, percent: 10 }
+			: { tokens: 20_000, percent: 20 };
+	},
+};
+const firstWindowPercent = contextRailPercent(windowCtx);
+windowCtx.model.contextWindow = 200_000;
+const secondWindowPercent = contextRailPercent(windowCtx);
+assert(
+	"a changed context window is reflected without waiting for the TTL",
+	firstWindowPercent === 10 && secondWindowPercent === 20 && windowLookupCount === 2,
+	JSON.stringify({ firstWindowPercent, secondWindowPercent, windowLookupCount }),
+);
+
+const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+claudeCodeUi({
+	events: { on: () => {} },
+	on: (event: string, handler: (event: any, ctx: any) => unknown) => {
+		handlers.set(event, handler);
+	},
+	registerCommand: () => {},
+	getThinkingLevel: () => "medium",
+} as any);
+const invalidationEvents = [
+	"message_end",
+	"agent_end",
+	"agent_settled",
+	"session_compact",
+	"session_start",
+	"model_select",
+];
+let eventLookupCount = 0;
+const eventCtx: any = {
+	mode: "cli",
+	model: { name: "gpt-4", id: "gpt-4", provider: "openai", contextWindow: 100_000 },
+	getContextUsage: () => {
+		eventLookupCount++;
+		return { tokens: 10_000, percent: 10 };
+	},
+};
+contextRailPercent(eventCtx);
+for (const event of invalidationEvents) {
+	handlers.get(event)?.({}, eventCtx);
+	contextRailPercent(eventCtx);
+}
+assert(
+	"required lifecycle events invalidate context usage immediately",
+	invalidationEvents.every((event) => handlers.has(event)) &&
+		eventLookupCount === 1 + invalidationEvents.length,
+	JSON.stringify({ events: [...handlers.keys()], eventLookupCount }),
+);
+
+let sessionNameReads = 0;
+const readSessionName = (): string | undefined => {
+	sessionNameReads++;
+	return "session title";
+};
+const memoizedTitle = getMemoizedSessionName(readSessionName);
+getMemoizedSessionName(readSessionName);
+getMemoizedSessionName(readSessionName);
+assert(
+	"repeated editor renders share one session-name lookup inside the TTL",
+	memoizedTitle === "session title" && sessionNameReads === 1,
+	`session name reads: ${sessionNameReads}`,
+);
+
+for (const event of invalidationEvents) {
+	handlers.get(event)?.({}, eventCtx);
+	getMemoizedSessionName(readSessionName);
+}
+assert(
+	"required lifecycle events invalidate the memoized session name",
+	sessionNameReads === 1 + invalidationEvents.length,
+	`session name reads: ${sessionNameReads}`,
+);
+
 const root = mkdtempSync(join(tmpdir(), "pi-footer-git-"));
 const linked = join(root, "linked");
 try {
@@ -213,10 +377,6 @@ function makeFooterData(statuses: [string, string][], branch: string | null = "m
 		onBranchChange: () => () => {},
 	};
 }
-
-const noop = (): any => undefined;
-const alwaysFalse = () => false;
-const emptyString = () => "";
 
 const footer1 = createFooter(
 	stubCtx,

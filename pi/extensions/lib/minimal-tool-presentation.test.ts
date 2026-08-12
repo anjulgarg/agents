@@ -8,6 +8,7 @@ import { seedSessionTopology } from "./tui/index.ts";
 import minimalMode from "../minimal-mode.ts";
 import {
 	MINIMAL_TOOL_NAMES,
+	MinimalCommand,
 	createMinimalToolPresentations,
 	type MinimalToolPresentation,
 } from "./minimal-tool-presentation.ts";
@@ -626,6 +627,104 @@ function seededTranscript() {
 		"activity timing stays per view for the same tool-call ID",
 		!settledB.includes("· running") && /· \d+\.\ds/u.test(runningA),
 		JSON.stringify({ runningA, settledB }),
+	);
+}
+
+// ---------------------------------------------------------------------------
+// AC7: MinimalCommand caches the last render for stable inputs
+// ---------------------------------------------------------------------------
+{
+	const cacheTheme = (code: string) =>
+		({
+			fg: (_color: string, text: string) => `\x1b[${code}m${text}\x1b[0m`,
+			bold: (text: string) => `\x1b[1m${text}\x1b[0m`,
+		}) as any;
+
+	const firstTheme = cacheTheme("31");
+	const command = new MinimalCommand(
+		"echo cache behavior with enough words to wrap",
+		3,
+		false,
+		firstTheme,
+		"$ ",
+		" · done",
+	);
+	const first = command.render(40);
+	const repeated = command.render(40);
+	assert(
+		"MinimalCommand repeated render at the same width uses the cached output",
+		first === repeated && first.join("\n") === repeated.join("\n"),
+		JSON.stringify({ first, repeated }),
+	);
+
+	const wider = command.render(100);
+	assert(
+		"MinimalCommand width changes recompute the output",
+		wider !== repeated && wider.join("\n") !== repeated.join("\n"),
+		JSON.stringify({ narrow: repeated, wide: wider }),
+	);
+
+	const expandedCommand = new MinimalCommand(
+		"echo expanded cache behavior",
+		undefined,
+		false,
+		firstTheme,
+		"$ ",
+		" · done",
+	);
+	const collapsed = expandedCommand.render(80);
+	(expandedCommand as unknown as { expanded: boolean }).expanded = true;
+	const expanded = expandedCommand.render(80);
+	assert(
+		"MinimalCommand expanded changes recompute the output",
+		expanded !== collapsed && expanded.join("\n") !== collapsed.join("\n"),
+		JSON.stringify({ collapsed, expanded }),
+	);
+
+	let liveSuffix = " · 0.1s";
+	const liveCommand = new MinimalCommand(
+		"echo live duration",
+		undefined,
+		false,
+		firstTheme,
+		"$ ",
+		() => liveSuffix,
+	);
+	const liveFirst = liveCommand.render(80);
+	const liveRepeat = liveCommand.render(80);
+	liveSuffix = " · 0.2s";
+	const liveChanged = liveCommand.render(80);
+	assert(
+		"MinimalCommand resolved status suffix changes recompute live output",
+		liveFirst === liveRepeat &&
+			liveChanged !== liveRepeat &&
+			liveChanged.join("\n") !== liveRepeat.join("\n"),
+		JSON.stringify({ liveFirst, liveRepeat, liveChanged }),
+	);
+
+	const invalidatedCommand = new MinimalCommand("echo invalidate", undefined, false, firstTheme);
+	const beforeInvalidate = invalidatedCommand.render(80);
+	const beforeInvalidateRepeat = invalidatedCommand.render(80);
+	invalidatedCommand.invalidate();
+	const afterInvalidate = invalidatedCommand.render(80);
+	assert(
+		"MinimalCommand invalidate forces recomputation",
+		beforeInvalidate === beforeInvalidateRepeat &&
+			afterInvalidate !== beforeInvalidateRepeat &&
+			afterInvalidate.join("\n") === beforeInvalidate.join("\n"),
+		JSON.stringify({ beforeInvalidate, afterInvalidate }),
+	);
+
+	const themedCommand = new MinimalCommand("echo theme identity", undefined, false, firstTheme);
+	const firstThemeRender = themedCommand.render(80);
+	const secondTheme = cacheTheme("34");
+	(themedCommand as unknown as { theme: typeof firstTheme }).theme = secondTheme;
+	const secondThemeRender = themedCommand.render(80);
+	assert(
+		"MinimalCommand different theme identity recomputes the output",
+		secondThemeRender !== firstThemeRender &&
+			secondThemeRender.join("\n") !== firstThemeRender.join("\n"),
+		JSON.stringify({ firstThemeRender, secondThemeRender }),
 	);
 }
 

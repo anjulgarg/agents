@@ -3,9 +3,16 @@
  *
  * Run: npm run test:extensions
  */
+import { SHIMMER_TIMING } from "../lib/pi-tui-soft-group/timing.ts";
 import type { JobSpec, JobWakeDelivery, PersistedJobRecord } from "./contracts.ts";
 import { createFakeProcessFleet, type FakeProcessBehavior } from "./fake-process.ts";
-import { JobManager, SNAPSHOT_TAIL_BYTES, STATUS_LIST_LIMIT, sanitizeJobText } from "./manager.ts";
+import {
+	INVALIDATE_INTERVAL_MS,
+	JobManager,
+	SNAPSHOT_TAIL_BYTES,
+	STATUS_LIST_LIMIT,
+	sanitizeJobText,
+} from "./manager.ts";
 
 interface Wake {
 	content: string;
@@ -89,6 +96,12 @@ function assert(name: string, condition: boolean, detail: string): void {
 	if (condition) pass(name);
 	else fail(name, detail);
 }
+
+assert(
+	"job invalidation derives its cadence from the shared shimmer contract",
+	INVALIDATE_INTERVAL_MS === SHIMMER_TIMING.frameIntervalMs && INVALIDATE_INTERVAL_MS === 250,
+	JSON.stringify({ INVALIDATE_INTERVAL_MS, SHIMMER_TIMING }),
+);
 
 /**
  * Run one test with a hard deadline. The guard timer is deliberately not
