@@ -42,6 +42,7 @@ const extensions = [
 	["minimal-mode", "minimal-mode.ts"],
 	["plan-mode", "plan-mode/index.ts"],
 	["proactive-compaction", "proactive-compaction.ts"],
+	["prompt-autocomplete", "prompt-autocomplete.ts"],
 	["publish", "publish.ts"],
 	["pull", "pull.ts"],
 	["question", "question.ts"],
@@ -84,6 +85,19 @@ const skillComponents: ComponentDefinition[] = skills.map((slug) => ({
 	requirements: [NODE],
 }));
 
+function extensionDependencies(slug: string): ComponentId[] {
+	switch (slug) {
+		case "team":
+			return ["pi-extension:subagent"];
+		case "plan-mode":
+			return ["skill:foreman-plan"];
+		case "prompt-autocomplete":
+			return ["pi-extension:utility-model"];
+		default:
+			return [];
+	}
+}
+
 const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entrypoint]) => ({
 	id: `pi-extension:${slug}`,
 	category: "pi-extension",
@@ -91,12 +105,7 @@ const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entryp
 	description: `${title(slug)} Pi extension.`,
 	resources: [{ path: `pi/extensions/${entrypoint}`, kind: "file" }],
 	outputs: [piFilter("extensions", `pi/extensions/${entrypoint}`)],
-	dependsOn:
-		slug === "team"
-			? ["pi-extension:subagent"]
-			: slug === "plan-mode"
-				? ["skill:foreman-plan"]
-				: [],
+	dependsOn: extensionDependencies(slug),
 	requirements: [NODE, PI],
 	legacyPaths: [`.pi/agent/extensions/${entrypoint}`],
 }));

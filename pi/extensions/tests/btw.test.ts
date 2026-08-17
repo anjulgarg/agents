@@ -417,6 +417,7 @@ async function testAnswerUsesDedicatedPromptWithoutToolsOrMutation(): Promise<vo
 				headers: { authorization: "x" },
 				env: { TEST: "1" },
 			}),
+			getProviderAuth: async () => undefined,
 			find: (provider: string, id: string) =>
 				provider === utilityModel.provider && id === utilityModel.id ? utilityModel : undefined,
 			getRegisteredProviderConfig: () => undefined,
@@ -556,6 +557,7 @@ async function testCancellationCloseAndBoundedRendering(): Promise<void> {
 		},
 		modelRegistry: {
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "secret", headers: {}, env: {} }),
+			getProviderAuth: async () => undefined,
 			getRegisteredProviderConfig: () => undefined,
 		},
 		sessionManager: {

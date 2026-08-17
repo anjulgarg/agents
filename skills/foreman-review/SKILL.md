@@ -125,4 +125,4 @@ For each survivor, prove the problem, rationale, trigger, impact, evidence, and 
 <static prompt names, lenses, verification, exclusions, unresolved limits, transport, harness, and session ID>
 ```
 
-Omit empty findings. Do not post to a provider.
+Omit empty findings. Do not post to a provider unless the user explicitly asks to publish a specific review or comment. Invoking this skill, supplying a provider URL, or approving review scope does not by itself authorize publication.

@@ -35,6 +35,7 @@ const extensionIds = [
 	"pi-extension:minimal-mode",
 	"pi-extension:plan-mode",
 	"pi-extension:proactive-compaction",
+	"pi-extension:prompt-autocomplete",
 	"pi-extension:publish",
 	"pi-extension:pull",
 	"pi-extension:question",
@@ -82,14 +83,14 @@ async function errorCode(action: () => Promise<unknown>): Promise<string | undef
 describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
-		expect(components.length).toBe(35 + 1 + (localPiConfigFiles.mcp ? 2 : 0) + 5);
+		expect(components.length).toBe(35 + 2 + (localPiConfigFiles.mcp ? 2 : 0) + 5);
 		expect(components.filter(({ category }) => category === "skill").map(({ id }) => id)).toEqual(
 			skillIds,
 		);
 		expect(
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
-		expect(components.slice(36).map(({ id }) => id)).toEqual([
+		expect(components.slice(37).map(({ id }) => id)).toEqual([
 			"pi-config:keybindings",
 			...(localPiConfigFiles.mcp ? ["pi-package:mcp-adapter", "pi-config:mcp-sentry"] : []),
 			"pi-theme:claude-code",
@@ -127,6 +128,10 @@ describe("component registry", () => {
 		expect(resolveSelection(["pi-extension:team"])).toEqual([
 			"pi-extension:subagent",
 			"pi-extension:team",
+		]);
+		expect(resolveSelection(["pi-extension:prompt-autocomplete"])).toEqual([
+			"pi-extension:prompt-autocomplete",
+			"pi-extension:utility-model",
 		]);
 		expect(resolveSelection(["pi-team:product"])).toEqual([
 			"pi-extension:subagent",

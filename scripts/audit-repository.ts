@@ -25,6 +25,7 @@ const EXPECTED_EXTENSIONS = [
 	"pi/extensions/minimal-mode.ts",
 	"pi/extensions/plan-mode/index.ts",
 	"pi/extensions/proactive-compaction.ts",
+	"pi/extensions/prompt-autocomplete.ts",
 	"pi/extensions/publish.ts",
 	"pi/extensions/pull.ts",
 	"pi/extensions/question.ts",
