@@ -238,6 +238,12 @@ export class RpcChild {
 		{ resolve: (value: any) => void; reject: (error: Error) => void }
 	>();
 	private readonly settledWaiters: Array<() => void> = [];
+	/**
+	 * True while no turn is in flight. Turn-starting commands clear it; the
+	 * turn's agent_settled event (or child exit) restores it. Lets settled()
+	 * resolve even when the event arrived before a waiter registered.
+	 */
+	private idle = true;
 	private readonly exitWaiters: Array<(code: number) => void> = [];
 	private buffer = "";
 	private partialAssistant?: AssistantMessage;
@@ -313,9 +319,9 @@ export class RpcChild {
 		});
 	}
 
-	/** Resolves on the next agent_settled event. */
+	/** Resolves once the child is idle: the last turn settled or the child exited. */
 	settled(): Promise<void> {
-		if (this.exited) return Promise.resolve();
+		if (this.exited || this.idle) return Promise.resolve();
 		return new Promise((resolve) => this.settledWaiters.push(resolve));
 	}
 
@@ -471,6 +477,7 @@ export class RpcChild {
 	private finish(code: number): void {
 		if (this.exited) return;
 		this.exited = true;
+		this.idle = true;
 		if (this.mcpConfigDir) {
 			fs.rmSync(this.mcpConfigDir, { recursive: true, force: true });
 			this.mcpConfigDir = undefined;
@@ -516,6 +523,7 @@ export class RpcChild {
 		this.absorb(payload as RpcEvent);
 		this.onEvent?.(payload as RpcEvent);
 		if (payload.type === "agent_settled") {
+			this.idle = true;
 			while (this.settledWaiters.length) this.settledWaiters.shift()?.();
 		}
 	}
@@ -572,17 +580,24 @@ export class RpcChild {
 		this.uiState = applyChildUiRequest(this.uiState, event);
 	}
 
-	private write(payload: Record<string, unknown>): void {
-		if (this.exited || !this.child.stdin?.writable) return;
+	private write(payload: Record<string, unknown>): boolean {
+		if (this.exited || !this.child.stdin?.writable) return false;
 		this.child.stdin.write(`${JSON.stringify(payload)}\n`);
+		return true;
 	}
 
 	private command(payload: Record<string, unknown>): Promise<unknown> {
 		if (this.exited) return Promise.reject(new Error("Subagent process has exited"));
 		const id = `cmd-${this.nextId++}`;
+		const startsTurn = payload.type === "prompt" || payload.type === "steer";
+		if (startsTurn) this.idle = false;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
-			this.write({ ...payload, id });
+			if (!this.write({ ...payload, id })) {
+				this.pending.delete(id);
+				if (startsTurn) this.idle = true;
+				reject(new Error("Subagent process stdin is not writable"));
+			}
 		});
 	}
 }

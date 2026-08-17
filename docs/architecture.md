@@ -18,7 +18,7 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | Category       | Installed role                                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `skill`        | Three shared skill directories under `~/.agents/skills`; each can be selected independently.                      |
-| `pi-extension` | Local-package filters for 34 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
+| `pi-extension` | Local-package filters for 33 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
 | `pi-config`    | Pi keybindings plus optional local-only model and MCP JSON pointers. Unowned keys remain local.                   |
 | `pi-package`   | The optional removable `npm:pi-mcp-adapter@2.15.0` Pi setting. It is referenced, not vendored.                    |
 | `pi-prompt`    | The `orchestrate` prompt through the local Pi package.                                                            |
@@ -28,9 +28,7 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 
 The compaction-model extension stores its global selection under `~/.pi/agent/state/compaction-model.json`; it is not tied to an individual session and is used only for compaction. During compaction it shows a live elapsed timer and adds a visible compaction receipt with the reason, token count, and model used, plus the final duration to the persistent thread.
 
-The utility-model extension stores its global selection under `~/.pi/agent/state/utility-model.json`. The `/utility-model` preference is used by session naming, `/btw`, `/recap`, `/changes` summaries, `/git:publish` commit drafting, and idle draft suggestions so these lightweight requests share one model and can benefit from provider prompt caching. It falls back to the active conversation model when the preference is unset or unavailable.
-
-Prompt completion runs after a short idle pause for meaningful draft text. The predicted suffix appears as dim inline ghost text at the end of the input, and Right Arrow accepts it. Tab remains owned by Pi's existing slash, argument, attachment, issue, and path completion. Model completion does not mutate session context or the active conversation model.
+The utility-model extension stores its global selection under `~/.pi/agent/state/utility-model.json`. The `/utility-model` preference is used by session naming, `/btw`, `/recap`, `/changes` summaries, and `/git:publish` commit drafting so these lightweight requests share one model and can benefit from provider prompt caching. It falls back to the active conversation model when the preference is unset or unavailable.
 
 The `/changes` extension is a read-only view of the union of uncommitted and unpushed Git files, with generated overall and per-file explanations in a shared full-screen TUI. It honors the configured utility-model preference, using the active model when available and a deterministic fallback otherwise.
 

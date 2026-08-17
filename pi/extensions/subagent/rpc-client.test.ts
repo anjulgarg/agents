@@ -23,6 +23,28 @@ function check(name: string, condition: boolean, detail = ""): void {
 	if (!condition) failed++;
 }
 
+// RpcChild spawns detached process groups that outlive a runner timeout kill.
+// Track every child and force-kill the groups on signals or exit so hung runs
+// never leak orphaned fake Pi processes.
+const liveChildren = new Set<RpcChild>();
+function track(child: RpcChild): RpcChild {
+	liveChildren.add(child);
+	return child;
+}
+function forceKillTrackedChildren(): void {
+	for (const child of liveChildren) child.forceKill();
+}
+for (const [signal, exitCode] of [
+	["SIGTERM", 143],
+	["SIGINT", 130],
+] as const) {
+	process.on(signal, () => {
+		forceKillTrackedChildren();
+		process.exit(exitCode);
+	});
+}
+process.on("exit", forceKillTrackedChildren);
+
 check(
 	"ephemeral CLI arguments are sessionless",
 	JSON.stringify(getSessionArguments(undefined)) === '["--no-session"]',
@@ -86,17 +108,19 @@ process.stdin.on("data", (chunk) => {
 	{ encoding: "utf8", mode: 0o755 },
 );
 
-const child = new RpcChild({
-	cwd: dir,
-	model: "test/model",
-	thinking: "off",
-	tools: ["read"],
-	disableMcp: true,
-	systemPromptFile: promptFile,
-	projectTrusted: false,
-	ownerToken: "owner-test-token",
-	piBin: fakePi,
-});
+const child = track(
+	new RpcChild({
+		cwd: dir,
+		model: "test/model",
+		thinking: "off",
+		tools: ["read"],
+		disableMcp: true,
+		systemPromptFile: promptFile,
+		projectTrusted: false,
+		ownerToken: "owner-test-token",
+		piBin: fakePi,
+	}),
+);
 
 try {
 	await child.prompt("test");
@@ -144,16 +168,18 @@ try {
 		`grandchild pid ${grandchildPid} survived group cleanup`,
 	);
 
-	const crashed = new RpcChild({
-		cwd: dir,
-		model: "test/model",
-		thinking: "off",
-		tools: ["read"],
-		systemPromptFile: promptFile,
-		projectTrusted: false,
-		ownerToken: "crash-owner-token",
-		piBin: fakePi,
-	});
+	const crashed = track(
+		new RpcChild({
+			cwd: dir,
+			model: "test/model",
+			thinking: "off",
+			tools: ["read"],
+			systemPromptFile: promptFile,
+			projectTrusted: false,
+			ownerToken: "crash-owner-token",
+			piBin: fakePi,
+		}),
+	);
 	await crashed.prompt("crash");
 	const expectedCrash = crashed.settled().catch(() => undefined);
 	await crashed.waitForExit();
@@ -222,26 +248,30 @@ process.stdin.on("data", (chunk) => {
 );
 const persistentDescriptor = { sessionId: "persistent-child-1", sessionDir: continuitySessionDir };
 const continuityChildren = [
-	new RpcChild({
-		cwd: continuityRoot,
-		model: "test/model",
-		thinking: "off",
-		tools: ["read"],
-		systemPromptFile: continuityPrompt,
-		projectTrusted: false,
-		persistentSession: persistentDescriptor,
-		piBin: continuityPi,
-	}),
-	new RpcChild({
-		cwd: continuityRoot,
-		model: "test/model",
-		thinking: "off",
-		tools: ["read"],
-		systemPromptFile: continuityPrompt,
-		projectTrusted: false,
-		persistentSession: persistentDescriptor,
-		piBin: continuityPi,
-	}),
+	track(
+		new RpcChild({
+			cwd: continuityRoot,
+			model: "test/model",
+			thinking: "off",
+			tools: ["read"],
+			systemPromptFile: continuityPrompt,
+			projectTrusted: false,
+			persistentSession: persistentDescriptor,
+			piBin: continuityPi,
+		}),
+	),
+	track(
+		new RpcChild({
+			cwd: continuityRoot,
+			model: "test/model",
+			thinking: "off",
+			tools: ["read"],
+			systemPromptFile: continuityPrompt,
+			projectTrusted: false,
+			persistentSession: persistentDescriptor,
+			piBin: continuityPi,
+		}),
+	),
 ];
 try {
 	await continuityChildren[0].prompt("first invocation");
@@ -376,7 +406,7 @@ const statsChildOptions = {
 };
 
 await writeStatsConfig({ default: { data: fullStatsResponse } });
-const statsChild = new RpcChild(statsChildOptions);
+const statsChild = track(new RpcChild(statsChildOptions));
 try {
 	const snapshot = await statsChild.refreshSessionStats();
 	check(
@@ -494,7 +524,7 @@ const failureCases: Array<{ name: string; config: unknown }> = [
 		config: { default: { data: { contextUsage: { tokens: "many", contextWindow: 0 } } } },
 	},
 ];
-const failingChild = new RpcChild(statsChildOptions);
+const failingChild = track(new RpcChild(statsChildOptions));
 try {
 	for (const { name, config } of failureCases) {
 		await writeStatsConfig(config);

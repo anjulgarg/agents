@@ -6,7 +6,8 @@ import type {
 	ComponentId,
 	SystemInspection,
 } from "../domain/contracts.ts";
-import { components, profiles, resolveProfile, resolveSelection } from "../registry/index.ts";
+import { COMPONENT_CATEGORIES } from "../domain/contracts.ts";
+import { components, profiles, resolveProfile } from "../registry/index.ts";
 import type {
 	AgentsUiServices,
 	DoctorReportView,
@@ -15,6 +16,7 @@ import type {
 	UiContext,
 } from "./contracts.ts";
 import {
+	DASHBOARD_ITEMS,
 	renderConfirmation,
 	renderDashboard,
 	renderDoctor,
@@ -41,17 +43,7 @@ export interface AppProps {
 	readonly onCancelled?: () => void;
 }
 
-const categories = [
-	"all",
-	"skill",
-	"pi-extension",
-	"pi-config",
-	"pi-package",
-	"pi-prompt",
-	"pi-theme",
-	"pi-team",
-	"instructions",
-] as const;
+const categories: readonly ("all" | ComponentCategory)[] = ["all", ...COMPONENT_CATEGORIES];
 
 function initialInstallSelection(inspection: SystemInspection): Set<ComponentId> {
 	const installed = inspection.components
@@ -224,11 +216,12 @@ export function App({
 		}
 		if (key.ctrl && input === "c") return cancel();
 		if (screen === "dashboard") {
-			if (key.upArrow) setDashboardFocus((value) => (value + 3) % 4);
-			else if (key.downArrow) setDashboardFocus((value) => (value + 1) % 4);
+			if (key.upArrow)
+				setDashboardFocus((value) => (value + DASHBOARD_ITEMS.length - 1) % DASHBOARD_ITEMS.length);
+			else if (key.downArrow) setDashboardFocus((value) => (value + 1) % DASHBOARD_ITEMS.length);
 			else if (key.escape) cancel();
 			else if (key.return) {
-				const next = ["install", "remove", "list", "doctor"][dashboardFocus] as InteractiveCommand;
+				const next = DASHBOARD_ITEMS[dashboardFocus]!.command;
 				if (next === "install" && inspection) setSelected(initialInstallSelection(inspection));
 				if (next === "remove") setSelected(new Set());
 				if (next === "doctor") {
@@ -290,17 +283,8 @@ export function App({
 
 	let output: string;
 	if (width < 60) output = renderMinimumWidth(width);
-	else if (screen === "dashboard") {
-		output = renderDashboard(width).replace(
-			"> Install",
-			dashboardFocus === 0 ? "> Install" : "  Install",
-		);
-		const labels = ["Install", "Remove", "Installed Components", "Doctor"];
-		for (const [index, label] of labels.entries()) {
-			if (index === 0) continue;
-			output = output.replace(`  ${label}`, `${dashboardFocus === index ? ">" : " "} ${label}`);
-		}
-	} else if (screen === "list")
+	else if (screen === "dashboard") output = renderDashboard(width, dashboardFocus);
+	else if (screen === "list")
 		output = inspection ? renderList(inspection, definitions, width) : "Loading component status…";
 	else if (screen === "doctor")
 		output = doctor ? renderDoctor(doctor, width) : "Running doctor checks…";
@@ -328,12 +312,4 @@ export function App({
 	else output = renderError(failure, debug, width);
 
 	return React.createElement(Text, null, output);
-}
-
-export function resolvedSelection(ids: readonly ComponentId[]): readonly ComponentId[] {
-	return resolveSelection(ids);
-}
-
-export function categoryIsValid(value: string): value is ComponentCategory {
-	return categories.includes(value as (typeof categories)[number]) && value !== "all";
 }

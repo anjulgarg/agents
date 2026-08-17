@@ -6,6 +6,7 @@ import type {
 	OperationEvent,
 	OperationPlan,
 	OperationResult,
+	PlannedChange,
 } from "./contracts.ts";
 import { AgentsError } from "./contracts.ts";
 import { assertSnapshotEqual, getPlanInternal, readSnapshot, type Snapshot } from "./planner.ts";
@@ -28,6 +29,12 @@ async function materialize(path: string, value: Snapshot): Promise<void> {
 
 function fail(context: OperationContext, phase: string): void {
 	if (context.failureInjection?.phase === phase) throw new Error(`Injected failure: ${phase}`);
+}
+
+function orderChanges(changes: readonly PlannedChange[], receiptPath: string): PlannedChange[] {
+	return [...changes].sort((a, b) =>
+		a.path === receiptPath ? 1 : b.path === receiptPath ? -1 : a.path.localeCompare(b.path),
+	);
 }
 
 export async function applyPlan(
@@ -93,13 +100,7 @@ export async function applyPlan(
 		await mkdir(backupRoot, { recursive: true });
 		await mkdir(stageRoot, { recursive: true });
 		fail(context, "after-lock");
-		const ordered = [...plan.changes].sort((a, b) =>
-			a.path === internal.receiptPath
-				? 1
-				: b.path === internal.receiptPath
-					? -1
-					: a.path.localeCompare(b.path),
-		);
+		const ordered = orderChanges(plan.changes, internal.receiptPath);
 		for (const [index, change] of ordered.entries()) {
 			const desired = internal.desired.get(change.path)!;
 			await materialize(join(stageRoot, String(index)), desired);
@@ -143,13 +144,7 @@ export async function applyPlan(
 		try {
 			if (context.failureInjection?.rollback)
 				throw new Error("Injected rollback failure", { cause: error });
-			const ordered = [...plan.changes].sort((a, b) =>
-				a.path === internal.receiptPath
-					? 1
-					: b.path === internal.receiptPath
-						? -1
-						: a.path.localeCompare(b.path),
-			);
+			const ordered = orderChanges(plan.changes, internal.receiptPath);
 			for (const path of [...committed].reverse()) {
 				const index = ordered.findIndex((change) => change.path === path);
 				await rm(path, { recursive: true, force: true });

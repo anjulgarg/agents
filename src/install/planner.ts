@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ComponentDefinition, ComponentId, OutputDefinition } from "../domain/contracts.ts";
-import { components } from "../registry/catalog.ts";
+import { isRecord, decodeJsonPointer, primaryResource } from "../domain/util.ts";
+import { components, INSTRUCTIONS_RESOURCE_REF, MCP_ADAPTER_REF } from "../registry/catalog.ts";
 import { resolveContainedPath } from "../registry/destinations.ts";
 import {
 	getComponent,
@@ -38,9 +39,6 @@ const receiptRelative = ".agents/anjulgarg-agents.json";
 
 function hash(data: Uint8Array): string {
 	return createHash("sha256").update(data).digest("hex");
-}
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function json(value: unknown): Buffer {
 	return Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
@@ -113,22 +111,16 @@ async function parseObject(path: string, allowMissing = true): Promise<Record<st
 		);
 	}
 }
-function decodePointer(pointer: string): string[] {
-	return pointer
-		.slice(1)
-		.split("/")
-		.map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
-}
 function pointerGet(root: Record<string, unknown>, pointer: string): unknown {
 	let value: unknown = root;
-	for (const key of decodePointer(pointer)) {
+	for (const key of decodeJsonPointer(pointer)) {
 		if (!isRecord(value) || !Object.hasOwn(value, key)) return undefined;
 		value = value[key];
 	}
 	return value;
 }
 function pointerSet(root: Record<string, unknown>, pointer: string, value: unknown): void {
-	const parts = decodePointer(pointer);
+	const parts = decodeJsonPointer(pointer);
 	let current = root;
 	for (const key of parts.slice(0, -1)) {
 		const child = current[key];
@@ -137,7 +129,7 @@ function pointerSet(root: Record<string, unknown>, pointer: string, value: unkno
 	current[parts.at(-1)!] = structuredClone(value);
 }
 function pointerDelete(root: Record<string, unknown>, pointer: string): void {
-	const parts = decodePointer(pointer);
+	const parts = decodeJsonPointer(pointer);
 	const parents: [Record<string, unknown>, string][] = [];
 	let current = root;
 	for (const key of parts.slice(0, -1)) {
@@ -179,13 +171,13 @@ function managedBlock(
 		end === -1 ? "" : existing.slice(end + output.endMarker.length).replace(/^\r?\n/, "");
 	const without = start === -1 ? existing : existing.slice(0, start) + suffix;
 	if (remove) return without.replace(/\s+$/, existing.endsWith("\n") ? "\n" : "");
-	const content = output.content === "{{resource:pi/AGENTS.md}}" ? body.trim() : output.content;
+	const content = output.content === INSTRUCTIONS_RESOURCE_REF ? body.trim() : output.content;
 	const block = `${output.beginMarker}\n${content}\n${output.endMarker}\n`;
 	return without.trim() ? `${without.trimEnd()}\n\n${block}` : block;
 }
 
 function sourceFor(component: ComponentDefinition, sourceRoot: string): string | undefined {
-	const resource = component.resources.find((item) => item.kind !== "external");
+	const resource = primaryResource(component);
 	return resource ? resolveContainedPath(sourceRoot, resource.path) : undefined;
 }
 
@@ -225,7 +217,7 @@ async function desiredSettings(
 		selected.has("pi-package:mcp-adapter") || managed.has("pi-package:mcp-adapter");
 	const legacyAdapterSources = new Set(["./packages/pi-mcp-adapter", "packages/pi-mcp-adapter"]);
 	const unrelated = entries.filter((entry) => {
-		if (entry === "npm:pi-mcp-adapter@2.15.0") return !managesAdapter;
+		if (entry === MCP_ADAPTER_REF) return !managesAdapter;
 		if (typeof entry === "string") {
 			return !managesAdapter || !legacyAdapterSources.has(entry.replaceAll("\\", "/"));
 		}
@@ -245,7 +237,7 @@ async function desiredSettings(
 			prompts: [...new Set(filters.prompts)].sort(),
 			themes: [...new Set(filters.themes)].sort(),
 		});
-	if (managed.has("pi-package:mcp-adapter")) unrelated.push("npm:pi-mcp-adapter@2.15.0");
+	if (managed.has("pi-package:mcp-adapter")) unrelated.push(MCP_ADAPTER_REF);
 	if (unrelated.length > 0) settings.packages = unrelated;
 	else delete settings.packages;
 	return json(settings);
@@ -298,64 +290,82 @@ async function buildPlan(
 		for (const output of component.outputs) {
 			const path = resolveContainedPath(roots.home, output.destination);
 			await validateDestination(roots.home, path, roots.sourceRoot);
-			if (output.destination === ".pi/agent/settings.json") continue;
-			if (output.strategy === "copy")
-				setDesired(
-					path,
-					operation === "install" ? await snapshot(source!) : { kind: "absent" },
-					component.id,
-				);
-			else if (output.strategy === "owned-json") {
-				const target = desired.get(path);
-				const current =
-					target?.kind === "file"
-						? (JSON.parse(target.data.toString()) as Record<string, unknown>)
-						: await parseObject(path);
-				const sourceJson = await parseObject(source!, false);
-				for (const pointer of output.pointers) {
-					if (operation === "install")
-						pointerSet(current, pointer, pointerGet(sourceJson, pointer));
-					else pointerDelete(current, pointer);
-				}
-				setDesired(path, { kind: "file", data: json(current), mode: 0o600 }, component.id);
-			} else if (output.strategy === "managed-block") {
-				let existingText = "";
-				try {
-					existingText = (await readFile(path)).toString("utf8");
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				}
-				const body = (await readFile(source!)).toString("utf8");
-				const result = managedBlock(existingText, output, body, operation === "remove");
-				setDesired(
-					path,
-					result ? { kind: "file", data: Buffer.from(result), mode: 0o644 } : { kind: "absent" },
-					component.id,
-				);
-			} else if (output.strategy === "cursor-hook") {
-				const config = await parseObject(path);
-				const hooks = config.hooks ?? (config.hooks = {});
-				if (!isRecord(hooks))
-					throw new AgentsError("malformed-config", "Cursor hooks must be an object.");
-				const entries = hooks[output.event] ?? [];
-				if (!Array.isArray(entries))
-					throw new AgentsError("malformed-config", "Cursor hook event must be an array.");
-				const command = `node ${JSON.stringify(resolveContainedPath(roots.home, output.scriptDestination))}`;
-				const legacyScripts = (output.legacyScriptDestinations ?? []).map((destination) =>
-					resolveContainedPath(roots.home, destination),
-				);
-				const kept = entries.filter((entry) => {
-					if (!isRecord(entry) || typeof entry.command !== "string") return true;
-					const entryCommand = entry.command;
-					return (
-						entryCommand !== command &&
-						!legacyScripts.some((script) => entryCommand.includes(script))
+			switch (output.strategy) {
+				case "copy":
+					setDesired(
+						path,
+						operation === "install" ? await snapshot(source!) : { kind: "absent" },
+						component.id,
 					);
-				});
-				if (operation === "install") kept.push({ command });
-				if (kept.length) hooks[output.event] = kept;
-				else delete hooks[output.event];
-				setDesired(path, { kind: "file", data: json(config), mode: 0o600 }, component.id);
+					break;
+				case "owned-json": {
+					const target = desired.get(path);
+					const current =
+						target?.kind === "file"
+							? (JSON.parse(target.data.toString()) as Record<string, unknown>)
+							: await parseObject(path);
+					const sourceJson = await parseObject(source!, false);
+					for (const pointer of output.pointers) {
+						if (operation === "install")
+							pointerSet(current, pointer, pointerGet(sourceJson, pointer));
+						else pointerDelete(current, pointer);
+					}
+					setDesired(path, { kind: "file", data: json(current), mode: 0o600 }, component.id);
+					break;
+				}
+				case "managed-block": {
+					let existingText = "";
+					try {
+						existingText = (await readFile(path)).toString("utf8");
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					}
+					const body = (await readFile(source!)).toString("utf8");
+					const result = managedBlock(existingText, output, body, operation === "remove");
+					setDesired(
+						path,
+						result ? { kind: "file", data: Buffer.from(result), mode: 0o644 } : { kind: "absent" },
+						component.id,
+					);
+					break;
+				}
+				case "cursor-hook": {
+					const config = await parseObject(path);
+					const hooks = config.hooks ?? (config.hooks = {});
+					if (!isRecord(hooks))
+						throw new AgentsError("malformed-config", "Cursor hooks must be an object.");
+					const entries = hooks[output.event] ?? [];
+					if (!Array.isArray(entries))
+						throw new AgentsError("malformed-config", "Cursor hook event must be an array.");
+					const command = `node ${JSON.stringify(resolveContainedPath(roots.home, output.scriptDestination))}`;
+					const legacyScripts = (output.legacyScriptDestinations ?? []).map((destination) =>
+						resolveContainedPath(roots.home, destination),
+					);
+					const kept = entries.filter((entry) => {
+						if (!isRecord(entry) || typeof entry.command !== "string") return true;
+						const entryCommand = entry.command;
+						return (
+							entryCommand !== command &&
+							!legacyScripts.some((script) => entryCommand.includes(script))
+						);
+					});
+					if (operation === "install") kept.push({ command });
+					if (kept.length) hooks[output.event] = kept;
+					else delete hooks[output.event];
+					setDesired(path, { kind: "file", data: json(config), mode: 0o600 }, component.id);
+					break;
+				}
+				case "pi-package-filter":
+				case "pi-package-setting":
+					// Merged into .pi/agent/settings.json; planned by desiredSettings.
+					break;
+				default: {
+					const exhaustive: never = output;
+					throw new AgentsError(
+						"invalid-component",
+						`Unhandled output strategy: ${JSON.stringify(exhaustive)}`,
+					);
+				}
 			}
 		}
 		for (const legacy of component.legacyPaths ?? [])

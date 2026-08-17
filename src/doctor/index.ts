@@ -69,16 +69,15 @@ async function commandExists(command: string, context: DoctorContext): Promise<b
 }
 
 export async function runDoctor(context: DoctorContext): Promise<DoctorReport> {
-	const options = context;
 	const started = Date.now();
 	const checks: DoctorCheck[] = [];
-	const nodeVersion = options.nodeVersion ?? process.version;
+	const nodeVersion = context.nodeVersion ?? process.version;
 	checks.push({
 		id: "runtime:node",
 		status: atLeast(nodeVersion, [22, 19, 0]) ? "ok" : "error",
 		message: `Node ${nodeVersion} ${atLeast(nodeVersion, [22, 19, 0]) ? "is supported" : "is unsupported"}.`,
 	});
-	const piVersion = options.piVersion;
+	const piVersion = context.piVersion;
 	if (piVersion === null)
 		checks.push({ id: "runtime:pi", status: "warning", message: "Pi was not found." });
 	else if (piVersion !== undefined)
@@ -87,14 +86,16 @@ export async function runDoctor(context: DoctorContext): Promise<DoctorReport> {
 			status: atLeast(piVersion, [0, 83, 0]) ? "ok" : "error",
 			message: `Pi ${piVersion} ${atLeast(piVersion, [0, 83, 0]) ? "is supported" : "is unsupported"}.`,
 		});
-	else
+	else {
+		const piAvailable = await commandExists("pi", context);
 		checks.push({
 			id: "runtime:pi",
-			status: (await commandExists("pi", options)) ? "ok" : "warning",
-			message: (await commandExists("pi", options))
+			status: piAvailable ? "ok" : "warning",
+			message: piAvailable
 				? "Pi command is available; version was not supplied."
 				: "Pi was not found.",
 		});
+	}
 	try {
 		const info = await lstat(resolve(context.sourceRoot));
 		if (!info.isDirectory() || info.isSymbolicLink()) throw new Error();
@@ -153,7 +154,7 @@ export async function runDoctor(context: DoctorContext): Promise<DoctorReport> {
 		details: journals,
 	});
 	for (const command of ["npx", "typescript-language-server", "claude", "codex", "opencode"]) {
-		const exists = await commandExists(command, options);
+		const exists = await commandExists(command, context);
 		const required = command === "npx" || command === "typescript-language-server";
 		checks.push({
 			id: `command:${command}`,
@@ -163,7 +164,7 @@ export async function runDoctor(context: DoctorContext): Promise<DoctorReport> {
 	}
 	const durationMs = Date.now() - started;
 	const healthy = !checks.some(({ status }) => status === "error");
-	options.emit?.({
+	context.emit?.({
 		name: "agents.doctor",
 		count: checks.length,
 		durationMs,

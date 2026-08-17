@@ -11,6 +11,10 @@ import type {
 const NODE: Requirement = { kind: "runtime", runtime: "node", range: ">=22.19.0" };
 const PI: Requirement = { kind: "runtime", runtime: "pi", range: ">=0.83.0" };
 
+export const MCP_ADAPTER = { name: "pi-mcp-adapter", version: "2.15.0" } as const;
+export const MCP_ADAPTER_REF = `npm:${MCP_ADAPTER.name}@${MCP_ADAPTER.version}`;
+export const INSTRUCTIONS_RESOURCE_REF = "{{resource:pi/AGENTS.md}}";
+
 const moduleRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const repositoryRoot = basename(moduleRoot) === "dist" ? resolve(moduleRoot, "..") : moduleRoot;
 const localPiConfigRoot = resolve(repositoryRoot, "pi/config");
@@ -42,7 +46,6 @@ const extensions = [
 	["minimal-mode", "minimal-mode.ts"],
 	["plan-mode", "plan-mode/index.ts"],
 	["proactive-compaction", "proactive-compaction.ts"],
-	["prompt-autocomplete", "prompt-autocomplete.ts"],
 	["publish", "publish.ts"],
 	["pull", "pull.ts"],
 	["question", "question.ts"],
@@ -91,8 +94,6 @@ function extensionDependencies(slug: string): ComponentId[] {
 			return ["pi-extension:subagent"];
 		case "plan-mode":
 			return ["skill:foreman-plan"];
-		case "prompt-autocomplete":
-			return ["pi-extension:utility-model"];
 		default:
 			return [];
 	}
@@ -112,7 +113,7 @@ const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entryp
 
 const instructionBegin = "<!-- agents:instructions:begin -->";
 const instructionEnd = "<!-- agents:instructions:end -->";
-const block = (destination: string, content = "{{resource:pi/AGENTS.md}}") => ({
+const block = (destination: string, content = INSTRUCTIONS_RESOURCE_REF) => ({
 	strategy: "managed-block" as const,
 	destination,
 	beginMarker: instructionBegin,
@@ -142,20 +143,20 @@ const otherComponents: ComponentDefinition[] = [
 		category: "pi-package",
 		label: "MCP Adapter",
 		description: "Pinned Pi MCP runtime adapter.",
-		resources: [{ path: "npm:pi-mcp-adapter@2.15.0", kind: "external" }],
+		resources: [{ path: MCP_ADAPTER_REF, kind: "external" }],
 		outputs: [
 			{
 				strategy: "pi-package-setting",
 				destination: ".pi/agent/settings.json",
-				source: "npm:pi-mcp-adapter@2.15.0",
+				source: MCP_ADAPTER_REF,
 			},
 		],
 		dependsOn: [],
 		requirements: [
 			{
 				kind: "package",
-				name: "pi-mcp-adapter",
-				version: "2.15.0",
+				name: MCP_ADAPTER.name,
+				version: MCP_ADAPTER.version,
 				integrity:
 					"sha512-HJAVt2I5IB52pKpSUYbVJnzOmuXYBCc/ZrI9ylHxYQWmE7p75j7aWzsHe734EFN+gL7WaM23CTX3eYHz2THKBA==",
 				license: "MIT",

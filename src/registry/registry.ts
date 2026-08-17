@@ -175,7 +175,7 @@ export async function validateRegistry(
 	}
 }
 
-function compareComponents(a: ComponentDefinition, b: ComponentDefinition): number {
+export function compareComponents(a: ComponentDefinition, b: ComponentDefinition): number {
 	return (
 		a.category.localeCompare(b.category) ||
 		a.label.localeCompare(b.label) ||

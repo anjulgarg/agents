@@ -1,13 +1,10 @@
 import { readFile as nodeReadFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ComponentId, ReadOnlyFileSystem, ReceiptInspection } from "../domain/contracts.ts";
+import { isRecord } from "../domain/util.ts";
 
 const componentIdPattern =
 	/^(?:skill|pi-extension|pi-config|pi-package|pi-prompt|pi-theme|pi-team|instructions|harness):[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function malformed(path: string, warning: string): ReceiptInspection {
 	return {

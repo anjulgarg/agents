@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import React from "react";
 import { render } from "ink";
 import type { ComponentId, InspectionContext } from "../domain/contracts.ts";
-import { components, resolveProfile } from "../registry/index.ts";
+import { compareComponents, components, resolveProfile } from "../registry/index.ts";
 import { App } from "../ui/App.ts";
 import type { AgentsUiServices, OperationPlanView } from "../ui/contracts.ts";
 import { renderError, renderList, renderPreview, renderResult } from "../ui/presenters.ts";
@@ -44,12 +44,7 @@ function operationSelection(
 	}
 	return components
 		.filter(({ id }) => selected.has(id))
-		.sort(
-			(a, b) =>
-				a.category.localeCompare(b.category) ||
-				a.label.localeCompare(b.label) ||
-				a.id.localeCompare(b.id),
-		)
+		.sort(compareComponents)
 		.map(({ id }) => id);
 }
 

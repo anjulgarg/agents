@@ -31,16 +31,22 @@ export function renderMinimumWidth(width: number): string {
 	return `Terminal too narrow (${width} columns). agents requires at least ${MINIMUM_WIDTH} columns.`;
 }
 
-export function renderDashboard(width: number): string {
+export const DASHBOARD_ITEMS = [
+	{ command: "install", label: "Install", hint: "Configure selected components" },
+	{ command: "remove", label: "Remove", hint: "Remove managed components safely" },
+	{ command: "list", label: "Installed Components", hint: "Inspect all component states" },
+	{ command: "doctor", label: "Doctor", hint: "Diagnose local configuration" },
+] as const;
+
+export function renderDashboard(width: number, focus = 0): string {
 	if (width < MINIMUM_WIDTH) return renderMinimumWidth(width);
 	return linesAtWidth(
 		[
 			"agents | Local agent configuration",
 			"",
-			"> Install                 Configure selected components",
-			"  Remove                  Remove managed components safely",
-			"  Installed Components    Inspect all component states",
-			"  Doctor                  Diagnose local configuration",
+			...DASHBOARD_ITEMS.map(
+				(item, index) => `${focus === index ? ">" : " "} ${item.label.padEnd(24)}${item.hint}`,
+			),
 			"",
 			"Keys: ↑/↓ move • Enter open • Esc cancel • Ctrl+C quit",
 		],

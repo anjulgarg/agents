@@ -15,13 +15,14 @@ import type {
 	SystemInspection,
 	UnmanagedSkillInspection,
 } from "../domain/contracts.ts";
-import { components } from "../registry/catalog.ts";
+import { components, INSTRUCTIONS_RESOURCE_REF } from "../registry/catalog.ts";
 import {
 	resolveContainedPath,
 	resolveDestination,
 	resolveSource,
 } from "../registry/destinations.ts";
 import { readReceipt } from "./receipt.ts";
+import { decodeJsonPointer, isRecord, primaryResource } from "../domain/util.ts";
 
 function defaultFileSystem(): ReadOnlyFileSystem {
 	return {
@@ -29,10 +30,6 @@ function defaultFileSystem(): ReadOnlyFileSystem {
 		readdir: (path) => nodeReaddir(path, { withFileTypes: true }),
 		lstat: nodeLstat,
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseJson(bytes: Uint8Array): Record<string, unknown> | undefined {
@@ -47,9 +44,8 @@ function parseJson(bytes: Uint8Array): Record<string, unknown> | undefined {
 function jsonPointer(value: unknown, pointer: string): unknown {
 	if (pointer === "") return value;
 	let current = value;
-	for (const encoded of pointer.slice(1).split("/")) {
+	for (const segment of decodeJsonPointer(pointer)) {
 		if (!isRecord(current)) return undefined;
-		const segment = encoded.replaceAll("~1", "/").replaceAll("~0", "~");
 		if (!Object.hasOwn(current, segment)) return undefined;
 		current = current[segment];
 	}
@@ -255,8 +251,7 @@ function managedContent(
 	output: Extract<OutputDefinition, { strategy: "managed-block" }>,
 	instructions: string,
 ): string {
-	const body =
-		output.content === "{{resource:pi/AGENTS.md}}" ? instructions.trim() : output.content;
+	const body = output.content === INSTRUCTIONS_RESOURCE_REF ? instructions.trim() : output.content;
 	return `${output.beginMarker}\n${body}\n${output.endMarker}`;
 }
 
@@ -343,7 +338,7 @@ async function inspectOutput(
 	output: OutputDefinition,
 ): Promise<OutputInspection> {
 	const path = resolveDestination(context.home, output);
-	const sourceResource = component.resources.find((resource) => resource.kind !== "external");
+	const sourceResource = primaryResource(component);
 	const source = sourceResource ? resolveSource(context.sourceRoot, sourceResource.path) : "";
 	switch (output.strategy) {
 		case "copy":
@@ -367,8 +362,8 @@ async function inspectLegacy(
 	component: ComponentDefinition,
 ): Promise<readonly OutputInspection[]> {
 	if (!component.legacyPaths?.length) return [];
-	const sourceResource = component.resources[0];
-	if (!sourceResource || sourceResource.kind === "external") return [];
+	const sourceResource = primaryResource(component);
+	if (!sourceResource) return [];
 	const source = resolveSource(context.sourceRoot, sourceResource.path);
 	const results: OutputInspection[] = [];
 	for (const legacyPath of component.legacyPaths) {
