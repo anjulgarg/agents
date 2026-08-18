@@ -135,6 +135,9 @@ export function registerJobsExtension(
 		},
 	};
 	const manager = options.createManager?.(managerOptions) ?? new JobManager(managerOptions);
+	// Once a job has been used on this branch, management tools stay active across
+	// repeated lifecycle restoration even when the manager already has the records.
+	let managementToolsActivated = false;
 	let activityPanel: BottomPanel | undefined;
 	let activitySection: BottomPanelSectionHandle | undefined;
 
@@ -190,23 +193,29 @@ export function registerJobsExtension(
 	const toolCleanup = registerJobTools(pi, manager, {
 		isDirectory: options.isDirectory,
 		onJobStarted: (job) => {
+			managementToolsActivated = true;
 			options.onJobStarted?.(job);
 			syncActivityPanel();
 		},
 	});
 	const unsubscribeManager = manager.subscribe?.(syncActivityPanel);
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		clearActivityPanel();
 		useActivityContext(ctx);
-		const restored = manager.restore(latestJobRecords(ctx));
+		if (event.reason === "new" || event.reason === "fork") managementToolsActivated = false;
+		const records = latestJobRecords(ctx);
+		const restored = manager.restore(records);
+		if (restored || records.length > 0) managementToolsActivated = true;
 		syncActivityPanel();
 		const active = pi
 			.getActiveTools()
 			.filter(
 				(name) => !JOB_MANAGEMENT_TOOLS.includes(name as (typeof JOB_MANAGEMENT_TOOLS)[number]),
 			);
-		pi.setActiveTools([...new Set([...active, "job", ...(restored ? JOB_MANAGEMENT_TOOLS : [])])]);
+		pi.setActiveTools([
+			...new Set([...active, "job", ...(managementToolsActivated ? JOB_MANAGEMENT_TOOLS : [])]),
+		]);
 	});
 
 	pi.on("before_agent_start", () => {

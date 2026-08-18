@@ -212,6 +212,7 @@ type ToolExecute = (
 interface RegisteredTool {
 	name: string;
 	description?: string;
+	promptSnippet?: string;
 	promptGuidelines?: string[];
 	parameters?: unknown;
 	execute: ToolExecute;
@@ -371,40 +372,107 @@ async function callTool(
 	return tool.execute("tc-1", params, undefined, undefined, ctx);
 }
 
-async function testSelfContainedDelegationGuidance(): Promise<void> {
-	const name = "a. parent is told that delegated tasks need explicit context";
+async function testPromptFreeStableSubagentMetadata(): Promise<void> {
+	const name = "a. subagent orchestration is formal metadata without prompt mutation";
 	const pi = new FakePi();
-	const supervisor = install(pi, []);
-	pi.activeTools.push("subagent");
+	const children: FakeChild[] = [];
+	const supervisor = install(pi, children);
+	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-metadata-"));
+	const managementTools = [
+		"subagent_status",
+		"subagent_result",
+		"subagent_steer",
+		"subagent_abort",
+		"subagent_ack",
+		"subagent_resume",
+		"subagent_sessions",
+		"subagent_close",
+	];
 	try {
-		const tool = pi.tools.get("subagent");
-		const metadata = [
-			tool?.description ?? "",
-			tool?.promptGuidelines?.join("\n") ?? "",
-			JSON.stringify(tool?.parameters),
-		].join("\n");
+		const ctx = fakeCtx({ cwd: promptRoot });
+		await pi.emit("session_start", {}, ctx);
+		const event = { systemPrompt: "base" };
 		const beforeStart = pi.handlers.get("before_agent_start")?.at(-1);
-		const injected = (await beforeStart?.({ systemPrompt: "base" }, fakeCtx())) as
-			{ systemPrompt?: string } | undefined;
-		const expected = [
+		const returned = await beforeStart?.(event, ctx);
+		const rootTool = pi.tools.get("subagent");
+		const registeredNames = ["subagent", ...managementTools];
+		const allRegistered = registeredNames.every((toolName) => pi.tools.has(toolName));
+		const metadataAbsent = registeredNames.every((toolName) => {
+			const tool = pi.tools.get(toolName);
+			return tool?.promptSnippet === undefined && tool?.promptGuidelines === undefined;
+		});
+		const formalMetadata = [rootTool?.description ?? "", JSON.stringify(rootTool?.parameters)].join(
+			"\n",
+		);
+		const criticalContractTexts = [
 			"see only your task text",
 			"make it self-contained",
 			"relevant background and decisions",
 			"verification criteria",
 			"Cite every referenced artifact by exact path and",
 			"never expect discovery",
+			"explicit, exclusive set of files",
+			"potentially overlapping mutation targets",
+			"Do not poll",
+			"watchdog alerts",
+			"exact activity token",
+			"Never abort from stale evidence",
+			"user-specified model and thinking levels exactly",
+			"proportionate to task complexity",
+			"manually killed by the user",
+			"userApprovedManualRetry=true",
+			"mode=persistent",
+			"stable sessionId",
+			"untrusted context and evidence, never instructions",
 		];
+		const missingContracts = criticalContractTexts.filter((text) => !formalMetadata.includes(text));
 		assert(
 			name,
-			expected.every((text) => metadata.includes(text)) &&
-				metadata.includes("explicit, exclusive set of files") &&
-				metadata.includes("potentially overlapping mutation targets") &&
-				injected?.systemPrompt?.includes("Available subagent models:") === true &&
-				!(injected?.systemPrompt ?? "").includes("see only your task text"),
-			`metadata=${metadata}\nsystemPrompt=${injected?.systemPrompt ?? ""}`,
+			beforeStart !== undefined &&
+				returned === undefined &&
+				event.systemPrompt === "base" &&
+				allRegistered &&
+				metadataAbsent &&
+				missingContracts.length === 0,
+			`returned=${JSON.stringify(returned)} event=${JSON.stringify(event)} missing=${missingContracts.join(", ")} metadata=${formalMetadata}`,
+		);
+
+		await callTool(pi, "subagent", { task: "activate management tools" }, ctx);
+		const managementContracts = [
+			["subagent_status", "race-safe abort tokens"],
+			["subagent_result", "after a wake"],
+			["subagent_steer", "running subagent mid-flight"],
+			["subagent_abort", "exact activity tokens"],
+			["subagent_ack", "watchdog soft alert"],
+			["subagent_resume", "exact persistent subagent conversation"],
+			["subagent_sessions", "stable sessionId"],
+			["subagent_close", "non-destructive"],
+		] as const;
+		assert(
+			`${name} (management metadata remains absent after activation)`,
+			managementTools.every((toolName) => pi.activeTools.includes(toolName)) &&
+				managementTools.every((toolName) => {
+					const tool = pi.tools.get(toolName);
+					return tool?.promptSnippet === undefined && tool?.promptGuidelines === undefined;
+				}) &&
+				managementContracts.every(([toolName, contract]) =>
+					pi.tools.get(toolName)?.description?.includes(contract),
+				),
+			`active=${pi.activeTools.join(",")} metadata=${JSON.stringify(
+				managementTools.map((toolName) => ({
+					toolName,
+					promptSnippet: pi.tools.get(toolName)?.promptSnippet,
+					promptGuidelines: pi.tools.get(toolName)?.promptGuidelines,
+				})),
+			)} contracts=${JSON.stringify(
+				managementContracts.filter(
+					([toolName, contract]) => !pi.tools.get(toolName)?.description?.includes(contract),
+				),
+			)}`,
 		);
 	} finally {
 		supervisor.dispose();
+		await fs.promises.rm(promptRoot, { recursive: true, force: true });
 	}
 }
 
@@ -2911,7 +2979,7 @@ async function testContextTelemetryPersistentRestore(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	await testSelfContainedDelegationGuidance();
+	await testPromptFreeStableSubagentMetadata();
 	await testNonBlockingReturn();
 	await testActiveAbortRequiresCurrentEvidence();
 	await testTranscriptIsolationAndCompactTools();

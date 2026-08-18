@@ -506,7 +506,6 @@ export function registerJobTools(
 			"Never call this in a polling loop and never call it repeatedly to wait for completion;",
 			"completion always arrives as a wake. Take a single snapshot only when a decision depends on it.",
 		].join(" "),
-		promptSnippet: "Take one bounded background job snapshot when a decision needs it",
 		parameters: JobStatusParams,
 
 		async execute(_toolCallId, params) {
@@ -548,7 +547,6 @@ export function registerJobTools(
 			"Bounded captured output and metadata for one job.",
 			"Use it after a completion wake when the parent must inspect what the job produced.",
 		].join(" "),
-		promptSnippet: "Read bounded captured output for one background job",
 		parameters: JobResultParams,
 
 		async execute(_toolCallId, params) {
@@ -588,7 +586,6 @@ export function registerJobTools(
 			"Cancel one running job with a concrete reason.",
 			"Already finished jobs are reported unchanged, so cancelling twice is safe.",
 		].join(" "),
-		promptSnippet: "Cancel a background job with a concrete reason",
 		parameters: JobCancelParams,
 
 		async execute(_toolCallId, params) {

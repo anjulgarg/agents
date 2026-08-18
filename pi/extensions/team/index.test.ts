@@ -235,7 +235,7 @@ const testTeam = {
 	},
 };
 
-function baseRun(overrides: Record<string, unknown> = {}) {
+function baseRun(overrides: Record<string, unknown> = {}): { tasks: any[]; [key: string]: any } {
 	return {
 		id: "team-run-1",
 		teamName: "demo",
@@ -337,7 +337,7 @@ function assert(name: string, condition: boolean, detail: string): void {
 }
 
 async function testTeamToolsFollowActiveRun(): Promise<void> {
-	const name = "0. team tools follow active run";
+	const name = "0. team tools follow active run and remain loaded after cancellation";
 	const pi = new FakePi();
 	pi.activeTools.push("team_plan", "team_retry", "team_complete");
 	install(pi);
@@ -355,7 +355,99 @@ async function testTeamToolsFollowActiveRun(): Promise<void> {
 		fail(name, `active run did not enable required tools: ${pi.activeTools.join(",")}`);
 		return;
 	}
-	pass(name);
+	await pi.commands.get("team-cancel")!.handler(undefined, fakeCtx());
+	assert(
+		name,
+		["team_plan", "team_retry", "team_complete"].every((tool) => pi.activeTools.includes(tool)),
+		`cancellation removed tools: ${pi.activeTools.join(",")}`,
+	);
+}
+
+async function testManagerContextIsHiddenAndAuthoritative(): Promise<void> {
+	const name = "0. manager context is hidden, tail-oriented, and never changes systemPrompt";
+	const pi = new FakePi();
+	install(pi);
+	await seedActiveRun(pi, baseRun());
+	const beforeStart = (
+		await pi.emit("before_agent_start", { systemPrompt: "PARENT SYSTEM PROMPT" }, fakeCtx())
+	)[0] as any;
+	const message = beforeStart?.message;
+	assert(
+		name,
+		beforeStart?.systemPrompt === undefined &&
+			message?.customType === "team-manager-context" &&
+			message?.display === false &&
+			message?.content.includes("AUTHORITATIVE CURRENT SNAPSHOT") &&
+			message?.content.includes("Team-specific manager instructions") &&
+			message?.content.includes("Roster:") &&
+			message?.content.includes("Run ID: team-run-1") &&
+			message?.content.includes("Status: executing") &&
+			message?.content.includes("Goal: ship it") &&
+			message?.content.includes("supersedes every older team-manager-context snapshot") &&
+			!pi.handlers.has("context"),
+		`beforeStart=${JSON.stringify(beforeStart)} contextHandlers=${pi.handlers.get("context")?.length ?? 0}`,
+	);
+}
+
+function testDynamicTeamToolsHaveNoPromptMetadata(): void {
+	const name = "0. dynamic team tools carry formal descriptions without prompt metadata";
+	const pi = new FakePi();
+	install(pi);
+	const failures = ["team_plan", "team_retry", "team_complete"].filter((toolName) => {
+		const tool = pi.tools.get(toolName) as any;
+		return (
+			!tool ||
+			"promptSnippet" in tool ||
+			"promptGuidelines" in tool ||
+			typeof tool.description !== "string" ||
+			tool.description.length === 0
+		);
+	});
+	assert(name, failures.length === 0, `metadata failures=${failures.join(",")}`);
+}
+
+async function testInactiveTeamToolsStillReject(): Promise<void> {
+	const name = "0. loaded team tools still reject inactive calls through runtime checks";
+	const pi = new FakePi();
+	install(pi);
+	await pi.emit("session_start", {}, fakeCtx());
+	const calls: Array<[string, any]> = [
+		["team_plan", { summary: "plan", tasks: [] }],
+		["team_retry", { taskIds: ["task"], reason: "retry" }],
+		["team_complete", { success: false, summary: "stop" }],
+	];
+	const failures: string[] = [];
+	for (const [toolName, params] of calls) {
+		try {
+			await pi.tools.get(toolName)!.execute("inactive", params, undefined, undefined, fakeCtx());
+			failures.push(`${toolName} unexpectedly succeeded`);
+		} catch {}
+	}
+	assert(name, failures.length === 0, failures.join(","));
+}
+
+async function testTeamRestorePrefersActiveBranch(): Promise<void> {
+	const name = "0. team restoration uses only branch-visible state";
+	const pi = new FakePi();
+	install(pi);
+	const state = { type: "custom", customType: "team-state", data: { run: baseRun() } };
+	const sessionManager = {
+		getBranch: () => [] as any[],
+		getEntries: () => [state],
+	};
+	await pi.emit("session_start", {}, fakeCtx({ sessionManager }));
+	assert(
+		`${name} (abandoned history ignored)`,
+		!["team_plan", "team_retry", "team_complete"].some((tool) => pi.activeTools.includes(tool)),
+		pi.activeTools.join(","),
+	);
+	sessionManager.getBranch = () => [state];
+	await pi.emit("session_start", {}, fakeCtx({ sessionManager }));
+	assert(
+		name,
+		["team_plan", "team_retry", "team_complete"].every((tool) => pi.activeTools.includes(tool)),
+		pi.activeTools.join(","),
+	);
 }
 
 async function testUpdateDoneUnblocksDependents(): Promise<void> {
@@ -658,6 +750,54 @@ async function testTeamCompleteRefusesUnfinished(): Promise<void> {
 		name,
 		threw && message.includes("Cannot report success with unfinished tasks"),
 		`threw=${threw} message=${message}`,
+	);
+}
+
+async function testTeamCompletionKeepsToolsAndEmitsMarker(): Promise<void> {
+	const name = "f. completed team keeps tools and emits a deactivation marker";
+	const pi = new FakePi();
+	install(pi);
+	await seedActiveRun(
+		pi,
+		baseRun({
+			tasks: [
+				{ ...baseRun().tasks[0], status: "completed" },
+				{ ...baseRun().tasks[1], status: "completed" },
+				{
+					id: "verify-1",
+					title: "Verify",
+					description: "Verify the work",
+					role: "verifier",
+					dependsOn: ["impl-1"],
+					model: "test/model",
+					thinking: "off",
+					workspace: "shared",
+					status: "completed",
+				},
+			],
+		}),
+	);
+	await pi.tools
+		.get("team_complete")!
+		.execute("tc-success", { success: true, summary: "verified" }, undefined, undefined, fakeCtx());
+	await pi.emit("agent_settled", {}, fakeCtx());
+	const beforeStart = (
+		await pi.emit("before_agent_start", { systemPrompt: "PARENT SYSTEM PROMPT" }, fakeCtx())
+	)[0] as any;
+	const marker = beforeStart?.message;
+	pi.activeTools = pi.activeTools.filter(
+		(tool) => !["team_plan", "team_retry", "team_complete"].includes(tool),
+	);
+	await pi.emit("session_start", {}, fakeCtx({ sessionManager: { getEntries: () => pi.entries } }));
+	assert(
+		name,
+		["team_plan", "team_retry", "team_complete"].every((tool) => pi.activeTools.includes(tool)) &&
+			beforeStart?.systemPrompt === undefined &&
+			marker?.customType === "team-manager-context" &&
+			marker?.display === false &&
+			marker?.content.includes("DEACTIVATED") &&
+			marker?.content.includes("supersedes every older team-manager-context snapshot"),
+		`tools=${pi.activeTools.join(",")} beforeStart=${JSON.stringify(beforeStart)}`,
 	);
 }
 
@@ -1198,6 +1338,10 @@ function testRoleInstructionsValidation(): void {
 
 async function main(): Promise<void> {
 	await testTeamToolsFollowActiveRun();
+	await testManagerContextIsHiddenAndAuthoritative();
+	testDynamicTeamToolsHaveNoPromptMetadata();
+	await testInactiveTeamToolsStillReject();
+	await testTeamRestorePrefersActiveBranch();
 	await testUpdateDoneUnblocksDependents();
 	await testDependencyOutputInjectedIntoPrompt();
 	await testUpdateErrorMarksFailed();
@@ -1206,6 +1350,7 @@ async function main(): Promise<void> {
 	await testSpawnEndErrorFailsUnlinked();
 	await testTeamCancelKillsChildren();
 	await testTeamCompleteRefusesUnfinished();
+	await testTeamCompletionKeepsToolsAndEmitsMarker();
 	await testDashboardKillRunningTask();
 	await testDashboardKillNoopOnCompleted();
 	await testDashboardFootersMatchSubagents();

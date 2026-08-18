@@ -30,6 +30,24 @@ successful collapsed receipts stay hidden until details are expanded.
 MCP configuration and connections remain adapter-managed and lazy. Loading the generic `mcp`
 capability does not connect to a server, expose configuration, or perform an external call.
 
+## Cache-stable parent context
+
+For the first-party parent, the system prompt is immutable after the first provider request. Changes to
+memory, todo, plan-mode, or team state are emitted as hidden authoritative tail messages instead. Each new
+snapshot supersedes older snapshots, while older entries remain in the branch so an unchanged prefix can
+remain reusable for providers that support prefix caching. This is a cache-stability design, not a claim
+that every provider will cache the prefix.
+
+Optional capability state is branch-local. Resume, reload, and fork restore the latest valid state visible on
+the selected branch; a new or empty branch remains lazy until `load_tools` is called. Parent management and
+team tools are monotonic within a branch, but inactive calls remain runtime-guarded and are rejected when
+their current state is not valid.
+
+Native deferred tool loading can preserve a prefix only when prompt metadata is unchanged. Fallback providers
+may invalidate or rebuild cache when schemas are added. Prompt metadata supplied by an external MCP adapter is
+adapter-owned and outside this guarantee. Subagent child initial prompts and isolated utility completions use
+separate provider requests and are outside the parent invariant.
+
 ## Passive activity
 
 Long-running work displays a fixed `Working` status with bounded elapsed time and activity counts

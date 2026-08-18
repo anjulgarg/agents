@@ -3,6 +3,8 @@ import toolLoaderExtension, {
 	CAPABILITIES,
 	LOAD_TOOLS_COMMAND,
 	LOAD_TOOLS_NAME,
+	TOOL_LOADER_STATE_ENTRY_TYPE,
+	TOOL_LOADER_STATE_VERSION,
 	loadCapability,
 	resetOptionalTools,
 } from "../tool-loader.ts";
@@ -34,6 +36,9 @@ interface Harness {
 	readonly commands: Map<string, any>;
 	readonly handlers: Map<string, Array<(event: any, ctx: any) => any>>;
 	readonly notifications: Array<{ message: string; level: string }>;
+	readonly entries: Array<{ customType: string; data: any }>;
+	get branch(): any[];
+	set branch(value: any[]);
 	get activeTools(): string[];
 	set activeTools(value: string[]);
 	get setCalls(): string[][];
@@ -47,11 +52,14 @@ function createHarness(
 		"job_status",
 		...registeredCapabilities,
 	],
+	initialBranch: readonly any[] = [],
 ): Harness {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, any>();
 	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
 	const notifications: Array<{ message: string; level: string }> = [];
+	const entries: Array<{ customType: string; data: any }> = [];
+	let branch = [...initialBranch];
 	let active = [...initialActive];
 	const setCalls: string[][] = [];
 	const pi = {
@@ -79,6 +87,10 @@ function createHarness(
 				...registeredCapabilities.map((name) => ({ name, description: `${name} capability` })),
 			];
 		},
+		appendEntry(customType: string, data: any) {
+			entries.push({ customType, data });
+			branch = [...branch, { type: "custom", customType, data }];
+		},
 	};
 	toolLoaderExtension(pi as never);
 	return {
@@ -87,6 +99,13 @@ function createHarness(
 		commands,
 		handlers,
 		notifications,
+		entries,
+		get branch() {
+			return [...branch];
+		},
+		set branch(value: any[]) {
+			branch = [...value];
+		},
 		get activeTools() {
 			return [...active];
 		},
@@ -100,7 +119,8 @@ function createHarness(
 }
 
 function emit(harness: Harness, event: string): void {
-	for (const handler of harness.handlers.get(event) ?? []) handler({}, {});
+	const context = { sessionManager: { getBranch: () => harness.branch } };
+	for (const handler of harness.handlers.get(event) ?? []) handler({}, context);
 }
 
 const fresh = createHarness();
@@ -150,15 +170,25 @@ assert(
 		fresh.activeTools.includes(LOAD_TOOLS_NAME),
 	JSON.stringify({ details: loaded.details, active: fresh.activeTools }),
 );
+assert(
+	"loading persists one context-free cumulative capability state entry",
+	fresh.entries.length === 1 &&
+		fresh.entries[0]?.customType === TOOL_LOADER_STATE_ENTRY_TYPE &&
+		fresh.entries[0]?.data.version === TOOL_LOADER_STATE_VERSION &&
+		JSON.stringify(fresh.entries[0]?.data.loaded) === JSON.stringify(["mcp"]),
+	JSON.stringify(fresh.entries),
+);
 
 const beforeRepeat = [...fresh.activeTools];
+const beforeRepeatEntries = fresh.entries.length;
 const active = await mcp.execute("load-2", { capability: "mcp" });
 assert(
 	"loading an active capability is idempotent",
 	active.details.status === "active" &&
 		active.content[0]?.text.includes("already active") &&
-		JSON.stringify(fresh.activeTools) === JSON.stringify(beforeRepeat),
-	JSON.stringify({ details: active.details, active: fresh.activeTools }),
+		JSON.stringify(fresh.activeTools) === JSON.stringify(beforeRepeat) &&
+		fresh.entries.length === beforeRepeatEntries,
+	JSON.stringify({ details: active.details, active: fresh.activeTools, entries: fresh.entries }),
 );
 
 const batch = createHarness([], [...DEFAULT_TOOLS, "subagent_status", "job_status", "load_tools"]);
@@ -169,8 +199,13 @@ assert(
 	"a batch request loads multiple capabilities with one active-set update",
 	batchResult.details.results.length === 3 &&
 		batchResult.details.results.every((result: any) => result.status === "unavailable") &&
-		batch.setCalls.length === 0,
-	JSON.stringify({ details: batchResult.details, setCalls: batch.setCalls }),
+		batch.setCalls.length === 0 &&
+		batch.entries.length === 0,
+	JSON.stringify({
+		details: batchResult.details,
+		setCalls: batch.setCalls,
+		entries: batch.entries,
+	}),
 );
 const installedBatch = createHarness(
 	["mcp", "subagent", "handoff"],
@@ -185,8 +220,15 @@ assert(
 	"a batch request activates every available capability atomically",
 	installedBatchResult.details.results.every((result: any) => result.status === "loaded") &&
 		installedBatch.setCalls.length === 1 &&
-		["mcp", "subagent", "handoff"].every((name) => installedBatch.activeTools.includes(name)),
-	JSON.stringify({ details: installedBatchResult.details, setCalls: installedBatch.setCalls }),
+		["mcp", "subagent", "handoff"].every((name) => installedBatch.activeTools.includes(name)) &&
+		installedBatch.entries.length === 1 &&
+		JSON.stringify(installedBatch.entries[0]?.data.loaded) ===
+			JSON.stringify(["mcp", "subagent", "handoff"]),
+	JSON.stringify({
+		details: installedBatchResult.details,
+		setCalls: installedBatch.setCalls,
+		entries: installedBatch.entries,
+	}),
 );
 
 const missing = createHarness(["mcp", "subagent", "handoff"]);
@@ -325,18 +367,89 @@ assert(
 	JSON.stringify({ statuses, active: allCapabilities.activeTools }),
 );
 
+const stateMcp = {
+	type: "custom",
+	customType: TOOL_LOADER_STATE_ENTRY_TYPE,
+	data: { version: TOOL_LOADER_STATE_VERSION, loaded: ["mcp"] },
+};
+const stateBoth = {
+	type: "custom",
+	customType: TOOL_LOADER_STATE_ENTRY_TYPE,
+	data: { version: TOOL_LOADER_STATE_VERSION, loaded: ["mcp", "handoff"] },
+};
+const persisted = createHarness(
+	["mcp", "handoff"],
+	[...DEFAULT_TOOLS, "subagent_status", "job_status", LOAD_TOOLS_NAME],
+	[
+		stateMcp,
+		stateBoth,
+		{
+			type: "custom",
+			customType: TOOL_LOADER_STATE_ENTRY_TYPE,
+			data: { version: 99, loaded: ["mcp"] },
+		},
+		{
+			type: "custom",
+			customType: TOOL_LOADER_STATE_ENTRY_TYPE,
+			data: { version: TOOL_LOADER_STATE_VERSION, loaded: ["unknown"] },
+		},
+	],
+);
+emit(persisted, "session_start");
+assert(
+	"session startup restores the latest valid branch state and ignores invalid entries",
+	persisted.activeTools.includes("mcp") &&
+		persisted.activeTools.includes("handoff") &&
+		persisted.activeTools.includes(LOAD_TOOLS_NAME),
+	persisted.activeTools.join(","),
+);
+persisted.branch = [
+	stateMcp,
+	{
+		type: "custom",
+		customType: TOOL_LOADER_STATE_ENTRY_TYPE,
+		data: { version: 2, loaded: ["handoff"] },
+	},
+];
+emit(persisted, "session_tree");
+assert(
+	"session tree restore follows the selected branch instead of leaked history",
+	persisted.activeTools.includes("mcp") &&
+		!persisted.activeTools.includes("handoff") &&
+		persisted.activeTools.includes(LOAD_TOOLS_NAME),
+	persisted.activeTools.join(","),
+);
+persisted.branch = [];
+emit(persisted, "session_tree");
+assert(
+	"new and empty branches remain lazy",
+	!CAPABILITIES.some((name) => persisted.activeTools.includes(name)) &&
+		persisted.activeTools.includes(LOAD_TOOLS_NAME),
+	persisted.activeTools.join(","),
+);
+emit(persisted, "session_shutdown");
+
 const replacement = createHarness();
 emit(replacement, "session_start");
 await replacement.tools.get(LOAD_TOOLS_NAME).execute("replacement-1", { capability: "handoff" });
 await replacement.tools.get(LOAD_TOOLS_NAME).execute("replacement-2", { capability: "mcp" });
 emit(replacement, "session_start");
 assert(
-	"a replacement session resets optional roots but keeps the loader active",
-	!CAPABILITIES.some((name) => replacement.activeTools.includes(name)) &&
+	"a resumed session restores additive optional roots while keeping the loader active",
+	["mcp", "handoff"].every((name) => replacement.activeTools.includes(name)) &&
 		replacement.activeTools.filter((name) => name === LOAD_TOOLS_NAME).length === 1 &&
 		DEFAULT_TOOLS.every((name) => replacement.activeTools.includes(name)),
 	replacement.activeTools.join(","),
 );
+replacement.branch = [];
+emit(replacement, "session_start");
+assert(
+	"an empty replacement branch resets optional roots lazily",
+	!CAPABILITIES.some((name) => replacement.activeTools.includes(name)) &&
+		replacement.activeTools.includes(LOAD_TOOLS_NAME),
+	replacement.activeTools.join(","),
+);
+emit(replacement, "session_shutdown");
 
 const directReset = createHarness([], ["read", "mcp", "subagent_status", "load_tools"]);
 resetOptionalTools(directReset.pi);

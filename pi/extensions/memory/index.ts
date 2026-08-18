@@ -30,15 +30,16 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+	buildMemoryPrompt,
 	contentRevision,
 	containsSensitiveData,
 	extractText,
-	injectMemoryPrompt,
+	formatMemoryContext,
 	MAX_MEMORY_CHARS,
+	MEMORY_CONTEXT_TYPE,
+	normalizeCandidate,
 	parseMergedMemory,
 	stableRepoId,
-	normalizeCandidate,
-	buildMemoryPrompt,
 	type MemoryBundle,
 	type MemoryScope,
 } from "./core.ts";
@@ -107,19 +108,66 @@ interface MemoryToolDetails {
 	rejected?: boolean;
 }
 
+type MemoryBranchEntry = {
+	type?: unknown;
+	customType?: unknown;
+	content?: unknown;
+	id?: unknown;
+};
+
+interface MemoryContextCache {
+	sessionManager: object;
+	sessionId?: string;
+	branchKey: string;
+	content: string;
+}
+
 const MemoryParams = Type.Object({
 	scope: Type.Union([Type.Literal("global"), Type.Literal("local")], {
-		description: "Where to store the memory: global or local project",
+		description:
+			"Use global for durable preferences or facts that apply across repositories; use local for project-specific decisions, conventions, or facts.",
 	}),
 	content: Type.String({
 		minLength: 1,
 		maxLength: 4_000,
-		description: "Durable guidance or a stable fact to remember",
+		description:
+			"Durable guidance or a stable fact only. Do not save temporary task state, guesses, secrets, credentials, raw conversation, or information already captured by project instructions.",
 	}),
 });
 
 function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function memoryMessageContent(value: unknown): string | undefined {
+	if (typeof value === "string") return value;
+	if (!Array.isArray(value)) return undefined;
+	const text = extractText(value as Array<{ type?: string; text?: unknown }>);
+	return text || undefined;
+}
+
+function memoryBranchKey(entries: MemoryBranchEntry[]): string {
+	return entries
+		.map((entry, index) => {
+			const id = typeof entry.id === "string" ? entry.id : `${index}:${String(entry.type)}`;
+			return `${id}:${String(entry.customType ?? "")}`;
+		})
+		.join("\u0000");
+}
+
+function latestMemorySnapshot(entries: MemoryBranchEntry[]): string | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry?.type !== "custom_message" || entry.customType !== MEMORY_CONTEXT_TYPE) continue;
+		return memoryMessageContent(entry.content);
+	}
+	return undefined;
+}
+
+function sessionId(ctx: ExtensionContext): string | undefined {
+	const manager = ctx.sessionManager as unknown as { getSessionId?: () => unknown };
+	const value = manager.getSessionId?.();
+	return typeof value === "string" ? value : undefined;
 }
 
 function toolResult(
@@ -490,10 +538,34 @@ export function registerMemoryExtension(
 	options: MemoryExtensionOptions = {},
 ): void {
 	const completeMemory = options.complete ?? completeSimple;
-	pi.on("before_agent_start", async (event, ctx) => {
+	let lastMemoryContext: MemoryContextCache | undefined;
+	pi.on("before_agent_start", async (_event, ctx) => {
 		try {
 			const bundle = await readMemoryBundle(ctx.cwd);
-			return { systemPrompt: injectMemoryPrompt(event.systemPrompt, bundle) };
+			const content = formatMemoryContext(bundle);
+			const branch = Array.from(ctx.sessionManager.getBranch()) as MemoryBranchEntry[];
+			const branchKey = memoryBranchKey(branch);
+			const currentSessionId = sessionId(ctx);
+			const alreadyInBranch = latestMemorySnapshot(branch) === content;
+			const alreadyEmitted =
+				lastMemoryContext?.sessionManager === ctx.sessionManager &&
+				lastMemoryContext.sessionId === currentSessionId &&
+				lastMemoryContext.branchKey === branchKey &&
+				lastMemoryContext.content === content;
+			if (alreadyInBranch || alreadyEmitted) return undefined;
+			lastMemoryContext = {
+				sessionManager: ctx.sessionManager,
+				sessionId: currentSessionId,
+				branchKey,
+				content,
+			};
+			return {
+				message: {
+					customType: MEMORY_CONTEXT_TYPE,
+					content,
+					display: false,
+				},
+			};
 		} catch {
 			return undefined;
 		}
@@ -541,13 +613,7 @@ export function registerMemoryExtension(
 		label: "Memory",
 		renderShell: "self",
 		description:
-			"Queue durable guidance or stable facts in global or local project memory. Merging happens in the background.",
-		promptSnippet: "Save durable guidance or stable facts without capturing conversation exchanges",
-		promptGuidelines: [
-			"Use memory with global scope when the user gives durable preferences or facts that should apply across repositories.",
-			"Use memory with local scope when the user gives project-specific decisions, conventions, or facts that should not follow them to other repositories.",
-			"Do not use memory for temporary task state, guesses, secrets, credentials, raw conversation, or information already captured by project instructions.",
-		],
+			"Queue durable guidance or stable facts in global or local project memory; global applies across repositories, while local is for project-specific decisions, conventions, or facts. Merging happens in the background. Do not save temporary task state, guesses, secrets, credentials, raw conversation, or information already captured by project instructions; sensitive-looking content is rejected before queueing.",
 		parameters: MemoryParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -229,18 +229,55 @@ assert(
 	JSON.stringify({ persistedBeforeMutation, listed }),
 );
 
-let prompt = await handlers.get("before_agent_start")?.({ systemPrompt: "base system" }, context());
+const firstPromptEvent = { systemPrompt: "base system" };
+const prompt = await handlers.get("before_agent_start")?.(firstPromptEvent, context());
+const promptMessage = prompt?.message;
+const promptContent = typeof promptMessage?.content === "string" ? promptMessage.content : "";
 assert(
-	"open todos inject an active hidden work queue on every turn",
-	prompt.systemPrompt.includes("#1: First") &&
-		prompt.systemPrompt.includes("#2: Second") &&
-		prompt.systemPrompt.includes("active work queue") &&
-		prompt.systemPrompt.includes("atomic update") &&
-		prompt.systemPrompt.includes("Continue the next unverified item autonomously") &&
-		!prompt.systemPrompt.includes("one at a time") &&
-		!prompt.systemPrompt.includes("do not batch completions"),
-	prompt.systemPrompt,
+	"open todos use a hidden bounded tail message without changing the base system prompt",
+	firstPromptEvent.systemPrompt === "base system" &&
+		prompt?.systemPrompt === undefined &&
+		!Object.prototype.hasOwnProperty.call(prompt ?? {}, "systemPrompt") &&
+		promptMessage?.customType === "todo-context" &&
+		promptMessage.display === false &&
+		promptContent.includes("#1: First") &&
+		promptContent.includes("#2: Second") &&
+		promptContent.includes("active work queue (bounded)") &&
+		promptContent.includes("supersedes all older todo snapshots") &&
+		promptContent.includes("atomic update") &&
+		promptContent.includes("Continue the next unverified item autonomously") &&
+		!promptContent.includes("one at a time") &&
+		!promptContent.includes("do not batch completions"),
+	JSON.stringify({ firstPromptEvent, prompt }),
 );
+const duplicatePrompt = await handlers.get("before_agent_start")?.(
+	{ systemPrompt: "base system" },
+	context(),
+);
+assert(
+	"unchanged todo state does not append a duplicate context tail",
+	duplicatePrompt === undefined,
+	JSON.stringify(duplicatePrompt),
+);
+const changedTodo = await run("edit", { id: 1, text: "First revised" });
+const changedPrompt = await handlers.get("before_agent_start")?.(
+	{ systemPrompt: "base system" },
+	context(),
+);
+const changedContent =
+	typeof changedPrompt?.message?.content === "string" ? changedPrompt.message.content : "";
+assert(
+	"changed todo state appends a superseding context tail while retaining older snapshots",
+	changedTodo.details.todos[0].text === "First revised" &&
+		changedPrompt?.message?.customType === "todo-context" &&
+		changedContent.includes("#1: First revised") &&
+		changedContent.includes("supersedes all older todo snapshots") &&
+		promptContent.includes("#1: First") &&
+		changedContent !== promptContent,
+	JSON.stringify({ promptContent, changedContent, changedPrompt }),
+);
+await run("edit", { id: 1, text: "First" });
+await handlers.get("before_agent_start")?.({ systemPrompt: "base system" }, context());
 
 await handlers.get("agent_settled")?.({}, context());
 assert(
@@ -329,6 +366,20 @@ assert(
 		finalCompletion.details.todos.every((todo: any) => todo.status === "done") &&
 		widgetFactory === undefined,
 	JSON.stringify({ finalCompletion, widgetFactory }),
+);
+const emptyQueuePrompt = await handlers.get("before_agent_start")?.(
+	{ systemPrompt: "base system" },
+	context(),
+);
+const emptyQueueContent =
+	typeof emptyQueuePrompt?.message?.content === "string" ? emptyQueuePrompt.message.content : "";
+assert(
+	"an empty queue emits one superseding tail so older open snapshots cannot remain authoritative",
+	emptyQueuePrompt?.message?.customType === "todo-context" &&
+		emptyQueuePrompt.message.display === false &&
+		emptyQueueContent.includes("(none)") &&
+		emptyQueueContent.includes("supersedes all older todo snapshots"),
+	JSON.stringify(emptyQueuePrompt),
 );
 
 let todosViewRendered: string[] = [];
@@ -540,6 +591,8 @@ const queuedPrompt = await handlers.get("before_agent_start")?.(
 	{ systemPrompt: "base system" },
 	context(),
 );
+const queuedPromptContent =
+	typeof queuedPrompt?.message?.content === "string" ? queuedPrompt.message.content : "";
 const messagesBeforeQueuedSettlement = sentMessages.length;
 await handlers.get("agent_settled")?.({}, context());
 assert(
@@ -549,8 +602,9 @@ assert(
 		sentMessages.length === messagesBeforeInvalidAdd + 1 &&
 		sentMessages.at(-1)?.options?.deliverAs === "followUp" &&
 		sentMessages.at(-1)?.options?.triggerTurn === true &&
-		queuedPrompt.systemPrompt.includes("#42: First queued task") &&
-		queuedPrompt.systemPrompt.includes("#43: Second queued task") &&
+		queuedPrompt?.systemPrompt === undefined &&
+		queuedPromptContent.includes("#42: First queued task") &&
+		queuedPromptContent.includes("#43: Second queued task") &&
 		sentMessages.length === messagesBeforeQueuedSettlement &&
 		addNotices.at(-1)?.message === "Queued todo #43: Second queued task" &&
 		addNotices.at(-1)?.type === "info",
@@ -826,4 +880,24 @@ assert(
 		removeConfirmCalls === 1 &&
 		!(await run("list")).details.todos.some((todo: any) => todo.id === uiSecondId),
 	JSON.stringify({ removeDialogCalls, removeConfirmCalls, list: await run("list") }),
+);
+
+await clearCommand.handler("", clearCtx);
+await run("add", {
+	items: Array.from({ length: 40 }, (_, index) => `Bounded task ${index}`),
+});
+const boundedPrompt = await handlers.get("before_agent_start")?.(
+	{ systemPrompt: "base system" },
+	context(),
+);
+const boundedContent =
+	typeof boundedPrompt?.message?.content === "string" ? boundedPrompt.message.content : "";
+assert(
+	"todo context bounds large active queues while preserving the latest snapshot marker",
+	boundedPrompt?.message?.customType === "todo-context" &&
+		boundedContent.includes("Bounded task 0") &&
+		boundedContent.includes("more active todos omitted from bounded queue") &&
+		!boundedContent.includes("Bounded task 39") &&
+		boundedContent.length < 9_000,
+	JSON.stringify({ boundedPrompt, length: boundedContent.length }),
 );

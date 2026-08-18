@@ -76,6 +76,10 @@ const TODO_RECONCILIATION_GUIDANCE = [
 	"Use atomic status updates when several items are known; ask only for material user input.",
 	"Do not narrate routine todo management to the user.",
 ].join("\n");
+const TODO_CONTEXT_TYPE = "todo-context";
+const TODO_CONTEXT_MAX_ITEMS = 32;
+const TODO_CONTEXT_MAX_CHARS = 8_000;
+const EMPTY_TODO_CONTEXT_STATE = "[]";
 
 const TodoParams = Type.Object({
 	action: StringEnum([
@@ -175,6 +179,37 @@ function formatActiveChecklist(todos: Todo[]): string {
 				: `- #${todo.id}: ${todo.text}`,
 		)
 		.join("\n");
+}
+
+function formatBoundedActiveChecklist(todos: Todo[]): string {
+	const active = todos.filter(isActiveTodo);
+	if (active.length === 0) return "(none)";
+
+	const lines: string[] = [];
+	let characters = 0;
+	for (const todo of active.slice(0, TODO_CONTEXT_MAX_ITEMS)) {
+		const fullLine =
+			todo.status === "in_progress"
+				? `- #${todo.id} [in progress]: ${todo.text}`
+				: `- #${todo.id}: ${todo.text}`;
+		const separator = lines.length > 0 ? 1 : 0;
+		const available = TODO_CONTEXT_MAX_CHARS - characters - separator;
+		if (available <= 0) break;
+		const line =
+			fullLine.length <= available ? fullLine : `${fullLine.slice(0, Math.max(0, available - 1))}…`;
+		lines.push(line);
+		characters += separator + line.length;
+		if (line !== fullLine) break;
+	}
+
+	const omitted = active.length - lines.length;
+	if (omitted === 0) return lines.join("\n");
+
+	const omission = `[${omitted} more active todo${omitted === 1 ? "" : "s"} omitted from bounded queue]`;
+	const base = lines.join("\n");
+	const availableBase = TODO_CONTEXT_MAX_CHARS - omission.length - (base ? 1 : 0);
+	const boundedBase = base.slice(0, Math.max(0, availableBase)).trimEnd();
+	return [boundedBase, omission].filter(Boolean).join("\n") || omission;
 }
 
 export interface TodoListAction {
@@ -368,6 +403,7 @@ export default function todoExtension(pi: ExtensionAPI) {
 	let reconciliationTurn = false;
 	let parentTurnAborted = false;
 	let settlementHandled = false;
+	let lastTodoContextState: string | undefined;
 
 	const cloneTodos = (items: Todo[]): Todo[] => items.map((todo) => ({ ...todo }));
 	const stateDetails = (action: TodoDetails["action"], error?: string): TodoDetails => ({
@@ -384,6 +420,20 @@ export default function todoExtension(pi: ExtensionAPI) {
 		const active = todos.find((todo) => todo.status === "in_progress");
 		return active ? `; active #${active.id}` : "";
 	};
+	const todoContextState = (): string =>
+		JSON.stringify(todos.filter(isActiveTodo).map((todo) => [todo.id, todo.text, todo.status]));
+	const todoContextMessage = () => ({
+		customType: TODO_CONTEXT_TYPE,
+		content: [
+			"[INTERNAL TODO CONTEXT, NOT USER INPUT]",
+			"This latest todo snapshot supersedes all older todo snapshots, including older todo-context messages. Ignore older snapshots.",
+			"The following todo items are open or in progress and form the active work queue (bounded):",
+			formatBoundedActiveChecklist(todos),
+			"Reflect verified progress with todo status updates, using one atomic update for related changes when useful.",
+			"Continue the next unverified item autonomously unless it conflicts or requires material input.",
+		].join("\n"),
+		display: false,
+	});
 	const mutationResult = (action: TodoDetails["action"], text: string) =>
 		toolResult(action, `${text}${activeTodoReceipt()}`);
 
@@ -567,6 +617,7 @@ export default function todoExtension(pi: ExtensionAPI) {
 		reconciliationTurn = false;
 		parentTurnAborted = false;
 		settlementHandled = false;
+		lastTodoContextState = undefined;
 	};
 
 	/** Rebuild state from the latest todo snapshot on the current branch. */
@@ -608,22 +659,16 @@ export default function todoExtension(pi: ExtensionAPI) {
 		currentCtx = undefined;
 	});
 
-	pi.on("before_agent_start", (event) => {
+	pi.on("before_agent_start", () => {
 		parentTurnAborted = false;
 		reconciliationTurn = reconciliationQueued;
 		reconciliationQueued = false;
 		settlementHandled = false;
-		const checklist = formatActiveChecklist(todos);
-		if (!checklist) return;
-		return {
-			systemPrompt:
-				event.systemPrompt +
-				"\n\n[Hidden Todo Queue]\n" +
-				"The following todo items are open or in progress and form the active work queue:\n" +
-				checklist +
-				"\nReflect verified progress with todo status updates, using one atomic update for related changes when useful. " +
-				"Continue the next unverified item autonomously unless it conflicts or requires material input.",
-		};
+		const state = todoContextState();
+		if (state === lastTodoContextState) return;
+		if (state === EMPTY_TODO_CONTEXT_STATE && lastTodoContextState === undefined) return;
+		lastTodoContextState = state;
+		return { message: todoContextMessage() };
 	});
 
 	pi.on("message_end", (event) => {

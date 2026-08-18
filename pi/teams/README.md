@@ -56,6 +56,15 @@ Delegation is non-blocking. Completion wakes the manager; it must not poll child
 Team state is persisted in session entries and restored with the session. Tasks that were still
 running when a session reloads are marked failed rather than silently resumed.
 
+## Parent context and tool stability
+
+Team state does not rewrite the first-party parent's system prompt after its first provider request. Active
+manager state and terminal deactivation are hidden authoritative tail messages; newer snapshots supersede
+older ones, which remain in the branch for prefix reuse when a provider supports it. Team management tools
+are monotonic within a branch and remain runtime-guarded, so stale or inactive calls are rejected rather
+than trusted. Branch selection determines visible team state; a new branch does not make an inactive call
+valid.
+
 ## Add a Team
 
 1. Copy `product.json` or create `pi/teams/<name>.json`.

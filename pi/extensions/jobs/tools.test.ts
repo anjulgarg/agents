@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import {
+	JOB_MANAGEMENT_TOOLS,
 	isTerminalJobStatus,
 	type JobManagerApi,
 	type JobResult,
@@ -139,8 +140,13 @@ class FakeManager implements JobManagerApi {
 
 	restore(records: PersistedJobRecord[]): boolean {
 		this.restored.push(records);
-		for (const record of records) this.jobs.set(record.snapshot.jobId, record.snapshot);
-		return records.length > 0;
+		let restored = false;
+		for (const record of records) {
+			if (this.jobs.has(record.snapshot.jobId)) continue;
+			this.jobs.set(record.snapshot.jobId, record.snapshot);
+			restored = true;
+		}
+		return restored;
 	}
 
 	setParentSettled(settled: boolean): void {
@@ -319,6 +325,28 @@ function testRegistrationAndSchemas(): void {
 			tool("job_result").parameters.required,
 			tool("job_cancel").parameters.required,
 		]),
+	);
+	const dynamicMetadata = JOB_MANAGEMENT_TOOLS.map((name) => {
+		const managementTool = tool(name);
+		return {
+			name,
+			hasPromptSnippet: Object.prototype.hasOwnProperty.call(managementTool, "promptSnippet"),
+			hasPromptGuidelines: Object.prototype.hasOwnProperty.call(managementTool, "promptGuidelines"),
+			hasDescription:
+				typeof managementTool.description === "string" && managementTool.description.length > 0,
+			hasParameters: managementTool.parameters !== undefined,
+		};
+	});
+	assert(
+		"dynamically activated management tools omit prompt metadata but keep formal guidance and schemas",
+		dynamicMetadata.every(
+			(item) =>
+				!item.hasPromptSnippet &&
+				!item.hasPromptGuidelines &&
+				item.hasDescription &&
+				item.hasParameters,
+		),
+		JSON.stringify(dynamicMetadata),
 	);
 }
 
@@ -1218,10 +1246,25 @@ async function testLifecycleAndPersistence(): Promise<void> {
 	);
 	await pi.handlers.get("agent_settled")!({ type: "agent_settled" }, {});
 	assert(
-		"turn boundaries mark the parent active then settled and unsuppress wakes",
+		"turn boundaries mark the parent active then settled, unsuppress wakes, and retain management tools",
 		manager.settledCalls.join(",") === "false,true" &&
-			manager.suppressedCalls.join(",") === "false,false",
-		`${manager.settledCalls.join(",")} | ${manager.suppressedCalls.join(",")}`,
+			manager.suppressedCalls.join(",") === "false,false" &&
+			pi.getActiveTools().join(",") === "bash,job,job_status,job_result,job_cancel",
+		`${manager.settledCalls.join(",")} | ${manager.suppressedCalls.join(",")} | ${pi.getActiveTools().join(",")}`,
+	);
+
+	await pi.handlers.get("session_start")!(
+		{ type: "session_start", reason: "resume" },
+		ctxWith({
+			branch: branchOnly,
+			entries: leakedFork,
+		}),
+	);
+	assert(
+		"repeated branch history restoration does not remove active management tools",
+		manager.restored[1]!.length === 2 &&
+			pi.getActiveTools().join(",") === "bash,job,job_status,job_result,job_cancel",
+		`${JSON.stringify(manager.restored[1])}\n${pi.getActiveTools().join(",")}`,
 	);
 
 	// Each compaction carries its own signal, so use one controller per attempt.

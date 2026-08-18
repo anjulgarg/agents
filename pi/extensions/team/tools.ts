@@ -12,27 +12,49 @@ const CHAT_PADDING = 1;
 
 const ProposedTaskSchema = Type.Object({
 	id: Type.String({
-		description: "Stable unique task ID using lowercase letters, numbers, and hyphens",
+		description:
+			"Stable unique task ID using lowercase letters, numbers, and hyphens; reuse it when revising a plan",
 	}),
-	title: Type.String({ description: "Short task title" }),
-	description: Type.String({ description: "Complete bounded assignment and success criteria" }),
-	role: Type.String({ description: "Team role assigned to this task" }),
+	title: Type.String({ description: "Short task title that identifies the bounded unit of work" }),
+	description: Type.String({
+		description:
+			"Complete bounded assignment, required evidence, and objective success criteria for the delegated child",
+	}),
+	role: Type.String({
+		description:
+			"Configured team role assigned to this task; review and verification roles are required in a successful plan",
+	}),
 	dependsOn: Type.Optional(
-		Type.Array(Type.String(), { description: "Task IDs that must complete first" }),
+		Type.Array(Type.String(), {
+			description: "Task IDs that must be completed before this task can be delegated",
+		}),
 	),
 	model: Type.Optional(
-		Type.String({ description: "Explicit available model override when team policy permits" }),
+		Type.String({
+			description:
+				"Explicit available model override only when the assigned role policy permits it",
+		}),
 	),
 	thinking: Type.Optional(
-		StringEnum(THINKING_LEVELS, { description: "Explicit thinking-level override" }),
+		StringEnum(THINKING_LEVELS, {
+			description: "Explicit thinking-level override when the role policy permits it",
+		}),
 	),
-	workspace: Type.Optional(StringEnum(WORKSPACE_MODES, { description: "Workspace override" })),
+	workspace: Type.Optional(
+		StringEnum(WORKSPACE_MODES, {
+			description: "Workspace override accepted by the assigned role",
+		}),
+	),
 });
 
 const TeamPlanParams = Type.Object({
-	summary: Type.String({ description: "Concise implementation strategy and integration plan" }),
+	summary: Type.String({
+		description:
+			"Concise implementation, integration, independent review, and final verification strategy",
+	}),
 	tasks: Type.Array(ProposedTaskSchema, {
-		description: "Complete task plan, including implementation, review, and verification tasks",
+		description:
+			"The complete dependency graph. Include implementation, integration, at least one independent review task, and at least one verification task before delegation",
 		minItems: 1,
 		maxItems: 64,
 	}),
@@ -40,27 +62,30 @@ const TeamPlanParams = Type.Object({
 
 const TeamRetryParams = Type.Object({
 	taskIds: Type.Array(Type.String(), {
-		description: "Failed team task IDs to reset for another delegation attempt",
+		description: "One or more failed team task IDs to reset while preserving completed work",
 		minItems: 1,
 		maxItems: 8,
 	}),
 	reason: Type.String({
-		description: "Why retrying is appropriate and what changes in the next attempt",
+		description:
+			"Concrete failure cause and bounded change that makes the next delegation attempt appropriate",
 	}),
 	userApprovedManualRetry: Type.Optional(
 		Type.Boolean({
 			description:
-				"Set true only after the user explicitly approves retrying a manually killed team task",
+				"Set true only after discussing a manually killed task with the user and receiving explicit approval to retry it",
 		}),
 	),
 });
 
 const TeamCompleteParams = Type.Object({
 	success: Type.Boolean({
-		description: "Whether the integrated outcome passed final verification",
+		description:
+			"Whether integration passed objective final verification; true is rejected while any task is unfinished or required review/verification is incomplete",
 	}),
 	summary: Type.String({
-		description: "Final outcome, evidence, remaining risks, and worktree integration notes",
+		description:
+			"Final outcome, verification evidence, remaining risks, and worktree integration notes",
 	}),
 });
 
@@ -70,12 +95,7 @@ export function registerTeamTools(pi: ExtensionAPI, runtime: TeamRuntime): void 
 		label: "Team Plan",
 		renderShell: "self",
 		description:
-			"Submit or revise the active team's complete task plan for validation and user approval before delegation.",
-		promptSnippet: "Create and approve a structured team task plan before delegation",
-		promptGuidelines: [
-			"When managing an active team, call team_plan before calling subagent and include implementation, independent review, and final verification tasks.",
-			"After team_plan approval, delegate only dependency-ready tasks and pass each task's teamRunId, teamTaskId, and role to subagent.",
-		],
+			"Submit or revise the active team's complete dependency graph before delegation. Include bounded implementation and integration work plus dependent independent review and final verification tasks. The team validates roles, dependency readiness, model policy, concurrency limits, and configured approval; after approval, delegate only ready tasks through subagent with the exact teamRunId, teamTaskId, and role metadata.",
 		parameters: TeamPlanParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -122,12 +142,7 @@ export function registerTeamTools(pi: ExtensionAPI, runtime: TeamRuntime): void 
 		label: "Team Retry",
 		renderShell: "self",
 		description:
-			"Reset failed team tasks for a deliberate retry after correcting the failure cause.",
-		promptSnippet: "Retry failed team tasks without discarding successful work",
-		promptGuidelines: [
-			"Use team_retry when a team task fails and a bounded retry can address the failure; explain what changes before redelegating.",
-			"Never retry a team task manually killed by the user until discussing it with them and receiving explicit approval. Only then set userApprovedManualRetry=true.",
-		],
+			"Reset one or more failed team tasks for a deliberate bounded retry without discarding successful work. Provide the corrected failure cause and next-attempt change. A task manually killed by the user remains blocked until the user has discussed and explicitly approved the retry, then userApprovedManualRetry must be true.",
 		parameters: TeamRetryParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -164,11 +179,7 @@ export function registerTeamTools(pi: ExtensionAPI, runtime: TeamRuntime): void 
 		label: "Team Complete",
 		renderShell: "self",
 		description:
-			"Finish the active team after integration, independent review, and final verification.",
-		promptSnippet: "Record the verified final outcome of an active team",
-		promptGuidelines: [
-			"Call team_complete only after all required team tasks, reviews, and final verification have finished.",
-		],
+			"Finish the active team only after integration, every required task, independent review, and final verification have finished. A successful completion is rejected when any task is pending, blocked, or running, or when configured review and verification roles have not completed; a failed completion records the outcome and remaining risks.",
 		parameters: TeamCompleteParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -43,15 +43,22 @@ function createHarness() {
 const registration = createHarness();
 const publicCommand = registration.commands.get(HANDOFF_COMMAND);
 assert(
-	"handoff extension registers one public command and a bounded guided tool",
+	"handoff extension registers one public command and a bounded formally guided tool",
 	registration.commands.size === 1 &&
 		publicCommand !== undefined &&
 		registration.tool?.name === "handoff" &&
 		registration.tool.parameters.properties.handoff.maxLength === MAX_HANDOFF_LENGTH &&
-		registration.tool.promptGuidelines.length === HANDOFF_PROMPT_GUIDELINES.length &&
-		registration.tool.promptGuidelines[0] === HANDOFF_PROMPT_GUIDELINES[0] &&
-		HANDOFF_PROMPT_GUIDELINES[0]?.includes("Preserve in-progress and pending tasks and todos"),
-	JSON.stringify({ commands: [...registration.commands.keys()], tool: registration.tool?.name }),
+		registration.tool.promptSnippet === undefined &&
+		registration.tool.promptGuidelines === undefined &&
+		registration.tool.description.includes(HANDOFF_PROMPT_GUIDELINES[0]!) &&
+		registration.tool.parameters.properties.handoff.description.includes(
+			"Preserve in-progress and pending tasks and todos",
+		),
+	JSON.stringify({
+		commands: [...registration.commands.keys()],
+		tool: registration.tool?.name,
+		description: registration.tool?.description,
+	}),
 );
 
 const handoff = [

@@ -3,7 +3,6 @@ import { type TUI } from "@earendil-works/pi-tui";
 import { fullscreenOverlayOptions } from "../lib/tui/index.ts";
 
 import { unbindSubagentControl } from "./control.ts";
-import { modelCatalog } from "./models.ts";
 import { registerProviderRecovery } from "../lib/provider-recovery.ts";
 import { SubagentDashboard } from "./ui.ts";
 import { SUBAGENT_MANAGEMENT_TOOLS } from "./tools.ts";
@@ -53,23 +52,10 @@ export function registerSubagentLifecycle(pi: ExtensionAPI, runtime: SubagentRun
 		},
 	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("before_agent_start", () => {
 		// A failed/manual compaction can leave no session_compact event. A new
 		// parent turn is a safe boundary for clearing that transient guard.
 		compactionInProgress = false;
-		if (!pi.getActiveTools().includes("subagent")) return;
-		let catalog: string;
-		try {
-			catalog = (await modelCatalog(ctx)) || "none";
-		} catch (error) {
-			catalog = `none (${error instanceof Error ? error.message : String(error)})`;
-		}
-		return {
-			systemPrompt:
-				event.systemPrompt +
-				`\n\nAvailable subagent models: ${catalog}. ` +
-				"The subagent tool rejects models outside the active Pi model scope.",
-		};
 	});
 
 	pi.on("agent_settled", () => {

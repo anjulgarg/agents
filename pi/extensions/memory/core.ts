@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+export const MEMORY_CONTEXT_TYPE = "memory-context";
 export const MEMORY_BLOCK_START = "<pi-memory>";
 export const MEMORY_BLOCK_END = "</pi-memory>";
 export const MAX_CANDIDATE_CHARS = 4_000;
@@ -123,7 +124,11 @@ export function formatMemoryBlock(bundle: MemoryBundle): string {
 	].join("\n");
 }
 
-export function injectMemoryPrompt(systemPrompt: string, bundle: MemoryBundle): string {
-	if (systemPrompt.includes(MEMORY_BLOCK_START)) return systemPrompt;
-	return `${systemPrompt}\n\n${formatMemoryBlock(bundle)}`;
+/** Format the stable, lower-priority custom message used for memory context. */
+export function formatMemoryContext(bundle: MemoryBundle): string {
+	return [
+		"This is the latest lower-priority durable memory snapshot.",
+		"The latest snapshot supersedes older memory snapshots.",
+		formatMemoryBlock(bundle),
+	].join("\n");
 }

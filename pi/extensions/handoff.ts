@@ -84,13 +84,14 @@ export default function handoffExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "handoff",
 		label: "Handoff",
-		description:
+		description: [
 			"Finalize the active /handoff command by returning its prepared work summary for submission in a new active Pi session.",
-		promptSnippet: "Return the prepared summary to the active /handoff command",
-		promptGuidelines: [...HANDOFF_PROMPT_GUIDELINES],
+			HANDOFF_PROMPT_GUIDELINES[0],
+		].join(" "),
 		parameters: Type.Object({
 			handoff: Type.String({
-				description: "Complete self-contained Markdown handoff for the replacement session",
+				description:
+					"Complete concise but self-contained Markdown handoff for the replacement session. Preserve in-progress and pending tasks and todos.",
 				minLength: 1,
 				maxLength: MAX_HANDOFF_LENGTH,
 			}),

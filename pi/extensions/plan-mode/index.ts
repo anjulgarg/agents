@@ -2,12 +2,12 @@
  * Plan Mode Extension
  *
  * Read-only exploration mode for safe code analysis.
- * When enabled, built-in write tools and the async job tool are disabled.
+ * When enabled, active tool definitions remain unchanged and unsafe calls are blocked.
  *
  * Features:
  * - /plan command or Shift+Tab to toggle plan / auto mode
- * - Bash (and stale job calls) restricted to allowlisted read-only commands
- * - Job tool removed from active tools while planning; restored if it was active
+ * - Edit, write, job, and unsafe bash calls are blocked while planning
+ * - Safe read-only bash commands remain available
  * - Extracts numbered plan steps from "Plan:" sections
  * - On execute, sends the approved plan back to the parent agent
  * - Execution ends when the agent settles
@@ -32,11 +32,7 @@ interface PlanningSkill {
 	baseDir: string;
 }
 
-// Tools
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "question"];
-const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
-const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["edit", "write", "job"]);
-const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
+const PLAN_MODE_BLOCKED_TOOLS = new Set<string>(["edit", "write", "job"]);
 const BUILD_MODE_GUIDANCE =
 	"[BUILD MODE ACTIVE]\nPlan-mode restrictions are disabled. Full tool access is available; do not claim that a build-mode switch is still required.";
 
@@ -57,20 +53,6 @@ function getTextContent(message: AssistantMessage): string {
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
 		.join("\n");
-}
-
-function appendSystemGuidance(systemPrompt: string | undefined, guidance: string): string {
-	return systemPrompt ? `${systemPrompt}\n\n${guidance}` : guidance;
-}
-
-function isPlanModeContextMessage(message: AgentMessage & { customType?: string }): boolean {
-	if (message.customType === "plan-mode-context") return true;
-	if (message.role !== "user") return false;
-	if (typeof message.content === "string") return message.content.includes("[PLAN MODE ACTIVE]");
-	return message.content.some(
-		(content) =>
-			content.type === "text" && (content as TextContent).text?.includes("[PLAN MODE ACTIVE]"),
-	);
 }
 
 export default function planModeExtension(pi: ExtensionAPI): void {
@@ -99,32 +81,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		);
 	}
 
-	function uniqueToolNames(toolNames: string[]): string[] {
-		return [...new Set(toolNames)];
-	}
-
-	function getPlanModeTools(activeToolNames: string[]): string[] {
-		return uniqueToolNames([
-			...activeToolNames.filter((name) => !PLAN_MODE_DISABLED_TOOLS.has(name)),
-			...PLAN_MODE_TOOLS,
-		]);
-	}
-
-	function getNormalModeTools(activeToolNames: string[]): string[] {
-		return uniqueToolNames([
-			...NORMAL_MODE_TOOLS,
-			...activeToolNames.filter((name) => !PLAN_MANAGED_TOOLS.has(name)),
-		]);
-	}
-
 	function enablePlanModeTools(): void {
-		const sourceTools = toolsBeforePlanMode ?? pi.getActiveTools() ?? [];
-		toolsBeforePlanMode ??= sourceTools;
-		pi.setActiveTools(getPlanModeTools(sourceTools));
+		// Keep the active tool names and ordering byte-stable across mode changes.
+		// Safety is enforced by the tool_call hook below instead of tool removal.
+		toolsBeforePlanMode ??= pi.getActiveTools() ?? [];
 	}
 
 	function restoreNormalModeTools(): void {
-		pi.setActiveTools(toolsBeforePlanMode ?? getNormalModeTools(pi.getActiveTools()));
+		// Active tools were never changed, so restoration only clears the legacy snapshot.
 		toolsBeforePlanMode = undefined;
 	}
 
@@ -145,7 +109,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
-			ctx.ui.notify("Plan mode enabled. Write and job tools disabled.");
+			ctx.ui.notify("Plan mode enabled. Edit, write, and job calls blocked.");
 		} else {
 			restoreNormalModeTools();
 			ctx.ui.notify("Auto mode enabled. Full access restored.");
@@ -164,34 +128,27 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		handler: async (ctx) => togglePlanMode(ctx),
 	});
 
-	// Block destructive bash/job commands in plan mode (job may still arrive stale/custom)
+	// Keep all tool definitions active so provider prefixes and tool schemas stay stable.
+	// Enforce plan-mode safety at execution time, including stale calls from prior prompts.
 	pi.on("tool_call", async (event) => {
-		if (!planModeEnabled || (event.toolName !== "bash" && event.toolName !== "job")) return;
+		if (!planModeEnabled) return;
 
-		const command = typeof event.input.command === "string" ? event.input.command : "";
+		if (PLAN_MODE_BLOCKED_TOOLS.has(event.toolName)) {
+			return {
+				block: true,
+				reason: `Plan mode: ${event.toolName} tool calls are blocked. Use /plan to disable plan mode first.`,
+			};
+		}
+
+		if (event.toolName !== "bash") return;
+
+		const command = typeof event.input?.command === "string" ? event.input.command : "";
 		if (!isSafeCommand(command)) {
 			return {
 				block: true,
 				reason: `Plan mode: command blocked (not allowlisted). Use /plan to disable plan mode first.\nCommand: ${command}`,
 			};
 		}
-	});
-
-	// Keep only the current activation's guidance while planning; remove it in auto mode.
-	pi.on("context", async (event) => {
-		const lastPlanContextIndex = event.messages.findLastIndex(
-			(message) =>
-				(message as AgentMessage & { customType?: string }).customType === "plan-mode-context",
-		);
-		return {
-			messages: event.messages.filter((message, index) => {
-				const planMessage = message as AgentMessage & { customType?: string };
-				if (planModeEnabled) {
-					return planMessage.customType !== "plan-mode-context" || index === lastPlanContextIndex;
-				}
-				return !isPlanModeContextMessage(planMessage);
-			}),
-		};
 	});
 
 	async function loadPlanningSkill(
@@ -213,11 +170,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	// Inject plan/execution context before agent starts
+	// Inject plan/execution context before agent starts as hidden tail messages.
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (planModeEnabled) {
 			if (planningGuidanceInjected) return;
-			const planningSkill = await loadPlanningSkill(event.systemPromptOptions.skills);
+			const planningSkill = await loadPlanningSkill(event.systemPromptOptions?.skills);
 			if (!planningSkill && !planningSkillWarningShown) {
 				planningSkillWarningShown = true;
 				if (ctx.hasUI) {
@@ -244,7 +201,7 @@ ${planningSkill.content}
 You are in plan mode - a read-only exploration mode for safe code analysis.
 
 Restrictions:
-- Built-in edit, write, and job tools are disabled
+- Edit, write, and job tool calls are blocked
 - Other currently active tools remain available
 - Bash is restricted to an allowlist of read-only commands (also enforced for stale job calls)
 - Do not implement changes while plan mode remains active
@@ -259,21 +216,26 @@ ${workflow}`,
 			return {
 				message: {
 					customType: "plan-execution-context",
-					content: `[EXECUTING PLAN - Full tool access enabled]
+					content: `${BUILD_MODE_GUIDANCE}
+
+[EXECUTING PLAN - Full tool access enabled]
 
 Execute the approved plan in order. Track progress with the task-management
 capabilities available to you, and record each step immediately after its work is
 verified instead of batching progress updates at the end.`,
 					display: false,
 				},
-				systemPrompt: appendSystemGuidance(event.systemPrompt, BUILD_MODE_GUIDANCE),
 			};
 		}
 
 		if (buildModeGuidancePending) {
 			buildModeGuidancePending = false;
 			return {
-				systemPrompt: appendSystemGuidance(event.systemPrompt, BUILD_MODE_GUIDANCE),
+				message: {
+					customType: "plan-build-context",
+					content: BUILD_MODE_GUIDANCE,
+					display: false,
+				},
 			};
 		}
 	});

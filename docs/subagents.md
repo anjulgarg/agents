@@ -2,6 +2,9 @@
 
 The Pi subagent extension runs delegated work in separate Pi processes. Each invocation has its own run ID and task ID, reports per-invocation output and usage, and is reaped after it settles.
 
+The parent cache-stability invariant does not cover a child's initial prompt or any isolated utility
+completion: each is a separate provider request with its own prompt and cache behavior.
+
 ## Ephemeral and persistent modes
 
 Ephemeral mode is the default. It starts a sessionless one-shot child and does not retain a resumable conversation.

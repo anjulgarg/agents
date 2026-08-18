@@ -1,5 +1,9 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
@@ -15,6 +19,14 @@ export const LOAD_TOOLS_COMMAND = "tools:load" as const;
 
 export const CAPABILITIES = ["mcp", "subagent", "memory", "handoff"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
+
+export const TOOL_LOADER_STATE_ENTRY_TYPE = "tool-loader-state" as const;
+export const TOOL_LOADER_STATE_VERSION = 1 as const;
+
+export interface ToolLoaderState {
+	readonly version: typeof TOOL_LOADER_STATE_VERSION;
+	readonly loaded: Capability[];
+}
 
 /** Stable generic routing from a capability to its registered root tool. */
 export const CAPABILITY_TO_TOOL = Object.freeze({
@@ -66,6 +78,50 @@ const LoadToolsParams = Type.Object({
 
 function isCapability(value: string): value is Capability {
 	return (CAPABILITIES as readonly string[]).includes(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseToolLoaderState(data: unknown): Capability[] | undefined {
+	if (!isRecord(data) || data.version !== TOOL_LOADER_STATE_VERSION) return undefined;
+	const loaded = data.loaded;
+	if (
+		!Array.isArray(loaded) ||
+		loaded.some((capability) => typeof capability !== "string" || !isCapability(capability))
+	)
+		return undefined;
+	return CAPABILITIES.filter((capability) => loaded.includes(capability));
+}
+
+/** Return the latest valid capability state visible on the active branch. */
+export function latestLoadedCapabilities(
+	ctx: Pick<ExtensionContext, "sessionManager"> | undefined,
+): Capability[] {
+	let entries: readonly unknown[] = [];
+	try {
+		const sessionManager = ctx?.sessionManager as
+			{ getBranch?: () => readonly unknown[] } | undefined;
+		const branch = sessionManager?.getBranch?.();
+		if (Array.isArray(branch)) entries = branch;
+	} catch {
+		return [];
+	}
+
+	let latest: Capability[] | undefined;
+	for (const entry of entries) {
+		if (!isRecord(entry) || entry.type !== "custom") continue;
+		if (entry.customType !== TOOL_LOADER_STATE_ENTRY_TYPE) continue;
+		const state = parseToolLoaderState(entry.data);
+		if (state !== undefined) latest = state;
+	}
+	return latest ? [...latest] : [];
+}
+
+function orderedCapabilities(capabilities: Iterable<Capability>): Capability[] {
+	const selected = new Set(capabilities);
+	return CAPABILITIES.filter((capability) => selected.has(capability));
 }
 
 function textFor(details: LoadToolsItemDetails): string {
@@ -151,6 +207,23 @@ export function resetOptionalTools(pi: ExtensionAPI): void {
 	pi.setActiveTools([...new Set([...active, LOAD_TOOLS_NAME])]);
 }
 
+/** Apply persisted roots without initializing any capability connection. */
+export function restoreOptionalTools(pi: ExtensionAPI, capabilities: readonly Capability[]): void {
+	let registeredTools: Set<string>;
+	try {
+		registeredTools = new Set(pi.getAllTools().map((tool) => tool.name));
+	} catch {
+		resetOptionalTools(pi);
+		return;
+	}
+
+	const active = pi.getActiveTools().filter((name) => !OPTIONAL_ROOT_TOOLS.includes(name));
+	const restoredRoots = orderedCapabilities(capabilities)
+		.map((capability) => CAPABILITY_TO_TOOL[capability])
+		.filter((toolName) => registeredTools.has(toolName));
+	pi.setActiveTools([...new Set([...active, LOAD_TOOLS_NAME, ...restoredRoots])]);
+}
+
 function parseCommandCapabilities(args: string): Capability[] | undefined {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	if (parts.length === 0 || parts.some((part) => !isCapability(part))) return undefined;
@@ -186,6 +259,32 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 	let sessionResetPending = false;
 	let startupResetTimer: ReturnType<typeof setTimeout> | undefined;
 	let startupResetIndex = 0;
+	let loadedCapabilities = new Set<Capability>();
+
+	const restoreFromBranch = (ctx: ExtensionContext): void => {
+		loadedCapabilities = new Set(latestLoadedCapabilities(ctx));
+		restoreOptionalTools(pi, [...loadedCapabilities]);
+	};
+
+	const persistAvailableCapabilities = (outcome: LoadToolsOutcome): void => {
+		let changed = false;
+		for (const result of outcome.details.results) {
+			if (result.status === "unavailable" || loadedCapabilities.has(result.capability)) continue;
+			loadedCapabilities.add(result.capability);
+			changed = true;
+		}
+		if (!changed) return;
+
+		const loaded = orderedCapabilities(loadedCapabilities);
+		try {
+			pi.appendEntry<ToolLoaderState>(TOOL_LOADER_STATE_ENTRY_TYPE, {
+				version: TOOL_LOADER_STATE_VERSION,
+				loaded,
+			});
+		} catch {
+			// Persistence failures must not change tool execution semantics.
+		}
+	};
 
 	const stopStartupReset = (): void => {
 		if (startupResetTimer !== undefined) clearTimeout(startupResetTimer);
@@ -198,7 +297,7 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 		startupResetTimer = setTimeout(() => {
 			startupResetTimer = undefined;
 			if (!sessionResetPending) return;
-			resetOptionalTools(pi);
+			restoreOptionalTools(pi, [...loadedCapabilities]);
 			scheduleStartupReset();
 		}, delay);
 		(startupResetTimer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
@@ -207,7 +306,9 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 	const activateCapabilities = (capabilities: readonly Capability[]): LoadToolsOutcome => {
 		sessionResetPending = false;
 		stopStartupReset();
-		return loadCapabilities(pi, capabilities);
+		const outcome = loadCapabilities(pi, capabilities);
+		persistAvailableCapabilities(outcome);
+		return outcome;
 	};
 
 	pi.registerTool({
@@ -267,10 +368,10 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		stopStartupReset();
 		startupResetIndex = 0;
-		resetOptionalTools(pi);
+		restoreFromBranch(ctx);
 		sessionResetPending = true;
 		scheduleStartupReset();
 	});
@@ -278,16 +379,23 @@ export default function toolLoaderExtension(pi: ExtensionAPI): void {
 	// Packages loaded after this extension can register or reactivate optional roots
 	// during their own session startup. Reset once more at the model boundary, after
 	// every package has initialized but before Pi builds the first provider request.
-	pi.on("before_agent_start", () => {
+	pi.on("before_agent_start", (_event, ctx) => {
 		if (!sessionResetPending) return;
 		sessionResetPending = false;
 		stopStartupReset();
-		resetOptionalTools(pi);
+		restoreFromBranch(ctx);
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		sessionResetPending = false;
+		stopStartupReset();
+		restoreFromBranch(ctx);
 	});
 
 	pi.on("session_shutdown", () => {
 		sessionResetPending = false;
 		stopStartupReset();
+		loadedCapabilities.clear();
 	});
 
 	pi.registerCommand(LOAD_TOOLS_COMMAND, {

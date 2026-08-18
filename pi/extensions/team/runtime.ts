@@ -19,6 +19,10 @@ import {
 import { validateTaskGraph } from "./config.ts";
 
 export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+export const TEAM_MANAGER_CONTEXT_TYPE = "team-manager-context";
+
+const TEAM_MANAGER_CONTEXT_END_MARKER = `[TEAM MANAGER MODE DEACTIVATED]
+This hidden team-manager-context message is the authoritative supersession marker. It supersedes every older team-manager-context snapshot and any conflicting team state in the conversation. There is no active team manager run; do not coordinate team work or call team_plan, team_retry, or team_complete until a new team run is started.`;
 
 export interface TeamExtensionOptions {
 	/** Inject team definitions (tests); production loads from the agent teams directory. */
@@ -163,6 +167,7 @@ export class TeamRuntime {
 	private activeRunId: string | undefined;
 	private activeContext: ExtensionContext | undefined;
 	private restoreAfterSettled = false;
+	private managerContextEndPending = false;
 
 	constructor(options: TeamRuntimeOptions) {
 		this.pi = options.pi;
@@ -205,9 +210,15 @@ export class TeamRuntime {
 	}
 
 	setTeamToolsActive(enabled: boolean): void {
-		const active = this.pi.getActiveTools().filter((name) => !this.teamToolNames.has(name));
+		if (!enabled) return;
+		this.pi.setActiveTools([
+			...new Set([...this.pi.getActiveTools(), ...this.teamToolNames, "question"]),
+		]);
+	}
+
+	private clearTeamToolsForInactiveSession(): void {
 		this.pi.setActiveTools(
-			enabled ? [...new Set([...active, ...this.teamToolNames, "question"])] : active,
+			this.pi.getActiveTools().filter((name) => !this.teamToolNames.has(name)),
 		);
 	}
 
@@ -246,6 +257,7 @@ export class TeamRuntime {
 		};
 		this.runs.set(run.id, run);
 		this.activeRunId = run.id;
+		this.managerContextEndPending = false;
 		this.setTeamToolsActive(true);
 		this.persist(run);
 		this.pi.sendUserMessage(goal);
@@ -358,6 +370,7 @@ export class TeamRuntime {
 			run.tasks = previousTasks;
 			run.status = previousTasks.length ? previousStatus : "planning";
 		}
+		if (run.status === "cancelled") this.managerContextEndPending = true;
 		this.persist(run);
 		if (run.status === "cancelled") await this.restoreRunSettings(run, ctx);
 		const details: TeamStateDetails = { run: structuredClone(run), approved, feedback };
@@ -456,6 +469,7 @@ export class TeamRuntime {
 		}
 		run.status = params.success ? "completed" : "failed";
 		run.completionSummary = params.summary;
+		this.managerContextEndPending = true;
 		this.persist(run);
 		this.restoreAfterSettled = true;
 		return {
@@ -476,9 +490,9 @@ export class TeamRuntime {
 		await ctx.waitForIdle();
 		markTasksCancelled(killed, "Cancelled with the team run");
 		run.status = "cancelled";
+		this.managerContextEndPending = true;
 		this.persist(run);
 		await this.restoreRunSettings(run, ctx);
-		this.setTeamToolsActive(false);
 	}
 
 	killDashboardTask(runId: string, taskId: string): void {
@@ -643,19 +657,37 @@ export class TeamRuntime {
 		this.notify();
 	}
 
-	managerPrompt(systemPrompt: string, ctx: ExtensionContext): { systemPrompt: string } | undefined {
+	managerPrompt(
+		_systemPrompt: string,
+		ctx: ExtensionContext,
+	): { message: { customType: string; content: string; display: false } } | undefined {
 		this.activeContext = ctx;
 		const run = this.activeRun();
 		const team = this.activeTeam();
-		if (!run || !team || TERMINAL_RUN_STATUSES.has(run.status)) return;
-		const roster = Object.entries(team.roles)
-			.map(
-				([name, role]) =>
-					`- ${name}: ${role.description} Default ${role.model ?? team.defaults?.model ?? "none"}:${role.thinking ?? team.defaults?.thinking ?? "medium"}; policy ${role.modelPolicy ?? "manager"}; max ${role.maxInstances ?? 1}`,
-			)
-			.join("\n");
+		if (run && team && !TERMINAL_RUN_STATUSES.has(run.status)) {
+			this.managerContextEndPending = false;
+			const roster = Object.entries(team.roles)
+				.map(
+					([name, role]) =>
+						`- ${name}: ${role.description} Default ${role.model ?? team.defaults?.model ?? "none"}:${role.thinking ?? team.defaults?.thinking ?? "medium"}; policy ${role.modelPolicy ?? "manager"}; max ${role.maxInstances ?? 1}`,
+				)
+				.join("\n");
+			return {
+				message: {
+					customType: TEAM_MANAGER_CONTEXT_TYPE,
+					display: false,
+					content: `[TEAM MANAGER CONTEXT - AUTHORITATIVE CURRENT SNAPSHOT]\nThis hidden tail message supersedes every older team-manager-context snapshot and any conflicting team state in the conversation. Follow this snapshot for the current turn.\n\nTeam: ${team.name}\nRun ID: ${run.id}\nGoal: ${run.goal}\nStatus: ${run.status}\n\nTeam-specific manager instructions:\n${team.manager.instructions}\n\nRoster:\n${roster}\n\nManager protocol:\n1. Inspect enough repository context to plan safely.\n2. Submit the complete structured plan through team_plan before delegation. Include implementation, independent review, integration, and final verification tasks.\n3. Respect dependencies. Delegate only pending tasks whose dependencies are complete.\n4. Use subagent tasks mode for delegation. Every task must include teamRunId \"${run.id}\", teamTaskId, and role. The harness enforces approved model, thinking, tools, workspace, dependencies, and role concurrency, and injects completed dependency outputs directly into dependent prompts. Delegation returns immediately; continue useful work or end the turn - a wake arrives when tasks complete. Do not poll, and do not claim work is done before its wake. On wake, delegate newly unblocked pending tasks. Do not call subagent_result solely to relay output to dependent tasks; inspect results only when manager-side validation or synthesis requires it.\n5. Multiple instances of a role are allowed up to that role's maxInstances.\n6. Do not perform specialist implementation yourself. Coordinate, inspect, integrate worktree branches when needed, and respond to failures. Use team_retry before redelegating a failed task. If the user manually killed a task, do not retry or redelegate it until you discuss it with the user and receive explicit approval.\n7. Use question when a user decision materially changes the plan.\n8. Require configured review and verification roles before claiming success.\n9. Call team_complete only after integration and objective verification.`,
+				},
+			};
+		}
+		if (!this.managerContextEndPending) return;
+		this.managerContextEndPending = false;
 		return {
-			systemPrompt: `${systemPrompt}\n\nACTIVE TEAM MANAGER MODE\nTeam: ${team.name}\nRun ID: ${run.id}\nGoal: ${run.goal}\nStatus: ${run.status}\n\n${team.manager.instructions}\n\nRoster:\n${roster}\n\nManager protocol:\n1. Inspect enough repository context to plan safely.\n2. Submit the complete structured plan through team_plan before delegation. Include implementation, independent review, integration, and final verification tasks.\n3. Respect dependencies. Delegate only pending tasks whose dependencies are complete.\n4. Use subagent tasks mode for delegation. Every task must include teamRunId \"${run.id}\", teamTaskId, and role. The harness enforces approved model, thinking, tools, workspace, dependencies, and role concurrency, and injects completed dependency outputs directly into dependent prompts. Delegation returns immediately; continue useful work or end the turn - a wake arrives when tasks complete. Do not poll, and do not claim work is done before its wake. On wake, delegate newly unblocked pending tasks. Do not call subagent_result solely to relay output to dependent tasks; inspect results only when manager-side validation or synthesis requires it.\n5. Multiple instances of a role are allowed up to that role's maxInstances.\n6. Do not perform specialist implementation yourself. Coordinate, inspect, integrate worktree branches when needed, and respond to failures. Use team_retry before redelegating a failed task. If the user manually killed a task, do not retry or redelegate it until you discuss it with the user and receive explicit approval.\n7. Use question when a user decision materially changes the plan.\n8. Require configured review and verification roles before claiming success.\n9. Call team_complete only after integration and objective verification.`,
+			message: {
+				customType: TEAM_MANAGER_CONTEXT_TYPE,
+				content: TEAM_MANAGER_CONTEXT_END_MARKER,
+				display: false,
+			},
 		};
 	}
 
@@ -665,14 +697,18 @@ export class TeamRuntime {
 		const run = this.activeRun();
 		if (!run) return;
 		await this.restoreRunSettings(run, ctx);
-		this.setTeamToolsActive(false);
 		this.updateStatus(ctx);
 	}
 
 	restoreSession(ctx: ExtensionContext): void {
 		this.activeContext = ctx;
 		this.runs.clear();
-		for (const entry of ctx.sessionManager.getEntries()) {
+		const sessionManager = ctx.sessionManager as {
+			getBranch?: () => Array<{ type: string; customType?: string; data?: unknown }>;
+			getEntries?: () => Array<{ type: string; customType?: string; data?: unknown }>;
+		};
+		const entries = sessionManager.getBranch?.() ?? sessionManager.getEntries?.() ?? [];
+		for (const entry of entries) {
 			if (entry.type !== "custom" || entry.customType !== "team-state") continue;
 			const run = (entry.data as { run?: TeamRun } | undefined)?.run;
 			if (run?.id && this.teams.has(run.teamName)) this.runs.set(run.id, run);
@@ -691,8 +727,10 @@ export class TeamRuntime {
 			.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
 			.sort((a, b) => b.updatedAt - a.updatedAt)[0];
 		this.activeRunId = latestActive?.id;
+		this.managerContextEndPending = !latestActive && this.runs.size > 0;
 		if (latestActive) this.emitTeamState(latestActive);
-		this.setTeamToolsActive(Boolean(latestActive));
+		if (this.runs.size > 0) this.setTeamToolsActive(true);
+		else this.clearTeamToolsForInactiveSession();
 		this.updateStatus(ctx);
 	}
 
