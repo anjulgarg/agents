@@ -769,8 +769,9 @@ function testSubagentDashboard(): void {
 	);
 	check("subagent thread: projects generic statuses", announcedOutput.includes("lint: clean"));
 	check(
-		"subagent thread: pins token speed in metadata",
-		announced.render(120).some((line: string) => line.includes("40 tok/s")),
+		"subagent thread: pins token speed beside usage on the second line",
+		stripAnsi(announcedLines[1] ?? "").includes("↻ 1 · ⇅ 2 · $0.0100 · 40 tok/s"),
+		JSON.stringify(announcedLines.slice(0, 3).map(stripAnsi)),
 	);
 	check(
 		"subagent thread: does not duplicate token speed in the transcript",

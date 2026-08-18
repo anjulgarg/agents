@@ -1079,16 +1079,17 @@ export class SubagentThreadView implements Component {
 				: metadataWidth > 0
 					? truncateToWidth(formatColoredUsage(item.result.usage), metadataWidth, "")
 					: "";
+		const usageAndSpeed = [usageRow, tokenSpeed]
+			.filter((value): value is string => Boolean(value))
+			.join(TITLE_SEPARATOR);
 		const metadataLines = [
 			...(teamContext.length
 				? wrapTextWithAnsi(teamContext.join(TITLE_SEPARATOR), Math.max(1, metadataWidth))
 				: []),
-			...(usageRow ? [usageRow] : []),
-			...(titleSegments.dropped.length || tokenSpeed
+			...(usageAndSpeed ? wrapTextWithAnsi(usageAndSpeed, Math.max(1, metadataWidth)) : []),
+			...(titleSegments.dropped.length
 				? wrapTextWithAnsi(
-						[...titleSegments.dropped.map((segment) => segment.text), tokenSpeed]
-							.filter((value): value is string => Boolean(value))
-							.join(TITLE_SEPARATOR),
+						titleSegments.dropped.map((segment) => segment.text).join(TITLE_SEPARATOR),
 						Math.max(1, metadataWidth),
 					)
 				: []),
