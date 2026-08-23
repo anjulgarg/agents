@@ -5,8 +5,11 @@ import { join } from "node:path";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import claudeCodeUi, {
+	computeSessionUsage,
 	contextRailPercent,
 	createFooter,
+	formatCacheHitRate,
+	formatSessionCost,
 	findEditorRuleIndex,
 	formatEditorTopBorder,
 	formatExtensionStatuses,
@@ -530,3 +533,135 @@ assert(
 	aIdx >= 0 && mIdx >= 0 && zIdx >= 0 && aIdx < mIdx && mIdx < zIdx,
 	`a=${aIdx} m=${mIdx} z=${zIdx}: ${JSON.stringify(rendered4Line)}`,
 );
+
+// ---- Session usage footer segment tests ----
+
+function assistantEntry(
+	input: number,
+	cacheRead: number,
+	cacheWrite: number,
+	output: number,
+	cost: number,
+): any {
+	return {
+		type: "message",
+		message: {
+			role: "assistant",
+			usage: { input, cacheRead, cacheWrite, output, cost: { total: cost } },
+		},
+	};
+}
+
+const usageEntries: any[] = [
+	assistantEntry(1000, 0, 4000, 200, 0.05),
+	{ type: "message", message: { role: "user", content: "hi" } },
+	assistantEntry(200, 8000, 0, 300, 0.02),
+	{
+		type: "message",
+		message: {
+			role: "toolResult",
+			usage: { input: 100, cacheRead: 0, cacheWrite: 0, output: 50, cost: { total: 0.01 } },
+		},
+	},
+	{
+		type: "compaction",
+		usage: { input: 400, cacheRead: 0, cacheWrite: 0, output: 100, cost: { total: 0.02 } },
+	},
+];
+
+const sessionUsage = computeSessionUsage(usageEntries);
+assert(
+	"session usage totals assistant, tool result, and compaction entries",
+	sessionUsage.input === 1700 &&
+		sessionUsage.cacheRead === 8000 &&
+		sessionUsage.cacheWrite === 4000 &&
+		sessionUsage.output === 650 &&
+		Math.abs(sessionUsage.cost - 0.1) < 1e-9,
+	JSON.stringify(sessionUsage),
+);
+
+assert(
+	"cache hit rate is session-wide cache reads over all prompt tokens",
+	formatCacheHitRate(sessionUsage) === "cache 58%",
+	String(formatCacheHitRate(sessionUsage)),
+);
+assert(
+	"cache hit rate is hidden until the session has prompt traffic",
+	formatCacheHitRate({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }) === undefined,
+	"empty session reported a cache hit rate",
+);
+assert(
+	"session cost is rounded to two decimal places",
+	formatSessionCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.1234 }) ===
+		"$0.12" &&
+		formatSessionCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 12.345 }) ===
+			"$12.35",
+	`${formatSessionCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.1234 })} ${formatSessionCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 12.345 })}`,
+);
+assert(
+	"session cost is hidden for subscription-backed models that report no cost",
+	formatSessionCost({ input: 10, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0 }) === undefined,
+	"zero cost produced a footer segment",
+);
+
+const usageCtx: any = {
+	cwd: "/home/test",
+	model: { name: "gpt-4", id: "gpt-4", provider: "openai", contextWindow: 272_000 },
+	getContextUsage: () => ({ tokens: 34_000, percent: 12.5 }),
+	sessionManager: { getEntries: () => usageEntries },
+};
+const usageFooter = createFooter(
+	usageCtx,
+	makeFooterData([], null),
+	alwaysFalse,
+	emptyString,
+	alwaysFalse,
+	noop,
+	noop,
+	noop,
+);
+const usageLine = usageFooter.render(200).join("");
+assert(
+	"footer shows cache hit rate and session cost in distinct pastel colors after context",
+	usageLine.includes("\x1b[38;5;122mcache 58%\x1b[39m") &&
+		usageLine.includes("\x1b[38;5;211m$0.10\x1b[39m") &&
+		usageLine.indexOf("34k/272k") < usageLine.indexOf("cache 58%") &&
+		usageLine.indexOf("cache 58%") < usageLine.indexOf("$0.10"),
+	usageLine,
+);
+
+const usageNarrowLines = usageFooter.render(28);
+const usageNarrow = usageNarrowLines.join("\n");
+assert(
+	"cache hit rate and session cost wrap onto further lines instead of truncating",
+	usageNarrowLines.length > 1 &&
+		usageNarrowLines.every((line: string) => visibleWidth(line) <= 28) &&
+		usageNarrow.includes("cache 58%") &&
+		usageNarrow.includes("$0.10"),
+	JSON.stringify(usageNarrowLines),
+);
+usageFooter.dispose();
+
+const emptyUsageCtx: any = {
+	cwd: "/home/test",
+	model: { name: "gpt-4", id: "gpt-4", provider: "openai", contextWindow: 272_000 },
+	getContextUsage: () => ({ tokens: 0, percent: 0 }),
+	sessionManager: { getEntries: () => [] },
+};
+const emptyUsageFooter = createFooter(
+	emptyUsageCtx,
+	makeFooterData([], null),
+	alwaysFalse,
+	emptyString,
+	alwaysFalse,
+	noop,
+	noop,
+	noop,
+);
+const emptyUsageLine = emptyUsageFooter.render(200).join("");
+assert(
+	"fresh session omits both usage segments",
+	!emptyUsageLine.includes("cache") && !emptyUsageLine.includes("$"),
+	emptyUsageLine,
+);
+emptyUsageFooter.dispose();

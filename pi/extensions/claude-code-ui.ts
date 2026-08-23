@@ -10,6 +10,7 @@ import {
 	type ExtensionContext,
 	type KeybindingsManager,
 	type ReadonlyFooterDataProvider,
+	type SessionEntry,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -150,6 +151,7 @@ export function formatEditorTopBorder(width: number, sessionTitle: string | unde
 }
 
 const CONTEXT_USAGE_TTL_MS = 200;
+const SESSION_USAGE_TTL_MS = 200;
 
 type ContextUsage = ReturnType<ExtensionContext["getContextUsage"]>;
 
@@ -218,7 +220,87 @@ export function getMemoizedSessionName(read: () => string | undefined): string |
 /** Drop every per-frame memo whose input a lifecycle event can have changed. */
 function invalidateFrameCaches(ctx: ExtensionContext): void {
 	if (contextUsageMemo?.ctx === ctx) contextUsageMemo = undefined;
+	if (sessionUsageMemo?.ctx === ctx) sessionUsageMemo = undefined;
 	sessionNameMemo = undefined;
+}
+
+export interface SessionUsageTotals {
+	/** Uncached prompt tokens. */
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	/** Total session cost in USD, zero for subscription-backed models. */
+	cost: number;
+}
+
+function usageOf(entry: SessionEntry) {
+	if (entry.type === "message") {
+		if (entry.message.role === "assistant") return entry.message.usage;
+		if (entry.message.role === "toolResult") return entry.message.usage;
+		return undefined;
+	}
+	if (entry.type === "branch_summary" || entry.type === "compaction") return entry.usage;
+	return undefined;
+}
+
+/**
+ * Sum every usage-bearing session entry, matching the host footer: assistant
+ * messages, summarizing tool results, branch summaries, and compactions.
+ */
+export function computeSessionUsage(entries: readonly SessionEntry[]): SessionUsageTotals {
+	const totals: SessionUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	for (const entry of entries) {
+		const usage = usageOf(entry);
+		if (!usage) continue;
+		totals.input += usage.input ?? 0;
+		totals.output += usage.output ?? 0;
+		totals.cacheRead += usage.cacheRead ?? 0;
+		totals.cacheWrite += usage.cacheWrite ?? 0;
+		totals.cost += usage.cost?.total ?? 0;
+	}
+	return totals;
+}
+
+/**
+ * Session-wide cache hit rate: cache reads over all prompt tokens. Undefined
+ * until the session has prompt traffic, so the segment stays hidden.
+ */
+export function formatCacheHitRate(totals: SessionUsageTotals): string | undefined {
+	const promptTokens = totals.input + totals.cacheRead + totals.cacheWrite;
+	if (promptTokens <= 0) return undefined;
+	return `cache ${Math.round((totals.cacheRead / promptTokens) * 100)}%`;
+}
+
+/** Total session cost, hidden while it is zero (subscription-backed models). */
+export function formatSessionCost(totals: SessionUsageTotals): string | undefined {
+	if (!(totals.cost > 0)) return undefined;
+	return `$${totals.cost.toFixed(2)}`;
+}
+
+interface SessionUsageMemo {
+	ctx: ExtensionContext;
+	totals: SessionUsageTotals;
+	expiresAt: number;
+}
+
+let sessionUsageMemo: SessionUsageMemo | undefined;
+
+/**
+ * Totalling usage walks every session entry, so cache it briefly instead of
+ * repeating the scan on each render frame.
+ */
+function getMemoizedSessionUsage(ctx: ExtensionContext): SessionUsageTotals {
+	const now = Date.now();
+	if (!sessionUsageMemo || sessionUsageMemo.ctx !== ctx || now >= sessionUsageMemo.expiresAt) {
+		const entries = ctx.sessionManager?.getEntries() ?? [];
+		sessionUsageMemo = {
+			ctx,
+			totals: computeSessionUsage(entries),
+			expiresAt: now + SESSION_USAGE_TTL_MS,
+		};
+	}
+	return sessionUsageMemo.totals;
 }
 
 export function contextRailPercent(ctx: ExtensionContext): number | undefined {
@@ -468,6 +550,9 @@ export function createFooter(
 			const branch = footerData.getGitBranch();
 			const mode = getMode();
 			const context = formatContext(ctx);
+			const sessionUsage = getMemoizedSessionUsage(ctx);
+			const cacheHitRate = formatCacheHitRate(sessionUsage);
+			const sessionCost = formatSessionCost(sessionUsage);
 			const segments = [
 				mode === "plan" ? color(214, "plan") : color(78, "auto"),
 				branch ? color(150, formatGitBranch(branch, isLinkedWorktree())) : undefined,
@@ -482,6 +567,8 @@ export function createFooter(
 					),
 				),
 				context ? color(117, context) : undefined,
+				cacheHitRate ? color(122, cacheHitRate) : undefined,
+				sessionCost ? color(211, sessionCost) : undefined,
 				quota?.fiveHourRemaining !== undefined
 					? color(quotaColor(quota.fiveHourRemaining, 222), `5h ${quota.fiveHourRemaining}%`)
 					: undefined,
