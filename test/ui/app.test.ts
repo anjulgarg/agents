@@ -34,7 +34,7 @@ describe("interactive dashboard and selector", () => {
 		await pause();
 		expect(view.lastFrame()).toContain("Selected 3/");
 		expect(view.lastFrame()).toContain("Skills (3)");
-		expect(view.lastFrame()).toContain("Pi Extensions (33)");
+		expect(view.lastFrame()).toContain("Pi Extensions (32)");
 		expect(view.lastFrame()).toContain("Prompts (1)");
 		view.stdin.write(" ");
 		await pause();
@@ -47,11 +47,11 @@ describe("interactive dashboard and selector", () => {
 		expect(view.lastFrame()).toContain("Category: pi-extension");
 		view.stdin.write("/");
 		await pause();
-		view.stdin.write("team");
+		view.stdin.write("plan-mode");
 		await pause();
 		view.stdin.write("\r");
 		await pause();
-		expect(view.lastFrame()).toContain("Search: team");
+		expect(view.lastFrame()).toContain("Search: plan-mode");
 		view.stdin.write("x");
 		await pause();
 		view.stdin.write(" ");
@@ -59,7 +59,7 @@ describe("interactive dashboard and selector", () => {
 		view.stdin.write("\r");
 		await pause();
 		expect(view.lastFrame()).toContain("Review install");
-		expect(view.lastFrame()).toContain("Dependency-added: pi-extension:subagent");
+		expect(view.lastFrame()).toContain("Dependency-added: skill:foreman-plan");
 		expect(view.lastFrame()).toContain("Requirements:");
 		view.stdin.write("\r");
 		await pause();

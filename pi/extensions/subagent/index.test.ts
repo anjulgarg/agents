@@ -1451,45 +1451,8 @@ async function testParentActivityWidgetAggregatesStandaloneRuns(): Promise<void>
 	}
 }
 
-async function testRoleInstructionsInChildSystemPrompt(): Promise<void> {
-	const name = "b. roleInstructions append to child system prompt only for team roles";
-	const pi = new FakePi();
-	const children: FakeChild[] = [];
-	const supervisor = install(pi, children);
-	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-test-"));
-	try {
-		await callTool(
-			pi,
-			"subagent",
-			{
-				tasks: [
-					{
-						task: "review the change",
-						role: "adversary",
-						roleInstructions: "Challenge correctness with evidence.",
-					},
-					{
-						task: "plain work",
-					},
-				],
-			},
-			fakeCtx({ cwd: promptRoot }),
-		);
-		assert(
-			name,
-			children[0].systemPrompt.includes("ROLE: adversary") &&
-				children[0].systemPrompt.includes("Challenge correctness with evidence.") &&
-				!children[1].systemPrompt.includes("ROLE:"),
-			`role=${children[0].systemPrompt} plain=${children[1].systemPrompt}`,
-		);
-	} finally {
-		supervisor.dispose();
-		await fs.promises.rm(promptRoot, { recursive: true, force: true });
-	}
-}
-
 async function testSubagentUpdateShape(): Promise<void> {
-	const name = "b. subagent:update emitted with team-compatible shape";
+	const name = "b. subagent:update emitted with the stable cross-extension shape";
 	const pi = new FakePi();
 	const children: FakeChild[] = [];
 	const supervisor = install(pi, children);
@@ -1502,10 +1465,7 @@ async function testSubagentUpdateShape(): Promise<void> {
 			{
 				tasks: [
 					{
-						task: "team work",
-						teamRunId: "team-run-1",
-						teamTaskId: "task-a",
-						role: "implementer",
+						task: "delegated work",
 					},
 				],
 			},
@@ -1517,9 +1477,7 @@ async function testSubagentUpdateShape(): Promise<void> {
 			name,
 			!!update?.runId &&
 				Array.isArray(update.results) &&
-				result?.teamRunId === "team-run-1" &&
-				result?.teamTaskId === "task-a" &&
-				result?.role === "implementer" &&
+				typeof result?.taskId === "string" &&
 				result?.done === false &&
 				typeof result?.output === "string" &&
 				result?.usage &&
@@ -1847,72 +1805,6 @@ function testGenericChildUiReducer(): void {
 		state.statuses.build === undefined,
 		JSON.stringify(state),
 	);
-}
-
-async function testF6PrefersActiveTeam(): Promise<void> {
-	const pi = new FakePi();
-	const supervisor = install(pi, []);
-	let component: any;
-	const task = (taskId: string, teamRunId?: string) => ({
-		taskId,
-		index: 0,
-		task: taskId,
-		status: "done",
-		model: "test/model",
-		thinking: "off",
-		workspace: "shared",
-		cwd: "/tmp",
-		teamRunId,
-		output: "done",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-	});
-	const entries = [
-		{
-			type: "custom",
-			customType: "subagent-state",
-			data: { run: { runId: "old-run", startedAt: 1, tasks: [task("old-agent")] } },
-		},
-		{
-			type: "custom",
-			customType: "subagent-state",
-			data: {
-				run: { runId: "team-child-run", startedAt: 2, tasks: [task("team-agent", "active-team")] },
-			},
-		},
-	];
-	pi.events.emit("team:state", { runId: "active-team", teamName: "product", active: true });
-	const shortcut = pi.shortcuts.get("f6") as { handler: (ctx: any) => Promise<void> };
-	try {
-		await shortcut.handler(
-			fakeCtx({
-				mode: "tui",
-				sessionManager: { getEntries: () => entries },
-				ui: {
-					notify: () => {},
-					custom: async (factory: any) => {
-						component = factory(
-							{ terminal: { rows: 30, columns: 120 }, requestRender() {}, invalidate() {} },
-							{
-								fg: (_key: string, text: string) => text,
-								bg: (_key: string, text: string) => text,
-								bold: (text: string) => text,
-							},
-							{},
-							() => {},
-						);
-					},
-				},
-			}),
-		);
-		assert(
-			"i. F6 prioritizes the active team group",
-			component?.selectedGroupKey === "team:active-team",
-			`selectedGroupKey=${component?.selectedGroupKey}`,
-		);
-	} finally {
-		component?.dispose?.();
-		supervisor.dispose();
-	}
 }
 
 async function testF6DefaultsToNewestCompletedGroup(): Promise<void> {
@@ -2986,7 +2878,6 @@ async function main(): Promise<void> {
 	await testPrimaryRendererIsQuietAndExpandable();
 	testManagementRenderersStayOutOfCollapsedHistory();
 	await testDirectOutputHandoff();
-	await testRoleInstructionsInChildSystemPrompt();
 	await testDefaultToolsInheritParent();
 	await testInactiveBranchHandoffRejected();
 	await testOversizeHandoffRejectedBeforePreparation();
@@ -3010,7 +2901,6 @@ async function main(): Promise<void> {
 	await testPersistentValidationFailuresAndMixedModes();
 	await testPersistedManagementAfterReload();
 	testF6ShortcutRegistered();
-	await testF6PrefersActiveTeam();
 	await testF6DefaultsToNewestCompletedGroup();
 	await testF6RetainsPersistentConversation();
 	testGenericChildUiReducer();

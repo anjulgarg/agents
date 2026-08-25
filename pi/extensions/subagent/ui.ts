@@ -728,7 +728,6 @@ interface SubagentThreadItem {
 
 export interface SubagentThreadGroup {
 	key: string;
-	teamRunId?: string;
 	startedAt: number;
 	items: SubagentThreadItem[];
 }
@@ -752,14 +751,10 @@ export function buildThreadGroups(runs: SubagentDetails[]): SubagentThreadGroup[
 		for (const result of run.results) {
 			const persistentSessionId =
 				result.mode === "persistent" && result.sessionId ? result.sessionId : undefined;
-			const key = result.teamRunId
-				? `team:${result.teamRunId}`
-				: persistentSessionId
-					? `session:${persistentSessionId}`
-					: `run:${run.runId}`;
+			const key = persistentSessionId ? `session:${persistentSessionId}` : `run:${run.runId}`;
 			let group = groups.get(key);
 			if (!group) {
-				group = { key, teamRunId: result.teamRunId, startedAt: run.startedAt, items: [] };
+				group = { key, startedAt: run.startedAt, items: [] };
 				groups.set(key, group);
 			}
 			const item = { runId: run.runId, startedAt: run.startedAt, result };
@@ -832,7 +827,6 @@ export class SubagentThreadView implements Component {
 		initialTaskId?: string,
 		private onSelect?: (taskId: string, groupKey: string) => void,
 		initialGroupKey?: string,
-		private getTeamName: (teamRunId: string) => string | undefined = () => undefined,
 		private onGroupSelect?: (groupKey: string) => void,
 		private killTask: (runId: string, taskId: string) => void = () => {},
 		private killAll: () => void = () => {},
@@ -1062,11 +1056,6 @@ export class SubagentThreadView implements Component {
 			{ text: pastel(HEADER_PASTELS.context, this.theme.bold(contextLabel)) },
 			{ text: pastel(HEADER_PASTELS.mode, this.theme.bold(mode)) },
 		]);
-		const teamContext = group.teamRunId
-			? [`${this.getTeamName(group.teamRunId) ?? "Team"} team`, item.result.role].filter(
-					(value): value is string => Boolean(value),
-				)
-			: [];
 		const tokenSpeed = item.result.uiState?.statuses[TOKEN_SPEED_STATUS_KEY];
 		const metadataWidth = Math.max(0, Math.floor(contentWidth));
 		const usageRow =
@@ -1083,9 +1072,6 @@ export class SubagentThreadView implements Component {
 			.filter((value): value is string => Boolean(value))
 			.join(TITLE_SEPARATOR);
 		const metadataLines = [
-			...(teamContext.length
-				? wrapTextWithAnsi(teamContext.join(TITLE_SEPARATOR), Math.max(1, metadataWidth))
-				: []),
 			...(usageAndSpeed ? wrapTextWithAnsi(usageAndSpeed, Math.max(1, metadataWidth)) : []),
 			...(titleSegments.dropped.length
 				? wrapTextWithAnsi(

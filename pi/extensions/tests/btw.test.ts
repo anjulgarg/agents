@@ -146,23 +146,13 @@ function testExtensionStateSummary(): void {
 				tasks: [{ index: 0, task: "inspect", status: "running" }],
 			},
 		}),
-		customEntry("team-1", "team-state", {
-			run: {
-				id: "team-1",
-				teamName: "review",
-				status: "executing",
-				tasks: [{ title: "Audit", status: "completed" }],
-			},
-		}),
 	];
 	const state = buildBtwState(entries);
 	assert(
 		"BTW ignores todo entries while summarizing hidden session state",
 		!state.includes("ignore this custom entry") &&
 			!state.includes("Todos") &&
-			state.includes("running: inspect") &&
-			state.includes("review: executing") &&
-			state.includes("completed: Audit"),
+			state.includes("running: inspect"),
 		state,
 	);
 	assert(

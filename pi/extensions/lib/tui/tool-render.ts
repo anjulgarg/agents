@@ -55,7 +55,7 @@ export function emptyCollapsedToolRender(): Component {
 
 /**
  * Wraps tool call/result chrome so collapsed rows stay quiet.
- * Default error policy is `"show"` for existing subagent/team call sites.
+ * Default error policy is `"show"` for existing subagent call sites.
  */
 export class ExpandableToolRender implements Component {
 	constructor(

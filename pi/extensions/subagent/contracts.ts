@@ -97,9 +97,6 @@ export interface SubagentUpdateResult {
 	taskId?: string;
 	mode?: SubagentMode;
 	sessionId?: string;
-	teamRunId?: string;
-	teamTaskId?: string;
-	role?: string;
 	done: boolean;
 	error?: string;
 	manualKill?: boolean;
@@ -126,9 +123,6 @@ export interface SubagentResultView {
 	/** Absent in legacy records; omitted mode is the ephemeral default. */
 	mode?: SubagentMode;
 	sessionId?: string;
-	teamRunId?: string;
-	teamTaskId?: string;
-	role?: string;
 	model: string;
 	thinking: ThinkingLevel;
 	workspace: WorkspaceMode;

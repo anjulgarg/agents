@@ -15,17 +15,21 @@ agents install --home "$fixture" --component skill:foreman-plan --yes
 
 Legacy direct extension copies are recognized before a receipt. Installing the matching component removes only approved legacy destinations and replaces loading with the filtered local package entry. Unknown skills and unrelated harness files remain untouched. Never invoke the retired Python installer to build a migration fixture; copy current repository resources into the old destination shape.
 
+## Retired teams components
+
+The `pi-extension:team` and `pi-team:product` components were removed from the catalog. An older receipt that still lists them stays valid and keeps inferring ownership for every remaining component. Installing `pi-extension:subagent`, any profile, or the default selection prunes the retired artifacts: `.pi/agent/teams/product.json`, the legacy `.pi/agent/extensions/team/index.ts` copy, the `+pi/extensions/team/index.ts` local package filter, and the retired receipt entries. An empty `.pi/agent/teams` directory is inert and can be removed manually. The complete pre-removal implementation stays available in Git under the `archive/teams` tag.
+
 ## Live cutover checklist
 
 1. Stop concurrent installers and coordinate active Pi sessions for `/reload`.
 2. Build and link locally with `npm ci`, `npm run build`, and `npm link`.
 3. Run `npm run test:e2e` and inspect `npm pack --dry-run --json`.
 4. Choose a backup directory outside the repository, `~/.agents`, and `~/.pi`. Create it with user-only permissions, for example `umask 077; mkdir -p "$backup"`.
-5. Copy only the managed destination files and their parent metadata needed for exact restoration. Include the prior settings, models, keybindings, MCP, teams, direct extensions, shared instruction destinations, Cursor hook files, skills, and any existing receipt. Do not copy or inspect authentication, credentials, sessions, state, npm/git caches, or unrelated resources.
+5. Copy only the managed destination files and their parent metadata needed for exact restoration. Include the prior settings, models, keybindings, MCP, direct extensions, shared instruction destinations, Cursor hook files, skills, and any existing receipt. Do not copy or inspect authentication, credentials, sessions, state, npm/git caches, or unrelated resources.
 6. Record the current dotfiles commit for pre-cutover restoration: `git -C "$DOTFILES_ROOT" rev-parse HEAD`.
 7. Review `agents install` interactively. Apply the default profile only after the paths and dependency additions are correct.
 8. Run `agents list` and `agents doctor`. Resolve every unexplained failure or drift.
-9. Run `/reload` in every active Pi session, or start a new Pi process. Verify the theme, prompt, skills, product team, and selected extension entrypoints load once without startup errors.
+9. Run `/reload` in every active Pi session, or start a new Pi process. Verify the theme, prompt, skills, and selected extension entrypoints load once without startup errors.
 10. Remove old dotfiles ownership only after every prior check passes. Keep the backup until the migrated configuration has been used successfully.
 
 ## Failure recovery

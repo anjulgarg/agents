@@ -4,7 +4,13 @@ import type { ComponentId, ReadOnlyFileSystem, ReceiptInspection } from "../doma
 import { isRecord } from "../domain/util.ts";
 
 const componentIdPattern =
-	/^(?:skill|pi-extension|pi-config|pi-package|pi-prompt|pi-theme|pi-team|instructions|harness):[a-z0-9]+(?:-[a-z0-9]+)*$/;
+	/^(?:skill|pi-extension|pi-config|pi-package|pi-prompt|pi-theme|instructions|harness):[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Ids of retired categories stay parseable so an upgrade over an older install keeps
+ * inferring ownership for every component that is still in the catalog.
+ */
+const retiredComponentIdPattern = /^pi-team:[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function malformed(path: string, warning: string): ReceiptInspection {
 	return {
@@ -60,10 +66,15 @@ export async function readReceipt(
 
 	const managed = new Set<ComponentId>();
 	for (const [id, entry] of Object.entries(value.components)) {
-		if (!componentIdPattern.test(id) || !isRecord(entry) || !Array.isArray(entry.outputs)) {
+		const retired = retiredComponentIdPattern.test(id);
+		if (
+			(!componentIdPattern.test(id) && !retired) ||
+			!isRecord(entry) ||
+			!Array.isArray(entry.outputs)
+		) {
 			return malformed(path, "Install receipt is malformed; ownership was not inferred.");
 		}
-		managed.add(id as ComponentId);
+		if (!retired) managed.add(id as ComponentId);
 	}
 	return {
 		path,

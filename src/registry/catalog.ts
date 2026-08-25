@@ -53,7 +53,6 @@ const extensions = [
 	["session-recap", "session-recap/index.ts"],
 	["session-title", "session-title/index.ts"],
 	["subagent", "subagent/index.ts"],
-	["team", "team/index.ts"],
 	["todo", "todo.ts"],
 	["token-speed", "token-speed.ts"],
 	["tool-loader", "tool-loader.ts"],
@@ -90,13 +89,23 @@ const skillComponents: ComponentDefinition[] = skills.map((slug) => ({
 
 function extensionDependencies(slug: string): ComponentId[] {
 	switch (slug) {
-		case "team":
-			return ["pi-extension:subagent"];
 		case "plan-mode":
 			return ["skill:foreman-plan"];
 		default:
 			return [];
 	}
+}
+
+/**
+ * Destinations of retired components that installs must clean up.
+ * The teams feature was removed; its product definition is pruned by the subagent
+ * extension, which every prior teams install already depended on.
+ */
+function extensionLegacyPaths(slug: string, entrypoint: string): string[] {
+	const paths = [`.pi/agent/extensions/${entrypoint}`];
+	if (slug === "subagent")
+		paths.push(".pi/agent/teams/product.json", ".pi/agent/extensions/team/index.ts");
+	return paths;
 }
 
 const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entrypoint]) => ({
@@ -108,7 +117,7 @@ const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entryp
 	outputs: [piFilter("extensions", `pi/extensions/${entrypoint}`)],
 	dependsOn: extensionDependencies(slug),
 	requirements: [NODE, PI],
-	legacyPaths: [`.pi/agent/extensions/${entrypoint}`],
+	legacyPaths: extensionLegacyPaths(slug, entrypoint),
 }));
 
 const instructionBegin = "<!-- agents:instructions:begin -->";
@@ -213,16 +222,6 @@ const otherComponents: ComponentDefinition[] = [
 		requirements: [NODE, PI],
 	},
 	{
-		id: "pi-team:product",
-		category: "pi-team",
-		label: "Product Team",
-		description: "Cross-functional product engineering team.",
-		resources: [{ path: "pi/teams/product.json", kind: "file" }],
-		outputs: [{ strategy: "copy", destination: ".pi/agent/teams/product.json" }],
-		dependsOn: ["pi-extension:team"],
-		requirements: [NODE, PI],
-	},
-	{
 		id: "instructions:shared",
 		category: "instructions",
 		label: "Shared Instructions",
@@ -265,7 +264,6 @@ export const piComponentIds = components
 			category === "pi-config" ||
 			category === "pi-package" ||
 			category === "pi-prompt" ||
-			category === "pi-theme" ||
-			category === "pi-team",
+			category === "pi-theme",
 	)
 	.map(({ id }) => id);

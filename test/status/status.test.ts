@@ -235,6 +235,26 @@ describe("read-only system status", () => {
 		const malformed = await readReceipt(home);
 		expect(malformed.schemaState).toBe("malformed");
 		expect(malformed.managedComponents.size).toBe(0);
+
+		await writeJson(join(home, ".agents/anjulgarg-agents.json"), {
+			schemaVersion: 1,
+			source: { kind: "local", root: sourceRoot, revision: null },
+			components: {
+				"skill:foreman-plan": {
+					installedAt: "2026-01-01T00:00:00Z",
+					sourceDigest: "x",
+					outputs: [],
+				},
+				"pi-team:product": {
+					installedAt: "2026-01-01T00:00:00Z",
+					sourceDigest: "y",
+					outputs: [],
+				},
+			},
+		});
+		const retired = await readReceipt(home);
+		expect(retired.schemaState).toBe("current");
+		expect([...retired.managedComponents]).toEqual(["skill:foreman-plan"]);
 	});
 
 	it("reports only unknown skill directories as unmanaged", async () => {

@@ -42,7 +42,6 @@ const extensionIds = [
 	"pi-extension:session-recap",
 	"pi-extension:session-title",
 	"pi-extension:subagent",
-	"pi-extension:team",
 	"pi-extension:todo",
 	"pi-extension:token-speed",
 	"pi-extension:tool-loader",
@@ -82,19 +81,18 @@ async function errorCode(action: () => Promise<unknown>): Promise<string | undef
 describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
-		expect(components.length).toBe(34 + 2 + (localPiConfigFiles.mcp ? 2 : 0) + 5);
+		expect(components.length).toBe(3 + 32 + 4 + (localPiConfigFiles.mcp ? 2 : 0));
 		expect(components.filter(({ category }) => category === "skill").map(({ id }) => id)).toEqual(
 			skillIds,
 		);
 		expect(
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
-		expect(components.slice(36).map(({ id }) => id)).toEqual([
+		expect(components.slice(35).map(({ id }) => id)).toEqual([
 			"pi-config:keybindings",
 			...(localPiConfigFiles.mcp ? ["pi-package:mcp-adapter", "pi-config:mcp-sentry"] : []),
 			"pi-theme:claude-code",
 			"pi-prompt:orchestrate",
-			"pi-team:product",
 			"instructions:shared",
 		]);
 		expect(JSON.stringify(components)).not.toMatch(/(?:enabledModels|models(?:-store)?\.json)/);
@@ -106,9 +104,7 @@ describe("component registry", () => {
 		expect(defaultIds).toHaveLength(components.length);
 		expect(piIds).toHaveLength(
 			components.filter(({ category }) =>
-				["pi-extension", "pi-config", "pi-package", "pi-prompt", "pi-theme", "pi-team"].includes(
-					category,
-				),
+				["pi-extension", "pi-config", "pi-package", "pi-prompt", "pi-theme"].includes(category),
 			).length + 2,
 		);
 		expect(resolveProfile("skills")).toEqual(skillIds);
@@ -123,15 +119,6 @@ describe("component registry", () => {
 		expect(resolveSelection(["pi-extension:plan-mode"])).toEqual([
 			"pi-extension:plan-mode",
 			"skill:foreman-plan",
-		]);
-		expect(resolveSelection(["pi-extension:team"])).toEqual([
-			"pi-extension:subagent",
-			"pi-extension:team",
-		]);
-		expect(resolveSelection(["pi-team:product"])).toEqual([
-			"pi-extension:subagent",
-			"pi-extension:team",
-			"pi-team:product",
 		]);
 		if (localPiConfigFiles.mcp) {
 			expect(resolveSelection(["pi-config:mcp-sentry"])).toEqual([

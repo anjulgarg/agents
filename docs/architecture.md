@@ -18,12 +18,11 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | Category       | Installed role                                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `skill`        | Three shared skill directories under `~/.agents/skills`; each can be selected independently.                      |
-| `pi-extension` | Local-package filters for 33 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
+| `pi-extension` | Local-package filters for 32 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
 | `pi-config`    | Pi keybindings plus optional local-only model and MCP JSON pointers. Unowned keys remain local.                   |
 | `pi-package`   | The optional removable `npm:pi-mcp-adapter@2.15.0` Pi setting. It is referenced, not vendored.                    |
 | `pi-prompt`    | The `orchestrate` prompt through the local Pi package.                                                            |
 | `pi-theme`     | The `claude-code` theme through the local Pi package.                                                             |
-| `pi-team`      | The product team definition; selecting it adds the subagent extension dependency.                                 |
 | `instructions` | Managed instruction blocks or copies for Pi, Codex, OpenCode, Claude Code, and Cursor.                            |
 
 The compaction-model extension stores its global selection under `~/.pi/agent/state/compaction-model.json`; it is not tied to an individual session and is used only for compaction. During compaction it shows a live elapsed timer and adds a visible compaction receipt with the reason, token count, and model used, plus the final duration to the persistent thread.

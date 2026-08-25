@@ -21,7 +21,7 @@ function normalizeModelName(value: string): string {
 	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
-/** Fuzzy subagent model lookup; team policy validation remains in team/index.ts. */
+/** Fuzzy subagent model lookup against the active Pi model scope. */
 export function resolveSubagentModel(
 	requested: string | undefined,
 	available: Model<any>[],

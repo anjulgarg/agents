@@ -6,7 +6,7 @@ export interface SubagentControlBinding {
 	recordManualKill: (runId: string, taskId: string) => void;
 }
 
-/** Active supervisor binding for cross-extension hard-kill, such as team-cancel. */
+/** Active supervisor binding for cross-extension hard-kill. */
 let activeKillBinding: SubagentControlBinding | undefined;
 
 export function bindSubagentControl(binding: SubagentControlBinding): void {

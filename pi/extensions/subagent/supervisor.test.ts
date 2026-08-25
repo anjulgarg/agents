@@ -960,7 +960,7 @@ async function testExitPropagatesStderr(): Promise<void> {
 	const children: FakeChild[] = [];
 	const wakes: Wake[] = [];
 	const ansiStderr =
-		'\u001b[31mError: Failed to load extension "/tmp/team/index.ts": Extension does not export a valid factory function\u001b[0m\n' +
+		'\u001b[31mError: Failed to load extension "/tmp/broken/index.ts": Extension does not export a valid factory function\u001b[0m\n' +
 		"\u001b[90m    at loadExtension (ext.ts:1:1)\u001b[0m\n";
 
 	const supervisor = new Supervisor({

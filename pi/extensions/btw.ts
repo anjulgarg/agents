@@ -56,13 +56,6 @@ interface PersistedSubagentRun {
 	tasks?: Array<{ index?: number; task?: string; status?: string; error?: string }>;
 }
 
-interface PersistedTeamRun {
-	id?: string;
-	teamName?: string;
-	status?: string;
-	tasks?: Array<{ title?: string; status?: string }>;
-}
-
 export interface BtwUsage {
 	input: number;
 	cacheRead: number;
@@ -122,7 +115,6 @@ function truncateMiddle(value: string, limit: number): string {
 /** Build a small evidence supplement for extension state that is not sent to the main LLM. */
 export function buildBtwState(entries: SessionEntry[]): string {
 	const subagentRuns = new Map<string, PersistedSubagentRun>();
-	const teamRuns = new Map<string, PersistedTeamRun>();
 
 	for (const entry of entries) {
 		const custom = entryData(entry);
@@ -130,10 +122,6 @@ export function buildBtwState(entries: SessionEntry[]): string {
 		if (custom.customType === "subagent-state") {
 			const run = (custom.data as { run?: PersistedSubagentRun } | undefined)?.run;
 			if (run?.runId) subagentRuns.set(run.runId, run);
-		}
-		if (custom.customType === "team-state") {
-			const run = (custom.data as { run?: PersistedTeamRun } | undefined)?.run;
-			if (run?.id) teamRuns.set(run.id, run);
 		}
 	}
 
@@ -148,19 +136,6 @@ export function buildBtwState(entries: SessionEntry[]): string {
 							`- #${(task.index ?? 0) + 1} ${task.status ?? "unknown"}: ${task.task ?? "(untitled)"}${task.error ? `; error=${task.error}` : ""}`,
 					),
 				),
-			].join("\n"),
-		);
-	}
-	if (teamRuns.size) {
-		sections.push(
-			[
-				"Teams:",
-				...[...teamRuns.values()].flatMap((run) => [
-					`- ${run.teamName ?? "team"}: ${run.status ?? "unknown"}`,
-					...(run.tasks ?? []).map(
-						(task) => `  - ${task.status ?? "unknown"}: ${task.title ?? "(untitled)"}`,
-					),
-				]),
 			].join("\n"),
 		);
 	}

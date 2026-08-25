@@ -3,7 +3,7 @@
  *
  * The other suites cover key handling but never call render(). A throw or an undefined
  * line in render() would pass every one of them and still crash the user's TUI on
- * /subagents or /teams. These cases exercise the layouts that actually break: long
+ * /subagents. These cases exercise the layouts that actually break: long
  * stderr-bearing errors, unbroken long strings, and the narrow/wide split.
  *
  * The F6 thread suite also locks the F3 visual contract: the wide 120-column semantic
@@ -74,13 +74,10 @@ const {
 	selectTitleSegments,
 	selectWorktreeUsageRow,
 } = await import("." + "/ui.ts");
-const { TeamDashboard } = await import(".." + "/team/index.ts");
 const { getProcessAnimationDiagnostics } = await import(".." + "/lib/animation-coordinator.ts");
 type SubagentDetails = import("./index.ts").SubagentDetails;
 type SubagentResultView = import("./index.ts").SubagentResultView;
 type SubagentThreadGroup = import("./ui.ts").SubagentThreadGroup;
-type TeamRun = import("../team/index.ts").TeamRun;
-type TeamTask = import("../team/index.ts").TeamTask;
 
 let failures = 0;
 
@@ -99,7 +96,6 @@ const fakeTheme = {
 	bg: (_key: string, text: string) => text,
 	bold: (text: string) => text,
 } as any;
-const fakeKeybindings = { matches: () => false } as any;
 
 /** Strip ANSI SGR sequences for semantic assertions. */
 const stripAnsi = (line: string): string => line.replace(/\x1b\[[\d;]*m/g, "");
@@ -239,7 +235,7 @@ function toolCallPart(id: string, name: string, args: Record<string, unknown>): 
 }
 
 // A startup-failed child produces exactly this: exit code + a long ANSI-stripped tail.
-const LONG_ERROR = `exited 1 (${"Error: Failed to load extension /home/u/.pi/agent/extensions/team/index.ts: does not export a valid factory function. ".repeat(5)})`;
+const LONG_ERROR = `exited 1 (${"Error: Failed to load extension /home/u/.pi/agent/extensions/subagent/index.ts: does not export a valid factory function. ".repeat(5)})`;
 const LONG_UNBROKEN = "x".repeat(300);
 const COMPACT_USAGE = {
 	input: 100_000,
@@ -383,7 +379,6 @@ function testSubagentDashboard(): void {
 		() => subagentRuns([subagentTask()]),
 		() => () => {},
 		() => {},
-		undefined,
 		undefined,
 		undefined,
 		undefined,
@@ -573,17 +568,15 @@ function testSubagentDashboard(): void {
 			status: "done",
 		}),
 	);
-	const teamAgents = Array.from({ length: 4 }, (_, index) =>
+	const activeAgents = Array.from({ length: 4 }, (_, index) =>
 		subagentTask({
 			index,
-			taskId: `team-${index}`,
-			teamRunId: "team-active",
-			role: "engineer",
+			taskId: `active-${index}`,
 		}),
 	);
 	const groupedRuns: SubagentDetails[] = [
 		{ runId: "old-run", startedAt: 1, results: oldAgents },
-		{ runId: "team-run", startedAt: 2, results: teamAgents },
+		{ runId: "active-run", startedAt: 2, results: activeAgents },
 	];
 	const persistentGroups = buildThreadGroups([
 		{
@@ -701,28 +694,17 @@ function testSubagentDashboard(): void {
 		JSON.stringify(mixedActiveGroups),
 	);
 
-	const grouped = new SubagentThreadView(
-		fakeTui,
-		fakeTheme,
-		() => groupedRuns,
-		() => () => {},
-		() => {},
-		"team-0",
-		undefined,
-		"team:team-active",
-		() => "product",
-	);
+	const grouped = makeThreadFromRuns(groupedRuns, {
+		initialTaskId: "active-0",
+		initialGroupKey: "run:active-run",
+	});
 	check(
-		"subagent thread: active team is scoped to four agents",
+		"subagent thread: active run group is scoped to four agents",
 		grouped.render(120)[0]?.includes("Subagent 1/4") === true,
-	);
-	check(
-		"subagent thread: shows team context",
-		grouped.render(120)[1]?.includes("product team · engineer") === true,
 	);
 	grouped.handleInput("\x1b[C");
 	check(
-		"subagent thread: right stays within active team",
+		"subagent thread: right stays within the active run group",
 		grouped.render(120)[0]?.includes("Subagent 2/4") === true,
 	);
 	grouped.handleInput("\x1b[1;2D");
@@ -1518,83 +1500,7 @@ function testSubagentDashboard(): void {
 	);
 }
 
-function teamTask(overrides: Partial<TeamTask> = {}): TeamTask {
-	return {
-		id: "impl-1",
-		title: "Implement",
-		description: "Do the work",
-		role: "engineer",
-		dependsOn: [],
-		model: "openai-codex/gpt-5.6-luna",
-		thinking: "low",
-		workspace: "shared",
-		status: "running",
-		...overrides,
-	} as TeamTask;
-}
-
-function teamRuns(tasks: TeamTask[]): TeamRun[] {
-	return [
-		{
-			id: "run1",
-			teamName: "product",
-			goal: "Ship it",
-			status: "executing",
-			startedAt: Date.now(),
-			updatedAt: Date.now(),
-			tasks,
-		} as TeamRun,
-	];
-}
-
-function makeTeamDashboard(runs: TeamRun[]): any {
-	return new TeamDashboard(
-		fakeTui,
-		fakeTheme,
-		fakeKeybindings,
-		() => runs,
-		() => () => {},
-		() => {},
-		() => {},
-	);
-}
-
-function testTeamDashboard(): void {
-	renders("team: empty state", (w) => makeTeamDashboard([]).render(w));
-	renders("team: running task", (w) => makeTeamDashboard(teamRuns([teamTask()])).render(w));
-
-	// Every status must render; icon/color lookups are per-status.
-	renders("team: all task statuses", (w) =>
-		makeTeamDashboard(
-			teamRuns([
-				teamTask({ id: "a", status: "pending" }),
-				teamTask({ id: "b", status: "blocked", dependsOn: ["a"] }),
-				teamTask({ id: "c", status: "running" }),
-				teamTask({ id: "d", status: "completed", output: "done output" }),
-				teamTask({ id: "e", status: "failed", error: LONG_ERROR }),
-			]),
-		).render(w),
-	);
-
-	renders("team: unbroken 300-char description", (w) =>
-		makeTeamDashboard(
-			teamRuns([teamTask({ description: LONG_UNBROKEN, title: LONG_UNBROKEN })]),
-		).render(w),
-	);
-
-	const focused = makeTeamDashboard(teamRuns([teamTask()]));
-	focused.handleInput("\t");
-	renders("team: task-focused view", (w) => focused.render(w));
-
-	const running = makeTeamDashboard(teamRuns([teamTask()]));
-	check(
-		"team: footer advertises 'k kill running'",
-		running.render(120).join("\n").includes("k kill running"),
-	);
-}
-
 testSubagentDashboard();
-testTeamDashboard();
 
 console.log(
 	failures === 0 ? "\nAll dashboard render tests passed" : `\n${failures} render test(s) FAILED`,

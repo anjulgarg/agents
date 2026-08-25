@@ -5,11 +5,11 @@
 </p>
 
 <p align="center">
-  Skills · prompts · Pi extensions · teams · themes · instructions · safe installation
+  Skills · prompts · Pi extensions · themes · instructions · safe installation
 </p>
 
 The **Foreman Stack** is a collection of tools for building a powerful, enterprise-grade coding
-harness. It brings together reusable skills, prompts, teams, instructions, and a custom Pi setup
+harness. It brings together reusable skills, prompts, instructions, and a custom Pi setup
 with extensions that improve productivity, quality, and operational safety across engineering work.
 
 The stack is designed to be inspectable and adaptable. Use the pieces that fit your team, repositories,
@@ -17,11 +17,11 @@ and standards, then extend the workflow with your own tools and integrations.
 
 ## What is included
 
-- **Pi configuration** with extensions for planning, handoffs, subagents, teams, worktrees,
+- **Pi configuration** with extensions for planning, handoffs, subagents, worktrees,
   checkpoints, memory, jobs, LSP navigation, usage, and focused transcript workflows.
 - **Engineering skills** for planning, pull requests, deep code review, specialist review,
   harness-neutral worker orchestration, GitHub workflows, and estimation readiness.
-- **Prompts, teams, themes, and instructions** that coordinate repeatable work across supported
+- **Prompts, themes, and instructions** that coordinate repeatable work across supported
   coding-agent harnesses.
 - **The `agents` CLI**, which installs selected components transactionally into an alternate home,
   preserves unrelated files, and supports status, diagnostics, removal, backup, and rollback.
@@ -81,7 +81,7 @@ agents doctor
 ```
 
 The catalog covers `skill`, `pi-extension`, `pi-config`, `pi-package`, `pi-prompt`, `pi-theme`,
-`pi-team`, and `instructions` resources. Dependencies are resolved automatically.
+and `instructions` resources. Dependencies are resolved automatically.
 
 ## Explore the stack
 
@@ -92,7 +92,6 @@ The catalog covers `skill`, `pi-extension`, `pi-config`, `pi-package`, `pi-promp
 - [Subagent sessions](docs/subagents.md)
 - [Skills](skills/)
 - [Prompts](pi/prompts/)
-- [Teams](pi/teams/)
 
 ## Development
 

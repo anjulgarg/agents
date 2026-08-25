@@ -2,7 +2,7 @@
 
 This repository is the public source of truth for the **Foreman Stack**, a collection of tools for
 building an enterprise-grade coding harness focused on maximum productivity and quality. It contains
-reusable skills, prompts, Pi resources and extensions, teams, themes, instructions, and an installer
+reusable skills, prompts, Pi resources and extensions, themes, instructions, and an installer
 that support the workflow.
 
 The stack is designed for real enterprise engineering environments, but it is not a prescriptive
@@ -32,7 +32,7 @@ repository-specific constraints and development guidance.
 - `src/install/`: planning, safety checks, transactions, backup, and rollback.
 - `src/doctor/`: runtime and integrity diagnostics.
 - `pi/`: Pi-specific extensions, configuration boundaries, themes, and keybindings.
-- `skills/`, `pi/prompts/`, `pi/teams/`, and `pi/AGENTS.md`: installable resources.
+- `skills/`, `pi/prompts/`, and `pi/AGENTS.md`: installable resources.
 - `docs/`: architecture, migration, and recovery documentation.
 
 ## Development

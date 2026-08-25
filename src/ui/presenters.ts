@@ -96,7 +96,6 @@ const categoryLabels: Record<ComponentDefinition["category"], string> = {
 	"pi-package": "Pi Packages",
 	"pi-prompt": "Prompts",
 	"pi-theme": "Themes",
-	"pi-team": "Teams",
 	instructions: "Instructions",
 };
 

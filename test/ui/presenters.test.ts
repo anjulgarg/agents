@@ -23,8 +23,8 @@ const statuses = inspection({
 const byInspection = new Map(statuses.components.map((item) => [item.id, item]));
 const plan = {
 	operation: "install" as const,
-	requested: ["pi-extension:team" as const],
-	resolved: ["pi-extension:team" as const, "pi-extension:subagent" as const],
+	requested: ["pi-extension:plan-mode" as const],
+	resolved: ["pi-extension:plan-mode" as const, "skill:foreman-plan" as const],
 	changes: [
 		{
 			action: "write",

@@ -66,17 +66,13 @@ describe("temporary-home CLI parity", () => {
 		expect(result.plan.resolved).toHaveLength(3);
 	});
 
-	it("T3 resolves the product team subagent dependency", async () => {
+	it("T3 resolves the plan-mode skill dependency", async () => {
 		const { home } = await fixtureHome();
-		const result = await install(home, ["--component", "pi-team:product"]);
-		expect(result.plan.requested).toEqual(["pi-team:product"]);
-		expect(result.plan.resolved).toEqual([
-			"pi-extension:subagent",
-			"pi-extension:team",
-			"pi-team:product",
-		]);
-		expect(await readFile(join(home, ".pi/agent/teams/product.json"), "utf8")).toContain(
-			'"name": "product"',
+		const result = await install(home, ["--component", "pi-extension:plan-mode"]);
+		expect(result.plan.requested).toEqual(["pi-extension:plan-mode"]);
+		expect(result.plan.resolved).toEqual(["pi-extension:plan-mode", "skill:foreman-plan"]);
+		expect(await readFile(join(home, ".agents/skills/foreman-plan/SKILL.md"), "utf8")).toContain(
+			"foreman-plan",
 		);
 	});
 
@@ -182,6 +178,66 @@ describe("temporary-home CLI parity", () => {
 		expect(await readFile(join(home, ".agents/skills/find-skills/SKILL.md"), "utf8")).toBe(
 			"unmanaged\n",
 		);
+	});
+
+	it("T4 prunes retired teams artifacts and receipt entries on upgrade", async () => {
+		const { home } = await fixtureHome();
+		const teamsFile = join(home, ".pi/agent/teams/product.json");
+		const teamExtension = join(home, ".pi/agent/extensions/team/index.ts");
+		for (const path of [teamsFile, teamExtension]) {
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, "retired\n");
+		}
+		await writeFile(
+			join(home, ".pi/agent/settings.json"),
+			JSON.stringify({
+				packages: [
+					{
+						source: sourceRoot,
+						extensions: ["+pi/extensions/subagent/index.ts", "+pi/extensions/team/index.ts"],
+						skills: [],
+						prompts: [],
+						themes: [],
+					},
+				],
+			}),
+		);
+		const receiptPath = join(home, ".agents/anjulgarg-agents.json");
+		await mkdir(dirname(receiptPath), { recursive: true });
+		await writeFile(
+			receiptPath,
+			JSON.stringify({
+				schemaVersion: 1,
+				source: { kind: "local", root: sourceRoot, revision: null },
+				components: {
+					"pi-extension:team": {
+						installedAt: "2026-01-01T00:00:00Z",
+						sourceDigest: "x",
+						outputs: [],
+					},
+					"pi-team:product": {
+						installedAt: "2026-01-01T00:00:00Z",
+						sourceDigest: "y",
+						outputs: [],
+					},
+				},
+			}),
+		);
+
+		const before = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
+		expect(before.warnings.join(" ")).not.toContain("receipt");
+
+		await install(home, ["--component", "pi-extension:subagent"]);
+		for (const path of [teamsFile, teamExtension]) {
+			await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+		}
+		const settings = JSON.parse(await readFile(join(home, ".pi/agent/settings.json"), "utf8"));
+		const local = settings.packages.find(
+			(entry: any) => typeof entry === "object" && entry.source === sourceRoot,
+		);
+		expect(local.extensions).not.toContain("+pi/extensions/team/index.ts");
+		const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+		expect(Object.keys(receipt.components)).toEqual(["pi-extension:subagent"]);
 	});
 
 	it("T6 restores a disposable migration backup to exact pre-migration bytes", async () => {

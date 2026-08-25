@@ -85,9 +85,6 @@ interface PersistedTask {
 	mode?: "ephemeral" | "persistent";
 	sessionId?: string;
 	pid?: number;
-	teamRunId?: string;
-	teamTaskId?: string;
-	role?: string;
 	error?: string;
 	manualKill?: boolean;
 	output?: string;
@@ -116,9 +113,6 @@ export interface ProcAccess {
 }
 
 export interface SubagentTaskMeta {
-	teamRunId?: string;
-	teamTaskId?: string;
-	role?: string;
 	worktree?: WorktreeInfo;
 	promptDir?: string;
 }
@@ -155,8 +149,7 @@ export function childPid(handle: ChildHandle | undefined): number | undefined {
 	return undefined;
 }
 
-function manualRetryKey(task: string, teamRunId?: string, teamTaskId?: string): string {
-	if (teamRunId && teamTaskId) return `team:${teamRunId}:${teamTaskId}`;
+function manualRetryKey(task: string): string {
 	return `task:${task.trim().replace(/\s+/g, " ").toLowerCase()}`;
 }
 
@@ -310,10 +303,8 @@ export class SubagentRuntime {
 	private readonly wedgedTasks = new Set<string>();
 	private readonly historical = new Map<string, SubagentDetails>();
 	private persistentThreadHistory = new Map<string, PersistentThreadHistory>();
-	private readonly teamNames = new Map<string, string>();
 	private readonly lastViewedTaskByGroup = new Map<string, string>();
 	private readonly approvedManualRetries = new Set<string>();
-	private activeTeamRunId: string | undefined;
 	private activityContext: ExtensionContext | undefined;
 	private activityPanel: BottomPanel | undefined;
 	private activitySection: BottomPanelSectionHandle | undefined;
@@ -370,7 +361,6 @@ export class SubagentRuntime {
 			this.notifyDashboards();
 			this.updateActivityWidget();
 		});
-		this.pi.events.on("team:state", (data: unknown) => this.updateTeamState(data));
 	}
 
 	private parentIsPersisted(ctx: ExtensionContext): boolean {
@@ -698,9 +688,6 @@ export class SubagentRuntime {
 					mode: task.mode,
 					sessionId: task.sessionId,
 					pid: childPid(task.child),
-					teamRunId: meta?.teamRunId,
-					teamTaskId: meta?.teamTaskId,
-					role: meta?.role,
 					error: task.error,
 					manualKill: task.manualKill,
 					output: task.output,
@@ -873,18 +860,16 @@ export class SubagentRuntime {
 		});
 	}
 
-	getBlockedManualRetryKeys(
-		specs: ReadonlyArray<{ task: string; teamRunId?: string; teamTaskId?: string }>,
-	): string[] {
+	getBlockedManualRetryKeys(specs: ReadonlyArray<{ task: string }>): string[] {
 		const killedKeys = new Set(
 			this.allDashboardRuns().flatMap((run) =>
 				run.results
 					.filter((result) => result.manualKill)
-					.map((result) => manualRetryKey(result.task, result.teamRunId, result.teamTaskId)),
+					.map((result) => manualRetryKey(result.task)),
 			),
 		);
 		return specs
-			.map((spec) => manualRetryKey(spec.task, spec.teamRunId, spec.teamTaskId))
+			.map((spec) => manualRetryKey(spec.task))
 			.filter((key) => killedKeys.has(key) && !this.approvedManualRetries.has(key));
 	}
 
@@ -973,19 +958,10 @@ export class SubagentRuntime {
 			ctx.ui.notify("No subagents in this session.", "info");
 			return;
 		}
-		const activeTeamKey = this.activeTeamRunId ? `team:${this.activeTeamRunId}` : undefined;
-		if (activeTeamKey && !groups.some((group) => group.key === activeTeamKey)) {
-			ctx.ui.notify(
-				`${this.teamNames.get(this.activeTeamRunId!) ?? "Active team"} has not delegated any subagents yet.`,
-				"info",
-			);
-			return;
-		}
 		const newestRunning = [...groups]
 			.reverse()
 			.find((group) => group.items.some((item) => !item.result.done));
-		const preferredGroup =
-			groups.find((group) => group.key === activeTeamKey) ?? newestRunning ?? groups.at(-1)!;
+		const preferredGroup = newestRunning ?? groups.at(-1)!;
 		let initialTaskId = this.lastViewedTaskByGroup.get(preferredGroup.key);
 		if (
 			!initialTaskId ||
@@ -1009,7 +985,6 @@ export class SubagentRuntime {
 						this.lastViewedTaskByGroup.set(groupKey, taskId);
 					},
 					preferredGroup.key,
-					(teamRunId) => this.teamNames.get(teamRunId),
 					undefined,
 					(runId, taskId) => {
 						this.killTaskManually(runId, taskId);
@@ -1041,8 +1016,7 @@ export class SubagentRuntime {
 	recordManualKill(runId: string, taskId: string): void {
 		const task = this.supervisor.runs.get(runId)?.tasks.find((item) => item.taskId === taskId);
 		if (!task) return;
-		const meta = this.taskMeta.get(taskId);
-		this.approvedManualRetries.delete(manualRetryKey(task.task, meta?.teamRunId, meta?.teamTaskId));
+		this.approvedManualRetries.delete(manualRetryKey(task.task));
 	}
 
 	killTaskManually(runId: string, taskId: string): void {
@@ -1096,9 +1070,6 @@ export class SubagentRuntime {
 					index: task.index,
 					taskId: task.taskId,
 					task: task.task,
-					teamRunId: task.teamRunId,
-					teamTaskId: task.teamTaskId,
-					role: task.role,
 					model: task.model,
 					thinking: task.thinking,
 					workspace: task.workspace,
@@ -1130,9 +1101,6 @@ export class SubagentRuntime {
 			index: task.index,
 			taskId: task.taskId,
 			task: task.task,
-			teamRunId: meta?.teamRunId,
-			teamTaskId: meta?.teamTaskId,
-			role: meta?.role,
 			mode: task.mode,
 			sessionId: task.sessionId,
 			model: task.model,
@@ -1193,9 +1161,6 @@ export class SubagentRuntime {
 				index: task.index,
 				taskId: task.taskId,
 				task: task.task,
-				teamRunId: task.teamRunId,
-				teamTaskId: task.teamTaskId,
-				role: task.role,
 				model: task.model,
 				thinking: task.thinking,
 				workspace: task.workspace,
@@ -1249,16 +1214,6 @@ export class SubagentRuntime {
 		for (const listener of this.dashboardListeners) listener();
 	}
 
-	private updateTeamState(data: unknown): void {
-		const state = data as { runId?: string; teamName?: string; active?: boolean };
-		if (!state.runId) return;
-		if (state.teamName) this.teamNames.set(state.runId, state.teamName);
-		if (state.active) this.activeTeamRunId = state.runId;
-		else if (this.activeTeamRunId === state.runId) this.activeTeamRunId = undefined;
-		this.notifyDashboards();
-		this.updateActivityWidget();
-	}
-
 	private clearActivityCompletionTimer(): void {
 		if (!this.activityCompletionTimer) return;
 		clearTimeout(this.activityCompletionTimer);
@@ -1278,9 +1233,7 @@ export class SubagentRuntime {
 		const completed = group.items.filter((item) => item.result.done && !item.result.error).length;
 		const failed = group.items.filter((item) => item.result.done && item.result.error).length;
 		const done = this.activityRunning === 0;
-		const label = group.teamRunId
-			? `${this.teamNames.get(group.teamRunId) ?? "Team"} team`
-			: "Subagents";
+		const label = "Subagents";
 		const frame =
 			ACTIVITY_FRAMES[Math.floor(Date.now() / ACTIVITY_FRAME_INTERVAL_MS) % ACTIVITY_FRAMES.length];
 		const spinner = done
@@ -1324,15 +1277,11 @@ export class SubagentRuntime {
 		const ctx = this.activityContext;
 		if (!ctx || ctx.mode !== "tui" || !this.activityPanel) return;
 		const groups = buildThreadGroups(this.allDashboardRuns());
-		const activeTeamKey = this.activeTeamRunId ? `team:${this.activeTeamRunId}` : undefined;
-		const activeTeamGroup = groups.find((group) => group.key === activeTeamKey);
 		const newestRunning = [...groups]
 			.reverse()
 			.find((group) => group.items.some((item) => !item.result.done));
 		const remembered = groups.find((group) => group.key === this.activityGroupKey);
-		const group = activeTeamGroup?.items.some((item) => !item.result.done)
-			? activeTeamGroup
-			: (newestRunning ?? remembered);
+		const group = newestRunning ?? remembered;
 		const running = group?.items.filter((item) => !item.result.done).length ?? 0;
 
 		if (group && running > 0) {

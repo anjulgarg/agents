@@ -5,7 +5,6 @@ export const COMPONENT_CATEGORIES = [
 	"pi-package",
 	"pi-prompt",
 	"pi-theme",
-	"pi-team",
 	"instructions",
 ] as const;
 

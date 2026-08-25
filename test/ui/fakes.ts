@@ -79,8 +79,8 @@ export class FakeServices implements AgentsUiServices {
 		return this.current;
 	}
 	private plan(operation: "install" | "remove", ids: readonly ComponentId[]): OperationPlanView {
-		const resolved = ids.includes("pi-extension:team")
-			? [...ids, "pi-extension:subagent" as ComponentId]
+		const resolved = ids.includes("pi-extension:plan-mode")
+			? [...ids, "skill:foreman-plan" as ComponentId]
 			: ids;
 		const plan = {
 			operation,

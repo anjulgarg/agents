@@ -54,11 +54,9 @@ describe("package and repository safety", () => {
 			"pi/config/keybindings.json",
 			"pi/extensions/question.ts",
 			"pi/extensions/tool-loader.ts",
-			"pi/extensions/team/index.ts",
 			"pi/AGENTS.md",
 			"pi/prompts/orchestrate.md",
 			"skills/foreman-plan/SKILL.md",
-			"pi/teams/product.json",
 			"pi/themes/claude-code.json",
 		]) {
 			expect(files, `missing packed runtime file ${required}`).toContain(required);
