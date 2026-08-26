@@ -731,7 +731,6 @@ export default function (pi: ExtensionAPI) {
 		linkedWorktree = readGitContext(ctx.cwd).isLinkedWorktree;
 
 		ctx.ui.setTheme("claude-code");
-		ctx.ui.setTitle("π Pi Coding Agent");
 		ctx.ui.setHeader((_tui, theme) => createHeader(theme, ctx));
 		footerCtx = ctx;
 		installFooter(ctx);

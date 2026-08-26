@@ -218,6 +218,85 @@ assert(
 	JSON.stringify(openWidget),
 );
 
+let alignedWidgetFactory: any;
+const alignmentUi = {
+	...context().ui,
+	setWidget: (_name: string, factory: any) => {
+		alignedWidgetFactory = factory;
+	},
+};
+const alignmentBranch = [
+	{
+		type: "custom",
+		customType: "todo",
+		data: {
+			todos: [
+				{ id: 9, text: "Ninth todo", status: "open" },
+				{ id: 10, text: "Tenth todo", status: "open" },
+			],
+			nextId: 11,
+		},
+	},
+];
+await handlers.get("session_start")?.(
+	{},
+	context({
+		ui: alignmentUi,
+		sessionManager: { getBranch: () => alignmentBranch },
+	}),
+);
+const alignedWidget = alignedWidgetFactory(undefined, theme).render(80) as string[];
+const widgetNinthColumn = alignedWidget.find((line) => line.includes("Ninth todo"));
+const widgetTenthColumn = alignedWidget.find((line) => line.includes("Tenth todo"));
+assert(
+	"todo widget IDs reserve width so single- and double-digit text columns align",
+	widgetNinthColumn !== undefined &&
+		widgetTenthColumn !== undefined &&
+		widgetNinthColumn.indexOf("Ninth todo") === widgetTenthColumn.indexOf("Tenth todo"),
+	JSON.stringify({ alignedWidget, widgetNinthColumn, widgetTenthColumn }),
+);
+await handlers.get("session_start")?.(
+	{},
+	context({
+		sessionManager: {
+			getBranch: () => [
+				{
+					type: "custom",
+					customType: "todo",
+					data: {
+						todos: [
+							{ id: 1, text: "First", status: "open" },
+							{ id: 2, text: "Second", status: "open" },
+							{ id: 3, text: "Third", status: "open" },
+						],
+						nextId: 4,
+					},
+				},
+			],
+		},
+	}),
+);
+
+const alignedTodoView = new TodoListComponent(
+	[
+		{ id: 9, text: "Ninth todo", status: "open" },
+		{ id: 10, text: "Tenth todo", status: "open" },
+	],
+	theme,
+	() => undefined,
+	{ terminal: { rows: 12 }, requestRender: () => undefined } as any,
+);
+const alignedTodoRendered = alignedTodoView.render(40);
+const ninthColumn = alignedTodoRendered.find((line) => line.includes("Ninth todo"));
+const tenthColumn = alignedTodoRendered.find((line) => line.includes("Tenth todo"));
+assert(
+	"todo IDs reserve width so single- and double-digit text columns align",
+	ninthColumn !== undefined &&
+		tenthColumn !== undefined &&
+		ninthColumn.indexOf("Ninth todo") === tenthColumn.indexOf("Tenth todo"),
+	JSON.stringify({ alignedTodoRendered, ninthColumn, tenthColumn }),
+);
+
 const persistedBeforeMutation = entries.at(-1).data;
 persistedBeforeMutation.todos[0].text = "mutated persisted state";
 const detailBeforeMutation = listed.details;

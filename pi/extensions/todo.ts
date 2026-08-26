@@ -170,6 +170,14 @@ function formatTodoLine(todo: Todo): string {
 	return `[${todoStatusMarker(todo.status)}] #${todo.id}: ${todo.text}`;
 }
 
+function todoIdWidth(todos: readonly Todo[]): number {
+	return todos.reduce((width, todo) => Math.max(width, `#${todo.id}`.length), 0);
+}
+
+function formatTodoId(id: number, width: number): string {
+	return `#${id}`.padEnd(width);
+}
+
 function formatActiveChecklist(todos: Todo[]): string {
 	return todos
 		.filter(isActiveTodo)
@@ -310,12 +318,13 @@ export class TodoListComponent {
 
 		const lines: string[] = [];
 		const starts: number[] = [];
+		const idWidth = todoIdWidth(this.todos);
 		for (const [index, todo] of this.todos.entries()) {
 			starts.push(lines.length);
 			const selected = index === this.selected;
 			const marker = selected ? th.fg("accent", "❯") : " ";
 			const check = colorTodoGlyph(th, todo.status);
-			const id = th.fg("accent", `#${todo.id}`);
+			const id = th.fg("accent", formatTodoId(todo.id, idWidth));
 			const prefix = `${marker} ${check} ${id} `;
 			const text =
 				todo.status === "done"
@@ -456,10 +465,11 @@ export default function todoExtension(pi: ExtensionAPI) {
 			todoSection = undefined;
 			return;
 		}
-		const renderItems = (_width: number, theme: Theme): string[] =>
-			cloneTodos(todos).map((todo) => {
+		const renderItems = (_width: number, theme: Theme): string[] => {
+			const idWidth = todoIdWidth(todos);
+			return cloneTodos(todos).map((todo) => {
 				const check = colorTodoGlyph(theme, todo.status);
-				const id = theme.fg("dim", `#${todo.id}`);
+				const id = theme.fg("dim", formatTodoId(todo.id, idWidth));
 				const body =
 					todo.status === "done"
 						? theme.fg("muted", theme.strikethrough(todo.text))
@@ -468,6 +478,7 @@ export default function todoExtension(pi: ExtensionAPI) {
 							: theme.fg("text", todo.text);
 				return ` ${check}  ${id}  ${body}`;
 			});
+		};
 		if (!todoSection) {
 			todoSection = todoPanel.registerSection("todos", {
 				order: BOTTOM_PANEL_SECTION_ORDER.todos,
