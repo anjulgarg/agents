@@ -48,6 +48,7 @@ export interface SessionSearchResult {
 	name?: string;
 	created: Date;
 	modified: Date;
+	pinned: boolean;
 	score: number;
 	source: SearchSource;
 	snippet: string;
@@ -72,6 +73,7 @@ export interface RefreshSummary {
 export interface SearchOptions {
 	cwd?: string;
 	limit?: number;
+	pinnedPaths?: ReadonlySet<string>;
 }
 
 interface DiscoveredSessionFile {
@@ -538,6 +540,7 @@ export class SessionSearchIndex {
 
 		for (const session of this.sessions.values()) {
 			if (cwd && (!session.cwd || resolve(session.cwd) !== cwd)) continue;
+			const pinned = options.pinnedPaths?.has(resolve(session.path)) ?? false;
 			if (!normalizedQuery) {
 				const chunk = session.chunks.find(({ source }) => source === "user") ?? session.chunks[0];
 				results.push({
@@ -547,6 +550,7 @@ export class SessionSearchIndex {
 					name: session.name,
 					created: session.created,
 					modified: session.modified,
+					pinned,
 					score: 0,
 					source: chunk?.source ?? "metadata",
 					snippet: chunk ? buildSnippet(chunk, "", []) : "(no searchable text)",
@@ -574,6 +578,7 @@ export class SessionSearchIndex {
 				name: session.name,
 				created: session.created,
 				modified: session.modified,
+				pinned,
 				score: best.score + Math.min(8, Math.log2(matchingChunks + 1) * 2) + recencyBoost,
 				source: best.chunk.source,
 				snippet,
@@ -581,11 +586,13 @@ export class SessionSearchIndex {
 			});
 		}
 
-		results.sort((left, right) =>
-			normalizedQuery
+		results.sort((left, right) => {
+			const pinOrder = Number(right.pinned) - Number(left.pinned);
+			if (pinOrder !== 0) return pinOrder;
+			return normalizedQuery
 				? right.score - left.score || right.modified.getTime() - left.modified.getTime()
-				: right.modified.getTime() - left.modified.getTime(),
-		);
+				: right.modified.getTime() - left.modified.getTime();
+		});
 		return results.slice(0, options.limit ?? DEFAULT_RESULT_LIMIT);
 	}
 }

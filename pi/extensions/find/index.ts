@@ -23,6 +23,7 @@ import {
 	type SessionSearchResult,
 	type TextMatchRange,
 } from "./core.ts";
+import { createSessionPinStore, type SessionPinStore } from "./pins.ts";
 
 export {
 	buildSnippet,
@@ -34,6 +35,7 @@ export {
 	resolveSessionSearchRoot,
 	SessionSearchIndex,
 } from "./core.ts";
+export { createSessionPinStore, GLOBAL_SESSION_PINS_PATH } from "./pins.ts";
 
 function formatAge(date: Date): string {
 	const elapsed = Math.max(0, Date.now() - date.getTime());
@@ -79,6 +81,9 @@ export class FindSessionsView implements Component, Focusable {
 	private summary?: RefreshSummary;
 	private error?: string;
 	private results: SessionSearchResult[] = [];
+	private pinnedPaths: Set<string>;
+	private pinBusy = false;
+	private pinStatus?: { message: string; type: "info" | "error" };
 	private allProjects = true;
 	private selected = 0;
 	private offset = 0;
@@ -93,9 +98,12 @@ export class FindSessionsView implements Component, Focusable {
 		initialQuery: string,
 		private readonly currentCwd: string,
 		private readonly currentSessionFile: string | undefined,
+		pinnedPaths: ReadonlySet<string>,
+		private readonly setPinned: (path: string, pinned: boolean) => Promise<void>,
 		private readonly done: (path: string | null) => void,
 		private readonly tui: TUI,
 	) {
+		this.pinnedPaths = new Set(pinnedPaths);
 		this.input.setValue(initialQuery);
 	}
 
@@ -135,6 +143,7 @@ export class FindSessionsView implements Component, Focusable {
 	private updateResults(): void {
 		this.results = this.index.search(this.input.getValue(), {
 			cwd: this.allProjects ? undefined : this.currentCwd,
+			pinnedPaths: this.pinnedPaths,
 		});
 		this.selected = Math.min(this.selected, Math.max(0, this.results.length - 1));
 		this.revealSelected();
@@ -153,6 +162,35 @@ export class FindSessionsView implements Component, Focusable {
 		this.offset = Math.max(0, Math.min(this.offset, Math.max(0, this.results.length - visible)));
 	}
 
+	private async toggleSelectedPin(): Promise<void> {
+		const selected = this.results[this.selected];
+		if (!selected || this.pinBusy) return;
+		const pinned = !selected.pinned;
+		this.pinBusy = true;
+		this.pinStatus = { message: pinned ? "Pinning session…" : "Unpinning session…", type: "info" };
+		this.refresh();
+		try {
+			await this.setPinned(selected.path, pinned);
+			if (pinned) this.pinnedPaths.add(resolve(selected.path));
+			else this.pinnedPaths.delete(resolve(selected.path));
+			this.updateResults();
+			const nextIndex = this.results.findIndex(
+				({ path }) => resolve(path) === resolve(selected.path),
+			);
+			if (nextIndex >= 0) this.selected = nextIndex;
+			this.pinStatus = { message: pinned ? "Session pinned" : "Session unpinned", type: "info" };
+		} catch (error) {
+			this.pinStatus = {
+				message: `Pin update failed: ${error instanceof Error ? error.message : String(error)}`,
+				type: "error",
+			};
+		} finally {
+			this.pinBusy = false;
+			this.revealSelected();
+			this.refresh();
+		}
+	}
+
 	handleInput(data: string): void {
 		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 			this.controller.abort();
@@ -160,6 +198,10 @@ export class FindSessionsView implements Component, Focusable {
 			return;
 		}
 		if (this.state !== "ready") return;
+		if (matchesKey(data, "ctrl+p")) {
+			void this.toggleSelectedPin();
+			return;
+		}
 		if (matchesKey(data, "tab")) {
 			this.allProjects = !this.allProjects;
 			this.selected = 0;
@@ -214,6 +256,7 @@ export class FindSessionsView implements Component, Focusable {
 			const result = this.results[index]!;
 			const selected = index === this.selected;
 			const marker = selected ? this.theme.fg("accent", "❯") : " ";
+			const pinMarker = result.pinned ? this.theme.fg("warning", "📌 ") : "";
 			const title = result.name || result.snippet || "(no searchable text)";
 			const isCurrent =
 				this.currentSessionFile !== undefined &&
@@ -228,16 +271,25 @@ export class FindSessionsView implements Component, Focusable {
 				.filter((part): part is string => Boolean(part))
 				.join(separator);
 			const prefix = `${marker} `;
-			const titleWidth = Math.max(1, width - visibleWidth(prefix) - visibleWidth(metadata) - 1);
+			const titleWidth = Math.max(
+				1,
+				width - visibleWidth(prefix) - visibleWidth(pinMarker) - visibleWidth(metadata) - 1,
+			);
 			const titleText = truncateToWidth(title, titleWidth, "…");
 			const styledTitle = selected
 				? this.theme.fg("accent", this.theme.bold(titleText))
 				: titleText;
 			const gap = Math.max(
 				1,
-				width - visibleWidth(prefix) - visibleWidth(styledTitle) - visibleWidth(metadata),
+				width -
+					visibleWidth(prefix) -
+					visibleWidth(pinMarker) -
+					visibleWidth(styledTitle) -
+					visibleWidth(metadata),
 			);
-			lines.push(truncateToWidth(`${prefix}${styledTitle}${" ".repeat(gap)}${metadata}`, width));
+			lines.push(
+				truncateToWidth(`${prefix}${pinMarker}${styledTitle}${" ".repeat(gap)}${metadata}`, width),
+			);
 			const contextPrefix = `  ${this.theme.fg("accent", "↳")} `;
 			const context = highlightMatchedText(result.snippet, result.matchRanges, this.theme);
 			lines.push(truncateToWidth(`${contextPrefix}${context}`, width, "…"));
@@ -275,16 +327,24 @@ export class FindSessionsView implements Component, Focusable {
 					? `${this.summary.malformedLines} malformed lines skipped`
 					: "",
 			].filter(Boolean);
-			subtitle = `${this.results.length} match${this.results.length === 1 ? "" : "es"} · ${scope}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`;
+			const pinStatus = this.pinStatus
+				? ` · ${this.pinStatus.type === "error" ? "⚠ " : ""}${this.pinStatus.message}`
+				: "";
+			subtitle = `${this.results.length} match${this.results.length === 1 ? "" : "es"} · ${scope}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}${pinStatus}`;
 			body = [
 				this.theme.fg("muted", "Search"),
 				...this.input.render(contentWidth),
 				"",
 				...this.renderResults(contentWidth),
 			];
+			const selectedResult = this.results[this.selected];
 			hints = [
 				{ key: "↑↓", label: "select" },
 				{ key: "Enter", label: "resume" },
+				{
+					key: "Ctrl+P",
+					label: selectedResult?.pinned ? "unpin" : "pin",
+				},
 				{ key: "Tab", label: this.allProjects ? "current project" : "all projects" },
 				{ key: "Esc", label: "cancel" },
 			];
@@ -313,9 +373,45 @@ export class FindSessionsView implements Component, Focusable {
 	}
 }
 
-export default function findExtension(pi: ExtensionAPI): void {
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+export default function findExtension(
+	pi: ExtensionAPI,
+	pinStore: SessionPinStore = createSessionPinStore(),
+): void {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	const index = new SessionSearchIndex();
+
+	const registerPinCommand = (name: "session:pin" | "session:unpin", pinned: boolean): void => {
+		pi.registerCommand(name, {
+			description: `${pinned ? "Pin" : "Unpin"} the current session in /session:find`,
+			handler: async (_args, ctx) => {
+				const sessionFile = ctx.sessionManager.getSessionFile();
+				if (!sessionFile) {
+					ctx.ui.notify("Ephemeral sessions cannot be pinned", "error");
+					return;
+				}
+				try {
+					const changed = await pinStore.setPinned(sessionFile, pinned);
+					const message = pinned
+						? changed
+							? "Session pinned in /session:find"
+							: "Session is already pinned"
+						: changed
+							? "Session unpinned in /session:find"
+							: "Session is not pinned";
+					ctx.ui.notify(message, "info");
+				} catch (error) {
+					ctx.ui.notify(`Could not update session pin: ${errorText(error)}`, "error");
+				}
+			},
+		});
+	};
+
+	registerPinCommand("session:pin", true);
+	registerPinCommand("session:unpin", false);
 	pi.registerCommand("session:find", {
 		description: "Fuzzy-search complete historical sessions and resume one",
 		handler: async (args, ctx) => {
@@ -330,6 +426,12 @@ export default function findExtension(pi: ExtensionAPI): void {
 				ctx.sessionManager.getSessionDir(),
 				join(getAgentDir(), "sessions"),
 			);
+			let pinnedPaths: ReadonlySet<string> = new Set();
+			try {
+				pinnedPaths = await pinStore.read();
+			} catch (error) {
+				ctx.ui.notify(`Could not load session pins: ${errorText(error)}`, "error");
+			}
 			const selectedPath = await ctx.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 				const view = new FindSessionsView(
 					index,
@@ -337,6 +439,10 @@ export default function findExtension(pi: ExtensionAPI): void {
 					initialQuery,
 					currentCwd,
 					currentSessionFile,
+					pinnedPaths,
+					async (path, pinned) => {
+						await pinStore.setPinned(path, pinned);
+					},
 					done,
 					tui,
 				);
@@ -345,7 +451,7 @@ export default function findExtension(pi: ExtensionAPI): void {
 					.then((summary) => view.setReady(summary))
 					.catch((error: unknown) => {
 						if (view.controller.signal.aborted) return;
-						view.setError(error instanceof Error ? error.message : String(error));
+						view.setError(errorText(error));
 					});
 				return view;
 			}, fullscreenOverlayOptions());

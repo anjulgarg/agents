@@ -1,10 +1,11 @@
-import { appendFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import findExtension, {
+	createSessionPinStore,
 	discoverSessionFiles,
 	FindSessionsView,
 	extractEntryText,
@@ -165,6 +166,32 @@ try {
 		index.size === 3 && initial.indexed === 3 && initial.malformedLines === 1,
 		JSON.stringify({ size: index.size, initial }),
 	);
+
+	const pinStatePath = join(tempRoot, "state", "session-pins.json");
+	const pinStore = createSessionPinStore(pinStatePath);
+	assert(
+		"pin store starts empty",
+		(await pinStore.read()).size === 0,
+		JSON.stringify([...(await pinStore.read())]),
+	);
+	assert(
+		"pin store persists an absolute session path atomically",
+		(await pinStore.setPinned(secondPath, true)) &&
+			(await pinStore.read()).has(secondPath) &&
+			(statSync(pinStatePath).mode & 0o777) === 0o600,
+		JSON.stringify([...(await pinStore.read())]),
+	);
+	assert(
+		"pin updates are idempotent",
+		!(await pinStore.setPinned(secondPath, true)),
+		"duplicate pin reported a change",
+	);
+	const pinnedOrder = index.search("", { pinnedPaths: await pinStore.read() });
+	assert(
+		"pinned sessions rank before newer unpinned sessions",
+		pinnedOrder[0]?.path === secondPath && pinnedOrder[0].pinned,
+		JSON.stringify(pinnedOrder.map(({ path, pinned }) => ({ path, pinned }))),
+	);
 	const exact = index.search("https://github.com/acme/widgets/pull/123");
 	assert(
 		"exact pull request URLs rank their matching session first with a contextual snippet",
@@ -237,6 +264,8 @@ try {
 		"corpus indexes",
 		projectA,
 		firstPath,
+		new Set(),
+		async () => undefined,
 		() => undefined,
 		currentTui,
 	);
@@ -283,21 +312,48 @@ try {
 		"root resolution mismatch",
 	);
 
-	let command: any;
-	const commandNames: string[] = [];
-	findExtension({
-		registerCommand(name: string, definition: any) {
-			commandNames.push(name);
-			if (name === "session:find") command = definition;
-		},
-	} as any);
+	const commands = new Map<string, any>();
+	findExtension(
+		{
+			registerCommand(name: string, definition: any) {
+				commands.set(name, definition);
+			},
+		} as any,
+		pinStore,
+	);
+	const command = commands.get("session:find");
+	const pinCommand = commands.get("session:pin");
+	const unpinCommand = commands.get("session:unpin");
 	assert(
-		"registers /session:find without retaining the /find alias",
-		Boolean(command) && !commandNames.includes("find"),
-		JSON.stringify(commandNames),
+		"registers finder pin commands without retaining the /find alias",
+		Boolean(command) && Boolean(pinCommand) && Boolean(unpinCommand) && !commands.has("find"),
+		JSON.stringify([...commands.keys()]),
 	);
 
 	const notifications: Array<{ message: string; type?: string }> = [];
+	const pinCommandContext = {
+		sessionManager: { getSessionFile: () => firstPath },
+		ui: {
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+	};
+	await pinCommand.handler("", pinCommandContext);
+	await pinCommand.handler("", pinCommandContext);
+	assert(
+		"/session:pin pins the active session idempotently",
+		(await pinStore.read()).has(firstPath) &&
+			notifications.some(({ message }) => message === "Session is already pinned"),
+		JSON.stringify({ pins: [...(await pinStore.read())], notifications }),
+	);
+	await unpinCommand.handler("", pinCommandContext);
+	await unpinCommand.handler("", pinCommandContext);
+	assert(
+		"/session:unpin removes only the active session idempotently",
+		!(await pinStore.read()).has(firstPath) &&
+			(await pinStore.read()).has(secondPath) &&
+			notifications.some(({ message }) => message === "Session is not pinned"),
+		JSON.stringify({ pins: [...(await pinStore.read())], notifications }),
+	);
 	let switchedPath: string | undefined;
 	let overlayOptions: any;
 	const theme = {
@@ -328,19 +384,42 @@ try {
 				return new Promise<string | null>((resolveResult, reject) => {
 					const component = factory(tui, theme, undefined, resolveResult);
 					let attempts = 0;
+					let toggledPin = false;
 					const choose = () => {
 						try {
 							const rendered = component.render(80);
+							const output = rendered.join("\n");
 							assert(
 								"find view remains width-bounded",
 								rendered.every((line: string) => visibleWidth(line) === 80),
 								rendered.map((line: string) => visibleWidth(line)).join(","),
 							);
-							if (rendered.join("\n").includes("Indexing historical sessions")) {
+							if (output.includes("Indexing historical sessions")) {
 								if (++attempts > 100) throw new Error("find view did not finish indexing");
 								setTimeout(choose, 5);
 								return;
 							}
+							if (!toggledPin) {
+								assert(
+									"find view marks pinned results and offers in-place unpinning",
+									output.includes("📌") && output.includes("Ctrl+P") && output.includes("unpin"),
+									output,
+								);
+								toggledPin = true;
+								component.handleInput("\x10");
+								setTimeout(choose, 5);
+								return;
+							}
+							if (output.includes("📌")) {
+								if (++attempts > 100) throw new Error("find view did not finish unpinning");
+								setTimeout(choose, 5);
+								return;
+							}
+							assert(
+								"find view updates the selected result after unpinning",
+								output.includes("Ctrl+P") && output.includes("pin"),
+								output,
+							);
 							component.handleInput("\r");
 						} catch (error) {
 							reject(error);
@@ -359,11 +438,17 @@ try {
 		},
 	});
 	assert(
-		"selecting a match resumes it through the replacement-session callback",
+		"finder unpins the selected session before resuming it",
 		switchedPath === selected &&
 			overlayOptions?.overlay === true &&
+			!(await pinStore.read()).has(selected) &&
 			notifications.some(({ message }) => message === "Resumed matching session"),
-		JSON.stringify({ switchedPath, overlayOptions, notifications }),
+		JSON.stringify({
+			switchedPath,
+			overlayOptions,
+			pins: [...(await pinStore.read())],
+			notifications,
+		}),
 	);
 
 	let nonInteractiveNotified = false;
