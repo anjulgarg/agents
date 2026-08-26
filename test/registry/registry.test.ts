@@ -26,6 +26,7 @@ const extensionIds = [
 	"pi-extension:context",
 	"pi-extension:conversation-separator",
 	"pi-extension:escape-unsend",
+	"pi-extension:find",
 	"pi-extension:git-checkpoint",
 	"pi-extension:handoff",
 	"pi-extension:hide-thinking-history",
@@ -81,14 +82,14 @@ async function errorCode(action: () => Promise<unknown>): Promise<string | undef
 describe("component registry", () => {
 	it("contains the exact approved inventory and valid source resources", async () => {
 		await expect(validateRegistry(components, process.cwd())).resolves.toBeUndefined();
-		expect(components.length).toBe(3 + 32 + 4 + (localPiConfigFiles.mcp ? 2 : 0));
+		expect(components.length).toBe(3 + 33 + 4 + (localPiConfigFiles.mcp ? 2 : 0));
 		expect(components.filter(({ category }) => category === "skill").map(({ id }) => id)).toEqual(
 			skillIds,
 		);
 		expect(
 			components.filter(({ category }) => category === "pi-extension").map(({ id }) => id),
 		).toEqual(extensionIds);
-		expect(components.slice(35).map(({ id }) => id)).toEqual([
+		expect(components.slice(36).map(({ id }) => id)).toEqual([
 			"pi-config:keybindings",
 			...(localPiConfigFiles.mcp ? ["pi-package:mcp-adapter", "pi-config:mcp-sentry"] : []),
 			"pi-theme:claude-code",

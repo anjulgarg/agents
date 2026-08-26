@@ -37,6 +37,7 @@ const extensions = [
 	["context", "context.ts"],
 	["conversation-separator", "conversation-separator.ts"],
 	["escape-unsend", "escape-unsend.ts"],
+	["find", "find/index.ts"],
 	["git-checkpoint", "git-checkpoint.ts"],
 	["handoff", "handoff.ts"],
 	["hide-thinking-history", "hide-thinking-history.ts"],

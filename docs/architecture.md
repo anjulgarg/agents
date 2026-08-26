@@ -18,7 +18,7 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | Category       | Installed role                                                                                                    |
 | -------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `skill`        | Three shared skill directories under `~/.agents/skills`; each can be selected independently.                      |
-| `pi-extension` | Local-package filters for 32 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
+| `pi-extension` | Local-package filters for 33 Pi entrypoints. Directory entrypoints retain their support files in this repository. |
 | `pi-config`    | Pi keybindings plus optional local-only model and MCP JSON pointers. Unowned keys remain local.                   |
 | `pi-package`   | The optional removable `npm:pi-mcp-adapter@2.15.0` Pi setting. It is referenced, not vendored.                    |
 | `pi-prompt`    | The `orchestrate` prompt through the local Pi package.                                                            |
@@ -30,6 +30,8 @@ The compaction-model extension stores its global selection under `~/.pi/agent/st
 The utility-model extension stores its global selection under `~/.pi/agent/state/utility-model.json`. The `/utility-model` preference is used by session naming, `/btw`, `/recap`, `/changes` summaries, and `/git:publish` commit drafting so these lightweight requests share one model and can benefit from provider prompt caching. It falls back to the active conversation model when the preference is unset or unavailable.
 
 The `/changes` extension is a read-only view of the union of uncommitted and unpushed Git files, with generated overall and per-file explanations in a shared full-screen TUI. It honors the configured utility-model preference, using the active model when available and a deterministic fallback otherwise.
+
+The `/session:find [query]` extension lazily builds an in-memory index over session conversation text, summaries, metadata, custom messages, and user-entered shell commands. It excludes assistant reasoning, tool calls, tool results, and shell output. The full-screen fuzzy finder supports incomplete and misspelled terms, exact URL boosting, all-project or current-project scope, spaced result cards with accented workspace names and high-contrast matched source text, and direct session resumption without persisting a second copy of session content. The active session remains searchable and is labeled `current` in results.
 
 Profiles combine these components: `default` selects the available catalog, `pi` selects Pi resources and shared instructions, and `skills` selects all shared skills. Local-only Pi configuration components appear only when their ignored files exist in the local checkout. Registry ordering is deterministic, so repeated installs are no-ops when outputs remain exact.
 

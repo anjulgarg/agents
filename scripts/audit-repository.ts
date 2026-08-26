@@ -16,6 +16,7 @@ const EXPECTED_EXTENSIONS = [
 	"pi/extensions/context.ts",
 	"pi/extensions/conversation-separator.ts",
 	"pi/extensions/escape-unsend.ts",
+	"pi/extensions/find/index.ts",
 	"pi/extensions/git-checkpoint.ts",
 	"pi/extensions/handoff.ts",
 	"pi/extensions/hide-thinking-history.ts",
