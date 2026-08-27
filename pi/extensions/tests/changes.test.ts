@@ -846,10 +846,12 @@ async function testChangesView(): Promise<void> {
 
 async function testCommandHarness(): Promise<void> {
 	const commands = new Map<string, AnyRecord>();
+	const shortcuts = new Map<string, AnyRecord>();
 	const notifications: Array<{ message: string; type?: string }> = [];
 	let execCalls = 0;
 	const pi: AnyRecord = {
 		registerCommand: (name: string, command: AnyRecord) => commands.set(name, command),
+		registerShortcut: (shortcut: string, options: AnyRecord) => shortcuts.set(shortcut, options),
 		exec: async (_command: string, _args: readonly string[]) => {
 			execCalls++;
 			return { code: 0, stdout: "", stderr: "" };
@@ -863,6 +865,12 @@ async function testCommandHarness(): Promise<void> {
 		inspect([...commands.keys()]),
 	);
 	if (!command) return;
+	const f5 = shortcuts.get("f5");
+	assert(
+		"registers F5 to open the changes view",
+		f5?.description === "Open the changes view" && typeof f5.handler === "function",
+		inspect(f5),
+	);
 	await command.handler("", {
 		mode: "rpc",
 		cwd: "/offline/not-a-real-repository",
@@ -949,6 +957,7 @@ async function testCommandEditHandoff(): Promise<void> {
 	const commands = new Map<string, AnyRecord>();
 	const pi: AnyRecord = {
 		registerCommand: (name: string, command: AnyRecord) => commands.set(name, command),
+		registerShortcut: () => undefined,
 		exec: async (_command: string, args: readonly string[]) => {
 			const copied = [...args];
 			if (copied.includes("--show-toplevel"))

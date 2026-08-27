@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 	Theme,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
@@ -1474,48 +1475,53 @@ export class ChangesView implements Component {
 
 export default function changesExtension(pi: ExtensionAPI): void {
 	let activeView = false;
+	const openChangesView = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.mode !== "tui") {
+			ctx.ui.notify("/changes requires interactive mode", "error");
+			return;
+		}
+		if (activeView) {
+			ctx.ui.notify("A changes view is already open", "info");
+			return;
+		}
+		activeView = true;
+		try {
+			const root = await findRepositoryRoot(pi, ctx.cwd);
+			if (!root) {
+				ctx.ui.notify("Current directory is not inside a Git repository.", "error");
+				return;
+			}
+			const result = await ctx.ui.custom<string | undefined>(
+				(tui, theme, _keybindings, done) =>
+					new ChangesView(tui, theme, {
+						root,
+						load: (signal) => loadChanges(pi, root, signal),
+						fetchDiff: (file, mode, snapshot, signal) =>
+							fetchFileDiff(piGitExec(pi), root, file, mode, snapshot, signal),
+						isSnapshotCurrent: (snapshot, signal) => isSnapshotCurrent(pi, root, snapshot, signal),
+						done,
+					}),
+				fullscreenOverlayOptions(),
+			);
+			if (result) {
+				const editorText = ctx.ui.getEditorText();
+				if (!editorText.trim() && editorText.length > 0) ctx.ui.setEditorText("");
+				ctx.ui.pasteToEditor(result);
+				// Overlay close redraws before this handler resumes; request one more frame
+				// after the synchronous editor update so the inserted path is immediately visible.
+				ctx.ui.setStatus(EDITOR_HANDOFF_REDRAW_KEY, undefined);
+			}
+		} finally {
+			activeView = false;
+		}
+	};
+
 	pi.registerCommand("changes", {
 		description: "Browse current uncommitted and unpushed Git diffs",
-		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			if (ctx.mode !== "tui") {
-				ctx.ui.notify("/changes requires interactive mode", "error");
-				return;
-			}
-			if (activeView) {
-				ctx.ui.notify("A changes view is already open", "info");
-				return;
-			}
-			activeView = true;
-			try {
-				const root = await findRepositoryRoot(pi, ctx.cwd);
-				if (!root) {
-					ctx.ui.notify("Current directory is not inside a Git repository.", "error");
-					return;
-				}
-				const result = await ctx.ui.custom<string | undefined>(
-					(tui, theme, _keybindings, done) =>
-						new ChangesView(tui, theme, {
-							root,
-							load: (signal) => loadChanges(pi, root, signal),
-							fetchDiff: (file, mode, snapshot, signal) =>
-								fetchFileDiff(piGitExec(pi), root, file, mode, snapshot, signal),
-							isSnapshotCurrent: (snapshot, signal) =>
-								isSnapshotCurrent(pi, root, snapshot, signal),
-							done,
-						}),
-					fullscreenOverlayOptions(),
-				);
-				if (result) {
-					const editorText = ctx.ui.getEditorText();
-					if (!editorText.trim() && editorText.length > 0) ctx.ui.setEditorText("");
-					ctx.ui.pasteToEditor(result);
-					// Overlay close redraws before this handler resumes; request one more frame
-					// after the synchronous editor update so the inserted path is immediately visible.
-					ctx.ui.setStatus(EDITOR_HANDOFF_REDRAW_KEY, undefined);
-				}
-			} finally {
-				activeView = false;
-			}
-		},
+		handler: async (_args: string, ctx: ExtensionCommandContext) => openChangesView(ctx),
+	});
+	pi.registerShortcut("f5", {
+		description: "Open the changes view",
+		handler: openChangesView,
 	});
 }
