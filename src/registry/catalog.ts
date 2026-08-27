@@ -35,6 +35,7 @@ const extensions = [
 	["codex-web-search", "codex-web-search.ts"],
 	["compaction-model", "compaction-model.ts"],
 	["context", "context.ts"],
+	["proactive-compaction", "context-overflow-guard.ts"],
 	["conversation-separator", "conversation-separator.ts"],
 	["escape-unsend", "escape-unsend.ts"],
 	["find", "find/index.ts"],
@@ -46,7 +47,6 @@ const extensions = [
 	["memory", "memory/index.ts"],
 	["minimal-mode", "minimal-mode.ts"],
 	["plan-mode", "plan-mode/index.ts"],
-	["proactive-compaction", "proactive-compaction.ts"],
 	["publish", "publish.ts"],
 	["pull", "pull.ts"],
 	["question", "question.ts"],
@@ -104,6 +104,7 @@ function extensionDependencies(slug: string): ComponentId[] {
  */
 function extensionLegacyPaths(slug: string, entrypoint: string): string[] {
 	const paths = [`.pi/agent/extensions/${entrypoint}`];
+	if (slug === "proactive-compaction") paths.push(".pi/agent/extensions/proactive-compaction.ts");
 	if (slug === "subagent")
 		paths.push(".pi/agent/teams/product.json", ".pi/agent/extensions/team/index.ts");
 	return paths;
@@ -112,8 +113,11 @@ function extensionLegacyPaths(slug: string, entrypoint: string): string[] {
 const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entrypoint]) => ({
 	id: `pi-extension:${slug}`,
 	category: "pi-extension",
-	label: title(slug),
-	description: `${title(slug)} Pi extension.`,
+	label: slug === "proactive-compaction" ? "Context Overflow Guard" : title(slug),
+	description:
+		slug === "proactive-compaction"
+			? "Protects active tool loops from context overflow while Pi owns compaction."
+			: `${title(slug)} Pi extension.`,
 	resources: [{ path: `pi/extensions/${entrypoint}`, kind: "file" }],
 	outputs: [piFilter("extensions", `pi/extensions/${entrypoint}`)],
 	dependsOn: extensionDependencies(slug),

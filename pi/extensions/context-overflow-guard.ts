@@ -5,13 +5,12 @@ import {
 	SettingsManager,
 	type ContextEvent,
 	type ExtensionAPI,
-	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
 export const CONTINUATION_PROMPT = `Automatic context compaction completed. Reassess active work, current state, and open todo items. Treat open todos as the active work queue: reconcile verified items, then autonomously start the next unverified item after the current user request unless it conflicts or requires material user input. Continue working autonomously unless you need user input. If nothing remains, respond only with a brief completion confirmation.`;
 
-export const PROACTIVE_HEADROOM_TOKENS = 32_000;
+export const CONTEXT_GUARD_HEADROOM_TOKENS = 32_000;
 export const EMERGENCY_TOOL_RESULT_TEXT_CHARS = 48_000;
 
 const EMERGENCY_TRUNCATION_MARKER =
@@ -67,22 +66,19 @@ export function protectOversizedToolResults(
 	return changed ? protectedMessages : messages;
 }
 
-export function proactiveCompactionThreshold(contextWindow: number): number {
+export function contextGuardThreshold(contextWindow: number): number {
 	if (!Number.isFinite(contextWindow) || contextWindow <= 0) return Number.POSITIVE_INFINITY;
 
-	const headroom = Math.min(PROACTIVE_HEADROOM_TOKENS, contextWindow * 0.2);
+	const headroom = Math.min(CONTEXT_GUARD_HEADROOM_TOKENS, contextWindow * 0.2);
 	return contextWindow - headroom;
 }
 
-export function shouldProactivelyCompact(contextTokens: number, contextWindow: number): boolean {
-	return (
-		Number.isFinite(contextTokens) && contextTokens > proactiveCompactionThreshold(contextWindow)
-	);
+export function shouldGuardContext(contextTokens: number, contextWindow: number): boolean {
+	return Number.isFinite(contextTokens) && contextTokens > contextGuardThreshold(contextWindow);
 }
 
-// ctx.compact() reports an error when Pi's cut-point rules leave nothing to
-// summarize, even if provider usage is above the threshold. Mirror that
-// eligibility check before starting the detached compaction.
+// Pi cannot compact when its cut-point rules leave nothing to summarize.
+// Mirror that eligibility check before activating temporary context protection.
 export function hasCompactionCandidate(entries: SessionEntry[], keepRecentTokens: number): boolean {
 	if (entries.length === 0 || entries.at(-1)?.type === "compaction") return false;
 
@@ -136,40 +132,15 @@ function sendContinuation(pi: ExtensionAPI): void {
 }
 
 export default function (pi: ExtensionAPI) {
-	let proactiveCompactionPending = false;
-	let proactiveCompactionInFlight = false;
 	let protectOutgoingContext = false;
 	let keepRecentTokens = DEFAULT_COMPACTION_SETTINGS.keepRecentTokens;
 
-	const clearProactiveState = () => {
-		proactiveCompactionPending = false;
+	const clearContextGuard = () => {
 		protectOutgoingContext = false;
 	};
 
-	const finishProactiveCompaction = () => {
-		if (!proactiveCompactionInFlight) return;
-
-		proactiveCompactionInFlight = false;
-		clearProactiveState();
-	};
-
-	const failProactiveCompaction = (ctx: ExtensionContext, error: unknown) => {
-		if (!proactiveCompactionInFlight) return;
-
-		proactiveCompactionInFlight = false;
-		const message = error instanceof Error ? error.message : String(error);
-		if (message === "Nothing to compact (session too small)" || message === "Already compacted") {
-			clearProactiveState();
-			return;
-		}
-
-		// Keep the pending flag so a later settled run can retry. Context protection
-		// remains active until some compaction succeeds.
-		proactiveCompactionPending = true;
-		ctx.ui.notify(`Proactive compaction failed: ${message}`, "error");
-	};
-
 	pi.on("session_start", (_event, ctx) => {
+		clearContextGuard();
 		try {
 			keepRecentTokens = SettingsManager.create(ctx.cwd, undefined, {
 				projectTrusted: ctx.isProjectTrusted(),
@@ -180,56 +151,31 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", (event, ctx) => {
-		// A turn with tool results will otherwise continue through the agent loop.
-		// Record the need here, but never call ctx.compact() until agent_settled:
-		// manual compaction aborts and waits for the active run, which races this event.
-		if (event.toolResults.length === 0 || proactiveCompactionInFlight) return;
+		// Pi owns compaction. This extension only protects an active tool loop when
+		// Pi cannot safely compact yet or the provider reports an overflowed context.
+		if (event.toolResults.length === 0) return;
 
 		const usage = ctx.getContextUsage();
-		if (
-			!usage ||
-			usage.tokens === null ||
-			!shouldProactivelyCompact(usage.tokens, usage.contextWindow)
-		) {
+		if (!usage || usage.tokens === null || !shouldGuardContext(usage.tokens, usage.contextWindow)) {
 			return;
 		}
 
-		proactiveCompactionPending = true;
 		const hasCandidate = hasCompactionCandidate(ctx.sessionManager.getBranch(), keepRecentTokens);
 		protectOutgoingContext ||= !hasCandidate || usage.tokens > usage.contextWindow;
 	});
 
 	pi.on("context", (event) => {
-		if (!proactiveCompactionPending || !protectOutgoingContext) return;
+		if (!protectOutgoingContext) return;
 
 		const messages = protectOversizedToolResults(event.messages);
 		return messages === event.messages ? undefined : { messages };
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
-		if (
-			!proactiveCompactionPending ||
-			proactiveCompactionInFlight ||
-			!hasCompactionCandidate(ctx.sessionManager.getBranch(), keepRecentTokens)
-		) {
-			return;
-		}
-
-		proactiveCompactionInFlight = true;
-		try {
-			ctx.compact({
-				onComplete: finishProactiveCompaction,
-				onError: (error) => failProactiveCompaction(ctx, error),
-			});
-		} catch (error) {
-			failProactiveCompaction(ctx, error);
-		}
-	});
+	pi.on("agent_settled", clearContextGuard);
+	pi.on("session_shutdown", clearContextGuard);
 
 	pi.on("session_compact", (event) => {
-		// Any successful compaction satisfies a pending proactive request. A
-		// deferred manual compaction is already settled, so it needs no continuation.
-		clearProactiveState();
+		clearContextGuard();
 		if (event.reason === "manual") return;
 
 		// Native overflow recovery retries in core. Native threshold and

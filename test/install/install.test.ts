@@ -175,6 +175,61 @@ describe("transactional install", () => {
 		expect(receipt.components["skill:foreman-plan"]).toBeDefined();
 	});
 
+	it("migrates the context guard package filter without changing its component identity", async () => {
+		const target = await home();
+		const agentDir = join(target, ".pi/agent");
+		const legacyExtension = join(agentDir, "extensions/proactive-compaction.ts");
+		await mkdir(dirname(legacyExtension), { recursive: true });
+		await cp(join(sourceRoot, "pi/extensions/context-overflow-guard.ts"), legacyExtension);
+		await writeFile(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				packages: [
+					"npm:other@1",
+					{
+						source: sourceRoot,
+						extensions: ["+pi/extensions/proactive-compaction.ts"],
+						skills: [],
+						prompts: [],
+						themes: [],
+					},
+				],
+			}),
+		);
+		await mkdir(join(target, ".agents"), { recursive: true });
+		await writeFile(
+			join(target, ".agents/anjulgarg-agents.json"),
+			JSON.stringify({
+				schemaVersion: 1,
+				source: { kind: "local", root: sourceRoot, revision: null },
+				components: {
+					"pi-extension:proactive-compaction": {
+						installedAt: "2026-01-01T00:00:00Z",
+						sourceDigest: "legacy-name",
+						outputs: [],
+					},
+				},
+			}),
+		);
+
+		await applyPlan(
+			{ home: target, sourceRoot },
+			await planInstall({ home: target, sourceRoot, now: fixed }, [
+				"pi-extension:proactive-compaction",
+			]),
+		);
+
+		const settings = await object(join(agentDir, "settings.json"));
+		const local = settings.packages.find(
+			(entry: any) => typeof entry === "object" && entry.source === sourceRoot,
+		);
+		expect(local.extensions).toEqual(["+pi/extensions/context-overflow-guard.ts"]);
+		expect(settings.packages).toContain("npm:other@1");
+		expect(await exists(legacyExtension)).toBe(false);
+		const receipt = await object(join(target, ".agents/anjulgarg-agents.json"));
+		expect(receipt.components["pi-extension:proactive-compaction"]).toBeDefined();
+	});
+
 	it("preserves user-owned model scope and runtime model files", async () => {
 		const target = await home();
 		const agentDir = join(target, ".pi/agent");

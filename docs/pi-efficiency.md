@@ -48,6 +48,28 @@ may invalidate or rebuild cache when schemas are added. Prompt metadata supplied
 adapter-owned and outside this guarantee. Subagent child initial prompts and isolated utility completions use
 separate provider requests and are outside the parent invariant.
 
+## Context overflow guard
+
+Pi remains the sole owner of conversation compaction. The context-overflow-guard extension does not call
+`ctx.compact()` or maintain a second compaction threshold. During an active tool loop, it only guards an
+outgoing request when context is near capacity and Pi has no legal cut point, or when provider usage already
+exceeds the model window. The guard temporarily limits tool-result text sent to the model to 48,000 characters,
+preserving newer output first. Stored session results remain unchanged, and the guard clears when the agent
+settles or Pi compacts. The installer retains the historical component ID
+`pi-extension:proactive-compaction` as a compatibility alias while migrating package filters and direct legacy
+copies to `pi/extensions/context-overflow-guard.ts`.
+
+For more native headroom, users can configure Pi directly. Settings remain user-owned and are not installed by
+the stack:
+
+```json
+{
+	"compaction": {
+		"reserveTokens": 32000
+	}
+}
+```
+
 ## Passive activity
 
 Long-running work displays a fixed `Working` status with bounded elapsed time and activity counts
