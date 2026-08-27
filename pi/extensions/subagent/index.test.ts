@@ -518,6 +518,7 @@ async function testNonBlockingReturn(): Promise<void> {
 			!!runId &&
 				children.length === 1 &&
 				task?.status === "running" &&
+				result.terminate === true &&
 				String(result.content[0].text).includes("WOKEN") &&
 				!String(result.content[0].text).includes("### Subagent") &&
 				[
@@ -2193,6 +2194,11 @@ async function testPersistentPublicControls(): Promise<void> {
 				reloadedCtx,
 			);
 			const resumedTask = resumed.details.results[0];
+			assert(
+				`${name} (resume settles the parent until its completion wake)`,
+				resumed.terminate === true && String(resumed.content[0].text).includes("WOKEN"),
+				JSON.stringify(resumed),
+			);
 			const initialChild = first.children[0]!;
 			const resumedChild = reloadedChildren[0]!;
 			assert(

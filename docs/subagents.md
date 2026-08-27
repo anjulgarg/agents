@@ -5,6 +5,12 @@ The Pi subagent extension runs delegated work in separate Pi processes. Each inv
 The parent cache-stability invariant does not cover a child's initial prompt or any isolated utility
 completion: each is a separate provider request with its own prompt and cache behavior.
 
+Spawn and resume return terminating tool results. Pi therefore skips the routine post-tool parent model
+call, reaches `agent_settled`, and waits for the extension's completion wake instead of giving the parent
+an opportunity to poll. Independent parent tool work may be issued in the same tool-call batch; Pi only
+terminates a batch when every result in it is terminating. A completion, failure, or actionable watchdog
+wake starts the next parent turn.
+
 ## Ephemeral and persistent modes
 
 Ephemeral mode is the default. It starts a sessionless one-shot child and does not retain a resumable conversation.
