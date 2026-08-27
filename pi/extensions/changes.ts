@@ -1,4 +1,3 @@
-import { renderDiff } from "@earendil-works/pi-coding-agent";
 import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +9,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
 	matchesKey,
+	sliceByColumn,
 	truncateToWidth,
+	wrapTextWithAnsi,
 	visibleWidth,
 	type Component,
 	type TUI,
@@ -615,7 +616,7 @@ function parseHunkHeader(line: string): { oldLine: number; newLine: number } | u
 	return { oldLine: Number(match[1]), newLine: Number(match[2]) };
 }
 
-/** Convert Git unified hunks to the line-number format expected by renderDiff. */
+/** Convert Git unified hunks to the line-number format used by the pastel renderer. */
 export function parseUnifiedDiff(raw: string): ParsedUnifiedDiff {
 	const normalized = raw.replace(/\r\n?/g, "\n");
 	const rawLines = normalized.split("\n");
@@ -672,7 +673,120 @@ export interface FormatFileDiffOptions {
 	isSubmodule?: boolean;
 }
 
-/** Parse and color one Git diff using Pi's standard edit-tool renderer. */
+/** Pastel diff palette. Softer than the default edit-tool red/green. */
+const DIFF_CONTEXT_COLOR = "\x1b[38;2;128;128;128m";
+const DIFF_REMOVED_COLOR = "\x1b[38;2;242;139;130m";
+const DIFF_ADDED_COLOR = "\x1b[38;2;129;201;149m";
+const DIFF_COLOR_RESET = "\x1b[39m";
+const DIFF_INVERSE_ON = "\x1b[7m";
+const DIFF_INVERSE_OFF = "\x1b[27m";
+
+function parseDiffLine(
+	line: string,
+): { prefix: string; lineNum: string; content: string } | undefined {
+	const match = line.match(/^([+-\s])(\s*\d*)\s(.*)$/);
+	if (!match) return undefined;
+	return { prefix: match[1]!, lineNum: match[2]!, content: match[3]! };
+}
+
+function replaceTabs(text: string): string {
+	return text.replace(/\t/g, "   ");
+}
+
+/** Highlight the changed middle of a single removed/added pair without a diff library. */
+function intraLineHighlight(
+	oldContent: string,
+	newContent: string,
+): { removed: string; added: string } {
+	const minLen = Math.min(oldContent.length, newContent.length);
+	let prefix = 0;
+	while (prefix < minLen && oldContent[prefix] === newContent[prefix]) prefix++;
+	let suffix = 0;
+	while (
+		suffix < minLen - prefix &&
+		oldContent[oldContent.length - 1 - suffix] === newContent[newContent.length - 1 - suffix]
+	) {
+		suffix++;
+	}
+	const removedMiddle = oldContent.slice(prefix, oldContent.length - suffix);
+	const addedMiddle = newContent.slice(prefix, newContent.length - suffix);
+	return {
+		removed:
+			oldContent.slice(0, prefix) +
+			`${DIFF_INVERSE_ON}${removedMiddle}${DIFF_INVERSE_OFF}` +
+			oldContent.slice(oldContent.length - suffix),
+		added:
+			newContent.slice(0, prefix) +
+			`${DIFF_INVERSE_ON}${addedMiddle}${DIFF_INVERSE_OFF}` +
+			newContent.slice(newContent.length - suffix),
+	};
+}
+
+/** Color line-numbered diff lines with the pastel palette. */
+function renderPastelDiff(lines: readonly string[]): string[] {
+	const result: string[] = [];
+	let index = 0;
+	while (index < lines.length) {
+		const parsed = parseDiffLine(lines[index]!);
+		if (!parsed) {
+			result.push(`${DIFF_CONTEXT_COLOR}${lines[index]}${DIFF_COLOR_RESET}`);
+			index++;
+			continue;
+		}
+		if (parsed.prefix === "-") {
+			const removedLines: Array<{ lineNum: string; content: string }> = [];
+			while (index < lines.length) {
+				const candidate = parseDiffLine(lines[index]!);
+				if (!candidate || candidate.prefix !== "-") break;
+				removedLines.push({ lineNum: candidate.lineNum, content: candidate.content });
+				index++;
+			}
+			const addedLines: Array<{ lineNum: string; content: string }> = [];
+			while (index < lines.length) {
+				const candidate = parseDiffLine(lines[index]!);
+				if (!candidate || candidate.prefix !== "+") break;
+				addedLines.push({ lineNum: candidate.lineNum, content: candidate.content });
+				index++;
+			}
+			if (removedLines.length === 1 && addedLines.length === 1) {
+				const removed = removedLines[0]!;
+				const added = addedLines[0]!;
+				const highlight = intraLineHighlight(
+					replaceTabs(removed.content),
+					replaceTabs(added.content),
+				);
+				result.push(
+					`${DIFF_REMOVED_COLOR}-${removed.lineNum} ${highlight.removed}${DIFF_COLOR_RESET}`,
+				);
+				result.push(`${DIFF_ADDED_COLOR}+${added.lineNum} ${highlight.added}${DIFF_COLOR_RESET}`);
+			} else {
+				for (const removed of removedLines) {
+					result.push(
+						`${DIFF_REMOVED_COLOR}-${removed.lineNum} ${replaceTabs(removed.content)}${DIFF_COLOR_RESET}`,
+					);
+				}
+				for (const added of addedLines) {
+					result.push(
+						`${DIFF_ADDED_COLOR}+${added.lineNum} ${replaceTabs(added.content)}${DIFF_COLOR_RESET}`,
+					);
+				}
+			}
+		} else if (parsed.prefix === "+") {
+			result.push(
+				`${DIFF_ADDED_COLOR}+${parsed.lineNum} ${replaceTabs(parsed.content)}${DIFF_COLOR_RESET}`,
+			);
+			index++;
+		} else {
+			result.push(
+				`${DIFF_CONTEXT_COLOR} ${parsed.lineNum} ${replaceTabs(parsed.content)}${DIFF_COLOR_RESET}`,
+			);
+			index++;
+		}
+	}
+	return result;
+}
+
+/** Parse and color one Git diff using the changes view's pastel palette. */
 export function formatFileDiff(raw: string, options: FormatFileDiffOptions = {}): FileDiff {
 	if (options.isSubmodule) {
 		return { kind: "submodule", lines: [], note: "Submodule pointer changed." };
@@ -688,10 +802,9 @@ export function formatFileDiff(raw: string, options: FormatFileDiffOptions = {})
 			note: parsed.notes.join("\n") || "No textual diff available.",
 		};
 	}
-	const rendered = renderDiff(parsed.lines.join("\n"));
 	return {
 		kind: "text",
-		lines: rendered ? rendered.split("\n") : [],
+		lines: renderPastelDiff(parsed.lines),
 		note: parsed.notes.length > 0 ? parsed.notes.join("\n") : undefined,
 	};
 }
@@ -894,6 +1007,71 @@ function tabStatus(file: ChangedFile): { value: string; color: ThemeColor } {
 	return { value: status.charAt(0).toUpperCase() || "M", color: "text" };
 }
 
+function changeIcon(file: ChangedFile): { value: string; color: ThemeColor } {
+	switch (file.kind) {
+		case "added":
+			return { value: "+", color: "success" };
+		case "modified":
+			return { value: "~", color: "warning" };
+		case "deleted":
+			return { value: "−", color: "error" };
+		case "renamed":
+			return { value: "→", color: "accent" };
+		case "copied":
+			return { value: "⧉", color: "accent" };
+		case "untracked":
+			return { value: "?", color: "success" };
+		case "typechange":
+			return { value: "↕", color: "warning" };
+		case "unmerged":
+			return { value: "!", color: "error" };
+		case "submodule":
+			return { value: "◆", color: "accent" };
+		default:
+			return { value: "•", color: "muted" };
+	}
+}
+
+function pathBasename(path: string): string {
+	const normalized = path.replace(/\\/g, "/");
+	return normalized.slice(normalized.lastIndexOf("/") + 1) || normalized;
+}
+
+function tabLabel(file: ChangedFile, files: readonly ChangedFile[]): string {
+	const basename = pathBasename(file.path);
+	const duplicate = files.some(
+		(candidate) => candidate !== file && pathBasename(candidate.path) === basename,
+	);
+	return safePath(duplicate ? file.path : basename);
+}
+
+function renderAlignedRow(left: string, right: string, width: number): string {
+	if (width <= 0) return "";
+	const boundedRight = truncateToWidth(right, width);
+	const rightWidth = visibleWidth(boundedRight);
+	const gap = 2;
+	if (rightWidth + gap >= width) return boundedRight;
+	const boundedLeft = truncateToWidth(left, width - rightWidth - gap);
+	const spacing = Math.max(gap, width - visibleWidth(boundedLeft) - rightWidth);
+	return `${boundedLeft}${" ".repeat(spacing)}${boundedRight}`;
+}
+
+function wrapDiffDisplayLine(line: string, width: number): string[] {
+	if (visibleWidth(line) <= width) return [line];
+	const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+	const gutter = plain.match(/^[ +\-]\s*\d+\s/)?.[0];
+	const gutterWidth = gutter ? visibleWidth(gutter) : 0;
+	if (gutterWidth === 0 || gutterWidth >= width) return wrapTextWithAnsi(line, width);
+	const contentVisibleWidth = visibleWidth(line) - gutterWidth;
+	const prefix = sliceByColumn(line, 0, gutterWidth);
+	const content = sliceByColumn(line, gutterWidth, contentVisibleWidth);
+	const wrapped = wrapTextWithAnsi(content, width - gutterWidth);
+	return wrapped.map((segment, index) => {
+		const hangingIndent = index === 0 ? prefix : " ".repeat(gutterWidth);
+		return `${hangingIndent}${segment}\x1b[0m`;
+	});
+}
+
 function renderTabRow(segments: readonly string[], selected: number, width: number): string {
 	if (segments.length === 0 || width <= 0) return "";
 	const separatorWidth = 1;
@@ -962,18 +1140,25 @@ export class ChangesView implements Component {
 		return Math.max(1, getContentWidth(Math.max(1, width)));
 	}
 
-	private subtitle(): string {
-		if (!this.display) return this.loading ? "loading" : "unavailable";
-		const files = this.display.snapshot.files;
-		const uncommitted = files.filter((file) => file.scopes.includes("uncommitted")).length;
-		const unpushed = files.filter((file) => file.scopes.includes("unpushed")).length;
-		const fileWord = files.length === 1 ? "file" : "files";
-		const unpushedText = this.display.snapshot.unpushedAvailable
-			? `${unpushed} unpushed`
-			: "unpushed unavailable";
-		return `${files.length} ${fileWord} · ${uncommitted} uncommitted · ${unpushedText}${
-			this.display.stale ? " · snapshot changed" : ""
-		}`;
+	private subtitle(width: number): string {
+		let summary: string;
+		if (!this.display) {
+			summary = this.loading ? "Loading" : "Unavailable";
+		} else {
+			const files = this.display.snapshot.files;
+			const working = files.filter((file) => file.scopes.includes("uncommitted")).length;
+			const ahead = files.filter((file) => file.scopes.includes("unpushed")).length;
+			const fileWord = files.length === 1 ? "file" : "files";
+			const parts = [`${files.length} ${fileWord}`];
+			if (working > 0) parts.push(`Working ${working}`);
+			if (ahead > 0) parts.push(`Ahead ${ahead}`);
+			else if (!this.display.snapshot.unpushedAvailable) parts.push("No upstream");
+			if (this.display.stale) parts.push("Snapshot changed");
+			summary = parts.join(" · ");
+		}
+		const contentWidth = this.contentWidth(width);
+		const padding = Math.max(0, contentWidth - visibleWidth("Changes") - visibleWidth(summary) - 1);
+		return `${" ".repeat(padding)}${summary}`;
 	}
 
 	private selectedFile(): ChangedFile | undefined {
@@ -987,29 +1172,28 @@ export class ChangesView implements Component {
 				? [this.theme.fg("warning", `${SPINNER_FRAMES[this.spinnerFrame]} Loading changes...`)]
 				: [];
 		}
-		const status = (file.workingStatus ?? file.unpushedStatus ?? file.status).trim();
-		const scope = file.scopes.join(" + ");
-		const meta = `${safePath(file.path)} · ${safeTerminalText(status)} · ${scope}${
-			this.fullFile ? " · full file" : " · changed context"
-		}`;
-		const tabs =
-			this.display?.snapshot.files.map((candidate, index) => {
-				const state = tabStatus(candidate);
-				const plain = `${state.value} ${safePath(candidate.path)}`;
-				if (index !== this.selected) return this.theme.fg("muted", ` ${plain} `);
-				const highlighted = ` ${plain} `;
-				const colored = this.theme.fg("accent", this.theme.bold(highlighted));
-				const themeWithBackground = this.theme as Theme & {
-					bg?: (color: "selectedBg", text: string) => string;
-				};
-				return themeWithBackground.bg ? themeWithBackground.bg("selectedBg", colored) : colored;
-			}) ?? [];
-		return [meta, renderTabRow(tabs, this.selected, this.contentWidth(width))];
-	}
-
-	private currentCacheKey(): string {
-		const file = this.selectedFile();
-		return `${file?.path ?? ""}\0${this.fullFile ? "full" : "collapsed"}`;
+		const files = this.display?.snapshot.files ?? [];
+		const tabs = files.map((candidate, index) => {
+			const label = tabLabel(candidate, files);
+			const icon = changeIcon(candidate);
+			const iconText = this.theme.fg(icon.color, icon.value);
+			if (index !== this.selected) {
+				return ` ${iconText} ${this.theme.fg("muted", label)} `;
+			}
+			const highlighted = ` ${iconText} ${this.theme.fg("accent", this.theme.bold(label))} `;
+			const themeWithBackground = this.theme as Theme & {
+				bg?: (color: "selectedBg", text: string) => string;
+			};
+			return themeWithBackground.bg
+				? themeWithBackground.bg("selectedBg", highlighted)
+				: highlighted;
+		});
+		const state = tabStatus(file);
+		const mode = this.fullFile ? "Full file" : `Context ${DEFAULT_CONTEXT_LINES}`;
+		const details = `${this.theme.fg(state.color, state.value)} · ${this.theme.fg("muted", mode)}`;
+		const contentWidth = this.contentWidth(width);
+		const meta = renderAlignedRow(safePath(file.path), details, contentWidth);
+		return ["", renderTabRow(tabs, this.selected, contentWidth), "", meta];
 	}
 
 	private cachedDiff(file: ChangedFile, mode: DiffMode): FileDiff | undefined {
@@ -1098,7 +1282,7 @@ export class ChangesView implements Component {
 				...diff.note.split("\n").map((line) => this.theme.fg("muted", safeTerminalText(line))),
 			);
 		if (lines.length === 0) lines.push(this.theme.fg("muted", "No textual diff available."));
-		return lines.map((line) => truncateToWidth(line, contentWidth));
+		return lines.flatMap((line) => wrapDiffDisplayLine(line, contentWidth));
 	}
 
 	render(width: number): string[] {
@@ -1111,7 +1295,7 @@ export class ChangesView implements Component {
 			const header = renderHeader({
 				width: renderWidth,
 				title: "Changes",
-				subtitle: this.subtitle(),
+				subtitle: this.subtitle(renderWidth),
 				lines: headerLines,
 				divider,
 				theme: this.theme,
@@ -1125,7 +1309,13 @@ export class ChangesView implements Component {
 				continue;
 			}
 			if (headerLines.length > 0) {
-				headerLines = headerLines.slice(0, -1);
+				if (headerLines.length === 4 && headerLines[0] === "" && headerLines[2] === "") {
+					headerLines = headerLines.slice(0, 2);
+				} else if (headerLines.length === 2 && headerLines[0] === "") {
+					headerLines = [];
+				} else {
+					headerLines = headerLines.slice(0, -1);
+				}
 				continue;
 			}
 			if (divider) {
@@ -1138,7 +1328,7 @@ export class ChangesView implements Component {
 		const header = renderHeader({
 			width: renderWidth,
 			title: "Changes",
-			subtitle: this.subtitle(),
+			subtitle: this.subtitle(renderWidth),
 			lines: headerLines,
 			divider,
 			theme: this.theme,
@@ -1150,7 +1340,7 @@ export class ChangesView implements Component {
 			width: renderWidth,
 			height,
 			title: "Changes",
-			subtitle: this.subtitle(),
+			subtitle: this.subtitle(renderWidth),
 			headerLines,
 			body: body.slice(range.start, range.end),
 			keyHints: hints,
@@ -1315,8 +1505,9 @@ export default function changesExtension(pi: ExtensionAPI): void {
 					fullscreenOverlayOptions(),
 				);
 				if (result) {
-					if (ctx.ui.getEditorText().trim()) ctx.ui.pasteToEditor(result);
-					else ctx.ui.setEditorText(result);
+					const editorText = ctx.ui.getEditorText();
+					if (!editorText.trim() && editorText.length > 0) ctx.ui.setEditorText("");
+					ctx.ui.pasteToEditor(result);
 				}
 			} finally {
 				activeView = false;

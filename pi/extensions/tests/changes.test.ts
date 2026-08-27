@@ -98,6 +98,10 @@ function assert(name: string, condition: boolean, details: string): void {
 	console.log(`PASS: ${name}`);
 }
 
+function stripAnsi(text: string): string {
+	return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 function changedFile(
 	pathName: string,
 	kind: ChangeKind,
@@ -240,10 +244,12 @@ function testDiffParsing(): void {
 	);
 	const formatted = formatFileDiff(unifiedFixture);
 	assert(
-		"formatted text diff contains standard Pi diff styling and notes are safe",
+		"formatted text diff uses pastel red and green while preserving visible content",
 		formatted.kind === "text" &&
 			formatted.lines.length >= 6 &&
-			formatted.lines.some((line) => line.includes("return !before")),
+			formatted.lines.some((line) => line.includes("\x1b[38;2;242;139;130m")) &&
+			formatted.lines.some((line) => line.includes("\x1b[38;2;129;201;149m")) &&
+			formatted.lines.some((line) => stripAnsi(line).includes("return !before")),
 		inspect(formatted),
 	);
 	const binary = formatFileDiff(
@@ -605,9 +611,26 @@ async function testChangesView(): Promise<void> {
 			fetchCalls.some((call) => call.path === "src/file-0.ts" && call.mode === "collapsed"),
 		inspect({ initial, fetchCalls }),
 	);
+	const plainInitial = initial.map(stripAnsi);
 	assert(
-		"selected tab is visibly distinguished",
-		initialText.includes("\x1b[7m") && initialText.includes("M src/file-0.ts"),
+		"changes header uses balanced tab spacing, concise counts, and aligned metadata",
+		plainInitial[0]!.trimStart().startsWith("Changes") &&
+			plainInitial[0]!.trimEnd().endsWith("18 files · Working 18") &&
+			plainInitial[0]!.indexOf("18 files") > 20 &&
+			plainInitial[1]!.trim() === "" &&
+			plainInitial[2]!.includes("~ file-0.ts") &&
+			plainInitial[2]!.includes("+ file-1.ts") &&
+			!plainInitial[2]!.includes("src/") &&
+			plainInitial[3]!.trim() === "" &&
+			plainInitial[4]!.trimStart().startsWith("src/file-0.ts") &&
+			plainInitial[4]!.trimEnd().endsWith("M · Context 3") &&
+			!plainInitial.slice(0, 5).join("\n").includes("Ahead 0") &&
+			!plainInitial.slice(0, 5).join("\n").includes("uncommitted"),
+		inspect(plainInitial.slice(0, 6)),
+	);
+	assert(
+		"selected basename tab and its change icon are visibly distinguished",
+		initialText.includes("\x1b[7m ~ file-0.ts \x1b[27m"),
 		initialText,
 	);
 
@@ -717,6 +740,85 @@ async function testChangesView(): Promise<void> {
 	);
 	shortView.dispose();
 
+	const wrappedMarker = "WRAPMARKERABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+	const wrapLoader = controlledLoader();
+	const wrapView = new ChangesView(
+		{ terminal: { rows: 20 }, requestRender: () => undefined } as any,
+		{
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+			bg: (_color: string, text: string) => `\x1b[7m${text}\x1b[27m`,
+		} as any,
+		{
+			root: "/offline/repository",
+			load: wrapLoader.load,
+			fetchDiff: async () => formatFileDiff(`@@ -0,0 +1 @@\n+${wrappedMarker}\n`),
+			done: () => undefined,
+		},
+	);
+	wrapLoader.pending[0]!.resolve(displayFor([changedFile("wrapped.ts", "modified")]));
+	for (let index = 0; index < 3; index++) await flush();
+	const wrapped = wrapView.render(24);
+	const joinedWrappedText = stripAnsi(wrapped.join("\n")).replace(/\s/g, "");
+	const wrappedDiffRows = wrapped.filter((line) => line.includes("\x1b[38;2;129;201;149m"));
+	const continuationRows = wrappedDiffRows.slice(1).map(stripAnsi);
+	assert(
+		"overlong diff lines use a hanging indent without losing content",
+		wrapped.length === 20 &&
+			wrapped.every((line) => visibleWidth(line) === 24) &&
+			joinedWrappedText.includes(wrappedMarker) &&
+			wrappedDiffRows.length > 1 &&
+			continuationRows.every((line) => /^ {4}\S/.test(line)),
+		inspect({ wrapped, continuationRows }),
+	);
+	wrapView.dispose();
+
+	const iconFiles = [
+		changedFile("modified.ts", "modified"),
+		changedFile("added.ts", "added"),
+		changedFile("deleted.ts", "deleted"),
+		changedFile("renamed.ts", "renamed"),
+		changedFile("copied.ts", "copied"),
+		changedFile("untracked.ts", "untracked"),
+		changedFile("typechange.ts", "typechange"),
+		changedFile("unmerged.ts", "unmerged"),
+		changedFile("module", "submodule", ["uncommitted"], { isSubmodule: true }),
+	];
+	const iconLoader = controlledLoader();
+	const iconView = new ChangesView(
+		{ terminal: { rows: 14 }, requestRender: () => undefined } as any,
+		{
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+			bg: (_color: string, text: string) => `\x1b[7m${text}\x1b[27m`,
+		} as any,
+		{
+			root: "/offline/repository",
+			load: iconLoader.load,
+			fetchDiff: async () => ({ kind: "text", lines: [" 1 content"] }),
+			done: () => undefined,
+		},
+	);
+	iconLoader.pending[0]!.resolve(displayFor(iconFiles));
+	for (let index = 0; index < 3; index++) await flush();
+	const iconTabs = stripAnsi(iconView.render(140)[2] ?? "");
+	assert(
+		"every file tab shows a consistently spaced semantic change icon",
+		[
+			"~ modified.ts",
+			"+ added.ts",
+			"− deleted.ts",
+			"→ renamed.ts",
+			"⧉ copied.ts",
+			"? untracked.ts",
+			"↕ typechange.ts",
+			"! unmerged.ts",
+			"◆ module",
+		].every((label) => iconTabs.includes(label)),
+		iconTabs,
+	);
+	iconView.dispose();
+
 	const emptyLoader = controlledLoader();
 	let emptyDone = 0;
 	const emptyView = new ChangesView(
@@ -734,8 +836,7 @@ async function testChangesView(): Promise<void> {
 	const empty = emptyView.render(width).join("\n");
 	assert(
 		"empty ChangesView retains the concise empty state",
-		(empty.match(/No current Git changes\./g) ?? []).length === 1 &&
-			/unpushed unavailable/.test(empty),
+		(empty.match(/No current Git changes\./g) ?? []).length === 1 && /No upstream/.test(empty),
 		empty,
 	);
 	emptyView.handleInput("\x1b");
@@ -862,8 +963,7 @@ async function testCommandEditHandoff(): Promise<void> {
 	const command = commands.get("changes");
 	if (!command) throw new Error("changes command was not registered");
 	let editorText = "";
-	let setText = "";
-	let pastedText = "";
+	const pastedTexts: string[] = [];
 	let customResult: string | undefined;
 	const run = async (): Promise<void> => {
 		customResult = undefined;
@@ -874,11 +974,10 @@ async function testCommandEditHandoff(): Promise<void> {
 			ui: {
 				getEditorText: () => editorText,
 				setEditorText: (text: string) => {
-					setText = text;
 					editorText = text;
 				},
 				pasteToEditor: (text: string) => {
-					pastedText = text;
+					pastedTexts.push(text);
 					editorText += text;
 				},
 				custom: async (factory: AnyRecord) => {
@@ -899,15 +998,16 @@ async function testCommandEditHandoff(): Promise<void> {
 		});
 	};
 	await run();
-	const first = setText;
+	const first = editorText;
 	editorText = "Please fix ";
 	await run();
 	assert(
-		"E hands the exact selected path to the empty editor and preserves a draft",
+		"E redraws the exact selected path immediately and preserves a draft",
 		first === "src/edit.ts" &&
-			pastedText === "src/edit.ts" &&
+			pastedTexts.length === 2 &&
+			pastedTexts.every((text) => text === "src/edit.ts") &&
 			editorText === "Please fix src/edit.ts",
-		inspect({ first, pastedText, editorText }),
+		inspect({ first, pastedTexts, editorText }),
 	);
 }
 
