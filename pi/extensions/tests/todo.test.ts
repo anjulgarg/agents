@@ -233,8 +233,13 @@ const alignmentBranch = [
 			todos: [
 				{ id: 9, text: "Ninth todo", status: "open" },
 				{ id: 10, text: "Tenth todo", status: "open" },
+				{ id: 11, text: "Eleventh todo", status: "open" },
+				{ id: 12, text: "Twelfth todo", status: "open" },
+				{ id: 13, text: "Thirteenth todo", status: "open" },
+				{ id: 14, text: "Fourteenth todo", status: "open" },
+				{ id: 15, text: "Fifteenth todo", status: "open" },
 			],
-			nextId: 11,
+			nextId: 16,
 		},
 	},
 ];
@@ -248,12 +253,20 @@ await handlers.get("session_start")?.(
 const alignedWidget = alignedWidgetFactory(undefined, theme).render(80) as string[];
 const widgetNinthColumn = alignedWidget.find((line) => line.includes("Ninth todo"));
 const widgetTenthColumn = alignedWidget.find((line) => line.includes("Tenth todo"));
+const widgetOverflow = alignedWidget.find((line) => line.includes("+ 2 more"));
 assert(
 	"todo widget IDs reserve width so single- and double-digit text columns align",
 	widgetNinthColumn !== undefined &&
 		widgetTenthColumn !== undefined &&
 		widgetNinthColumn.indexOf("Ninth todo") === widgetTenthColumn.indexOf("Tenth todo"),
 	JSON.stringify({ alignedWidget, widgetNinthColumn, widgetTenthColumn }),
+);
+assert(
+	"todo widget overflow indicator aligns with the todo status icons",
+	widgetNinthColumn !== undefined &&
+		widgetOverflow !== undefined &&
+		widgetNinthColumn.indexOf("○") === widgetOverflow.indexOf("+"),
+	JSON.stringify({ alignedWidget, widgetNinthColumn, widgetOverflow }),
 );
 await handlers.get("session_start")?.(
 	{},
@@ -420,7 +433,7 @@ assert(
 	"start marks a todo in progress and reports only its active ID",
 	started.content[0].text === "Todo #1 started; active #1" &&
 		started.details.todos[0].status === "in_progress" &&
-		(widgetFactory(undefined, theme).render(80) as string[]).some((line) => line.includes("◐")),
+		(widgetFactory(undefined, theme).render(80) as string[]).some((line) => line.includes("●")),
 	JSON.stringify(started),
 );
 await run("complete", { id: 1 });
@@ -794,7 +807,7 @@ assert(
 		cycleTodoStatus("in_progress") === "done" &&
 		cycleTodoStatus("done") === "open" &&
 		todoStatusGlyph("open") === "○" &&
-		todoStatusGlyph("in_progress") === "◐" &&
+		todoStatusGlyph("in_progress") === "●" &&
 		todoStatusGlyph("done") === "✓",
 	"helper mismatch",
 );
@@ -821,7 +834,7 @@ assert(
 	"todo UI Space cycles selected item through open, in progress, and done",
 	cycled[0]?.status === "in_progress" &&
 		cycled[1]?.status === "done" &&
-		afterStart.includes("◐") &&
+		afterStart.includes("●") &&
 		afterStart.includes("in progress"),
 	JSON.stringify({ cycled, afterStart }),
 );

@@ -149,7 +149,7 @@ export function cycleTodoStatus(status: TodoStatus): TodoStatus {
 
 export function todoStatusGlyph(status: TodoStatus): string {
 	if (status === "done") return "✓";
-	if (status === "in_progress") return "◐";
+	if (status === "in_progress") return "●";
 	return "○";
 }
 
@@ -484,7 +484,7 @@ export default function todoExtension(pi: ExtensionAPI) {
 				order: BOTTOM_PANEL_SECTION_ORDER.todos,
 				maxLines: 6,
 				render: renderItems,
-				overflowLabel: (omitted, theme) => theme.fg("muted", `+ ${omitted} more`),
+				overflowLabel: (omitted, theme) => theme.fg("muted", ` + ${omitted} more`),
 			});
 			return;
 		}
@@ -714,7 +714,7 @@ export default function todoExtension(pi: ExtensionAPI) {
 		promptSnippet: "Track and maintain multi-step work as a todo list",
 		promptGuidelines: [
 			"Use todo to track multi-step work: add each step, start the active one, then complete it after its work is verified.",
-			"Todo status is open (○), in_progress (◐), or done (✓). Use update for atomic status changes; start, complete, and reopen by ID are idempotent.",
+			"Todo status is open (○), in_progress (●), or done (✓). Use update for atomic status changes; start, complete, and reopen by ID are idempotent.",
 			"Use todo edit, move, or remove by ID when the user requests list maintenance; move positions are one-based.",
 			"When executing a user-approved plan, replace the todo list with its steps before starting; Todo confirms before discarding open work.",
 			"Use replace rather than add to start a fresh list when beginning unrelated work. The first replacement item starts automatically when no item is active, and the widget auto-hides when all items are complete.",

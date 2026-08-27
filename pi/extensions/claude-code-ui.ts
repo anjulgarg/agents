@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -152,6 +152,43 @@ export function formatEditorTopBorder(width: number, sessionTitle: string | unde
 
 const CONTEXT_USAGE_TTL_MS = 200;
 const SESSION_USAGE_TTL_MS = 200;
+const HERDR_SESSION_METADATA_SOURCE = "herdr:pi:session-name";
+
+function syncHerdrSessionName(name: string | undefined, ctx: ExtensionContext): void {
+	if (
+		ctx.mode !== "tui" ||
+		process.env.HERDR_ENV !== "1" ||
+		!process.env.HERDR_PANE_ID ||
+		!process.env.HERDR_TAB_ID
+	) {
+		return;
+	}
+
+	const normalized = name?.trim();
+	const herdr = process.env.HERDR_BIN_PATH || "herdr";
+	const paneArgs = [
+		"pane",
+		"report-metadata",
+		process.env.HERDR_PANE_ID,
+		"--source",
+		HERDR_SESSION_METADATA_SOURCE,
+		"--agent",
+		"pi",
+		"--applies-to-source",
+		"herdr:pi",
+		...(normalized ? ["--display-agent", normalized] : ["--clear-display-agent"]),
+	];
+
+	void execFile(herdr, paneArgs, { windowsHide: true }, () => undefined);
+	if (normalized) {
+		void execFile(
+			herdr,
+			["tab", "rename", process.env.HERDR_TAB_ID, normalized],
+			{ windowsHide: true },
+			() => undefined,
+		);
+	}
+}
 
 type ContextUsage = ReturnType<ExtensionContext["getContextUsage"]>;
 
@@ -708,6 +745,11 @@ export default function (pi: ExtensionAPI) {
 		invalidateFrameCaches(ctx);
 	});
 
+	pi.on("session_info_changed", (event, ctx) => {
+		invalidateFrameCaches(ctx);
+		syncHerdrSessionName(event.name, ctx);
+	});
+
 	pi.on("model_select", (_event, ctx) => {
 		invalidateFrameCaches(ctx);
 		installFooter(ctx);
@@ -731,6 +773,7 @@ export default function (pi: ExtensionAPI) {
 		linkedWorktree = readGitContext(ctx.cwd).isLinkedWorktree;
 
 		ctx.ui.setTheme("claude-code");
+		syncHerdrSessionName(pi.getSessionName(), ctx);
 		ctx.ui.setHeader((_tui, theme) => createHeader(theme, ctx));
 		footerCtx = ctx;
 		installFooter(ctx);
