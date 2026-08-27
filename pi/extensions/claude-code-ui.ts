@@ -604,14 +604,14 @@ export function createFooter(
 					),
 				),
 				context ? color(117, context) : undefined,
-				cacheHitRate ? color(122, cacheHitRate) : undefined,
-				sessionCost ? color(211, sessionCost) : undefined,
 				quota?.fiveHourRemaining !== undefined
 					? color(quotaColor(quota.fiveHourRemaining, 222), `5h ${quota.fiveHourRemaining}%`)
 					: undefined,
 				quota?.weeklyRemaining !== undefined
 					? color(quotaColor(quota.weeklyRemaining, 150), `7d ${quota.weeklyRemaining}%`)
 					: undefined,
+				cacheHitRate ? color(122, cacheHitRate) : undefined,
+				sessionCost ? color(211, sessionCost) : undefined,
 			].filter((segment): segment is string => Boolean(segment));
 
 			const extensionStatuses = footerData.getExtensionStatuses();

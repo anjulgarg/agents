@@ -630,6 +630,34 @@ assert(
 	usageLine,
 );
 
+const quotaCtx: any = {
+	cwd: "/home/test",
+	model: { name: "gpt-5.6", id: "gpt-5.6", provider: "openai-codex", contextWindow: 272_000 },
+	getContextUsage: () => ({ tokens: 34_000, percent: 12.5 }),
+	sessionManager: { getEntries: () => usageEntries },
+};
+const quotaFooter = createFooter(
+	quotaCtx,
+	makeFooterData([], null),
+	alwaysFalse,
+	emptyString,
+	alwaysFalse,
+	() => ({ fiveHourRemaining: 55, weeklyRemaining: 88 }),
+	noop,
+	noop,
+);
+const quotaLine = quotaFooter.render(200).join("");
+assert(
+	"footer orders quota before cache, cost, and extension statuses",
+	quotaLine.includes("5h 55%") &&
+		quotaLine.includes("7d 88%") &&
+		quotaLine.indexOf("5h 55%") < quotaLine.indexOf("7d 88%") &&
+		quotaLine.indexOf("7d 88%") < quotaLine.indexOf("cache 58%") &&
+		quotaLine.indexOf("cache 58%") < quotaLine.indexOf("$0.10"),
+	quotaLine,
+);
+quotaFooter.dispose();
+
 const usageNarrowLines = usageFooter.render(28);
 const usageNarrow = usageNarrowLines.join("\n");
 assert(
