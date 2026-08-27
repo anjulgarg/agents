@@ -29,6 +29,7 @@ import {
 const GIT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONTEXT_LINES = 3;
 const FULL_FILE_CONTEXT_LINES = 1_000_000_000;
+const EDITOR_HANDOFF_REDRAW_KEY = "changes:editor-handoff";
 const MAX_DIFF_OUTPUT_CHARS = 2_000_000;
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 
@@ -1508,6 +1509,9 @@ export default function changesExtension(pi: ExtensionAPI): void {
 					const editorText = ctx.ui.getEditorText();
 					if (!editorText.trim() && editorText.length > 0) ctx.ui.setEditorText("");
 					ctx.ui.pasteToEditor(result);
+					// Overlay close redraws before this handler resumes; request one more frame
+					// after the synchronous editor update so the inserted path is immediately visible.
+					ctx.ui.setStatus(EDITOR_HANDOFF_REDRAW_KEY, undefined);
 				}
 			} finally {
 				activeView = false;

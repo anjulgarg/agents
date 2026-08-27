@@ -964,6 +964,7 @@ async function testCommandEditHandoff(): Promise<void> {
 	if (!command) throw new Error("changes command was not registered");
 	let editorText = "";
 	const pastedTexts: string[] = [];
+	const redrawRequests: Array<{ key: string; text: string | undefined }> = [];
 	let customResult: string | undefined;
 	const run = async (): Promise<void> => {
 		customResult = undefined;
@@ -979,6 +980,9 @@ async function testCommandEditHandoff(): Promise<void> {
 				pasteToEditor: (text: string) => {
 					pastedTexts.push(text);
 					editorText += text;
+				},
+				setStatus: (key: string, text: string | undefined) => {
+					redrawRequests.push({ key, text });
 				},
 				custom: async (factory: AnyRecord) => {
 					const component = factory(
@@ -1006,8 +1010,12 @@ async function testCommandEditHandoff(): Promise<void> {
 		first === "src/edit.ts" &&
 			pastedTexts.length === 2 &&
 			pastedTexts.every((text) => text === "src/edit.ts") &&
+			redrawRequests.length === 2 &&
+			redrawRequests.every(
+				(request) => request.key === "changes:editor-handoff" && request.text === undefined,
+			) &&
 			editorText === "Please fix src/edit.ts",
-		inspect({ first, pastedTexts, editorText }),
+		inspect({ first, pastedTexts, redrawRequests, editorText }),
 	);
 }
 
