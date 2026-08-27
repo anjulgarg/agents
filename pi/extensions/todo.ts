@@ -79,6 +79,7 @@ const TODO_RECONCILIATION_GUIDANCE = [
 const TODO_CONTEXT_TYPE = "todo-context";
 const TODO_CONTEXT_MAX_ITEMS = 32;
 const TODO_CONTEXT_MAX_CHARS = 8_000;
+const TODO_WIDGET_VISIBLE_ITEMS = 5;
 const EMPTY_TODO_CONTEXT_STATE = "[]";
 
 const TodoParams = Type.Object({
@@ -139,6 +140,21 @@ export function normalizeTodo(raw: unknown): Todo | undefined {
 
 export function isActiveTodo(todo: Todo): boolean {
 	return todo.status === "open" || todo.status === "in_progress";
+}
+
+/**
+ * Order the bounded widget so unfinished work owns its visible queue. When
+ * fewer than five unfinished items remain, the latest completed items in list
+ * order fill the leading slots. Every item remains in the result so the shared
+ * panel can report the exact overflow count.
+ */
+export function prioritizeTodoWidgetItems(todos: readonly Todo[]): Todo[] {
+	const active = todos.filter(isActiveTodo);
+	const completed = todos.filter((todo) => todo.status === "done");
+	const fillerCount = Math.max(0, TODO_WIDGET_VISIBLE_ITEMS - active.length);
+	const completedFillers = fillerCount > 0 ? completed.slice(-fillerCount) : [];
+	const prioritizedIds = new Set([...completedFillers, ...active].map((todo) => todo.id));
+	return [...completedFillers, ...active, ...todos.filter((todo) => !prioritizedIds.has(todo.id))];
 }
 
 export function cycleTodoStatus(status: TodoStatus): TodoStatus {
@@ -467,7 +483,7 @@ export default function todoExtension(pi: ExtensionAPI) {
 		}
 		const renderItems = (_width: number, theme: Theme): string[] => {
 			const idWidth = todoIdWidth(todos);
-			return cloneTodos(todos).map((todo) => {
+			return prioritizeTodoWidgetItems(cloneTodos(todos)).map((todo) => {
 				const check = colorTodoGlyph(theme, todo.status);
 				const id = theme.fg("dim", formatTodoId(todo.id, idWidth));
 				const body =

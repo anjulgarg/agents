@@ -82,6 +82,9 @@ and idempotent.
 
 Replacing a list automatically starts its first open item when no item is already active. Completing
 the sole in-progress item starts the next open item, and the widget hides when every item is done.
-Compact mutation receipts omit the repeated full queue; `/todos` and tool details still expose the
-complete state. At settlement, one hidden reconciliation turn may continue verified open work, but
+The five visible widget slots prioritize unfinished items in list order. When fewer than five unfinished
+items remain, the latest completed items in list order fill the leading slots; older completed items move
+behind the `+ N more` overflow hint. Compact mutation receipts omit the repeated full queue; `/todos`
+and tool details still expose the complete state. At settlement, one hidden reconciliation turn may
+continue verified open work, but
 it does not recursively schedule itself.

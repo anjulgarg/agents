@@ -268,6 +268,83 @@ assert(
 		widgetNinthColumn.indexOf("○") === widgetOverflow.indexOf("+"),
 	JSON.stringify({ alignedWidget, widgetNinthColumn, widgetOverflow }),
 );
+
+async function renderQueueWidget(todos: any[]): Promise<string[]> {
+	let queueWidgetFactory: any;
+	const queueUi = {
+		...context().ui,
+		setWidget: (_name: string, factory: any) => {
+			queueWidgetFactory = factory;
+		},
+	};
+	await handlers.get("session_start")?.(
+		{},
+		context({
+			ui: queueUi,
+			sessionManager: {
+				getBranch: () => [
+					{
+						type: "custom",
+						customType: "todo",
+						data: { todos, nextId: Math.max(...todos.map((todo) => todo.id)) + 1 },
+					},
+				],
+			},
+		}),
+	);
+	return queueWidgetFactory(undefined, theme).render(80) as string[];
+}
+
+const fiveRemainingWidget = await renderQueueWidget([
+	...Array.from({ length: 5 }, (_, index) => ({
+		id: index + 1,
+		text: `Completed ${index + 1}`,
+		status: "done",
+	})),
+	{ id: 6, text: "Current pending", status: "in_progress" },
+	...Array.from({ length: 4 }, (_, index) => ({
+		id: index + 7,
+		text: `New ${index + 1}`,
+		status: "open",
+	})),
+]);
+assert(
+	"todo widget gives all five visible queue slots to unfinished work",
+	["Current pending", "New 1", "New 2", "New 3", "New 4"].every((text) =>
+		fiveRemainingWidget.some((line) => line.includes(text)),
+	) &&
+		!fiveRemainingWidget.some((line) => line.includes("Completed")) &&
+		fiveRemainingWidget.some((line) => line.includes("+ 5 more")),
+	JSON.stringify(fiveRemainingWidget),
+);
+
+const fourRemainingWidget = await renderQueueWidget([
+	...Array.from({ length: 5 }, (_, index) => ({
+		id: index + 1,
+		text: `Completed ${index + 1}`,
+		status: "done",
+	})),
+	{ id: 6, text: "Current pending", status: "in_progress" },
+	...Array.from({ length: 3 }, (_, index) => ({
+		id: index + 7,
+		text: `New ${index + 1}`,
+		status: "open",
+	})),
+]);
+assert(
+	"todo widget fills one spare queue slot with the latest completed item",
+	fourRemainingWidget[0]?.includes("#5") === true &&
+		fourRemainingWidget[0]?.includes("✓") === true &&
+		["Current pending", "New 1", "New 2", "New 3"].every((text) =>
+			fourRemainingWidget.some((line) => line.includes(text)),
+		) &&
+		!["Completed 1", "Completed 2", "Completed 3", "Completed 4"].some((text) =>
+			fourRemainingWidget.some((line) => line.includes(text)),
+		) &&
+		fourRemainingWidget.some((line) => line.includes("+ 4 more")),
+	JSON.stringify(fourRemainingWidget),
+);
+
 await handlers.get("session_start")?.(
 	{},
 	context({
