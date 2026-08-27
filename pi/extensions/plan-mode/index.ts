@@ -36,6 +36,15 @@ const PLAN_MODE_BLOCKED_TOOLS = new Set<string>(["edit", "write", "job"]);
 const BUILD_MODE_GUIDANCE =
 	"[BUILD MODE ACTIVE]\nPlan-mode restrictions are disabled. Full tool access is available; do not claim that a build-mode switch is still required.";
 
+// Pi-specific delivery contract injected alongside the planning skill. The skill itself
+// stays harness-neutral and never gates implementation; plan-mode behavior lives here.
+const READ_ONLY_DELIVERY_CONTRACT = `Read-only delivery contract (overrides only the skill's artifact-location, file-writing, and plan-path return instructions):
+- Keep every discovery, design approval, separate plan confirmation, fidelity, and validation requirement in the skill.
+- Remain read-only. Do not create or modify the repository plan document while plan mode is active.
+- After explicit plan confirmation, use the skill's plan template as the plan structure but present the completed, validated plan in chat.
+- Conclude the chat response with a "Plan:" header and a numbered execution summary. Each item must identify one ordered feature or integration outcome so approval and execution controls can be offered.
+- Do not implement the plan. Wait for the user to transition explicitly into execution.`;
+
 interface PlanModeState {
 	enabled: boolean;
 	executing?: boolean;
@@ -186,11 +195,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			}
 
 			const workflow = planningSkill
-				? `Follow the Foreman planning skill below, including its Pi plan mode integration contract. Resolve its relative references from ${planningSkill.skill.baseDir}.
+				? `Follow the Foreman planning skill below, then apply the read-only delivery contract that follows it. Resolve the skill's relative references from ${planningSkill.skill.baseDir}.
 
 <foreman_plan_skill path=${JSON.stringify(planningSkill.skill.filePath)}>
 ${planningSkill.content}
-</foreman_plan_skill>`
+</foreman_plan_skill>
+
+${READ_ONLY_DELIVERY_CONTRACT}`
 				: `The foreman-plan skill could not be loaded. Use this safe fallback: inspect first, choose a proportional discovery depth, obtain explicit design approval, then separately ask whether to create the implementation plan. Only after both approvals, return a detailed numbered plan under a "Plan:" header. Never implement it.`;
 
 			planningGuidanceInjected = true;

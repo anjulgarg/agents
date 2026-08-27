@@ -5,7 +5,7 @@ description: Clarify requirements and design proportionately, then generate a hi
 
 # foreman-plan
 
-Discover first. Write a plan only after the user approves both the design and plan generation. Never implement it.
+Discover first. Write a plan only after the user approves both the design and plan generation.
 
 ```dot
 digraph ForemanPlan {
@@ -82,18 +82,6 @@ Make each feature independently assignable when safe:
 
 Keep guidance high-level enough to preserve engineering judgment. Do not prescribe line-by-line edits, exhaustive test matrices, or unsupported file changes.
 
-## Pi plan mode integration
-
-When the active context contains `[PLAN MODE ACTIVE]`, apply this read-only delivery contract:
-
-- Keep every discovery, design approval, separate plan confirmation, fidelity, and validation requirement in this skill.
-- Remain read-only. Do not create or modify the repository plan document while plan mode is active.
-- After explicit plan confirmation, use [plan-template.md](plan-template.md) as the plan structure but present the completed, validated plan in chat.
-- Conclude the chat response with a `Plan:` header and a numbered execution summary. Each item must identify one ordered feature or integration outcome so the plan-mode extension can offer approval and execution controls.
-- Do not implement the plan. Wait for the plan-mode extension or the user to transition explicitly into execution.
-
-This contract replaces only the artifact-location, file-writing, and plan-path return instructions while plan mode is active. All other skill requirements remain authoritative.
-
 ## Validate the handoff
 
 Before finishing, ensure:
@@ -110,7 +98,7 @@ Before finishing, ensure:
 - Concurrency, idempotency, security, privacy, observability, rollout, rollback, dependency, and documentation impacts are explicit.
 - The plan contains everything an independent implementation agent needs without repeated orchestrator clarification.
 
-Return the plan path and a one-sentence scope summary. Do not implement the plan.
+Return the plan path and a one-sentence scope summary.
 
 ## Rules
 

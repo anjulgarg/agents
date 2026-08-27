@@ -96,7 +96,7 @@ assert(
 		String(planningContext?.message?.content).includes("[PLAN MODE ACTIVE]") &&
 		String(planningContext?.message?.content).includes("## Adaptive discovery") &&
 		String(planningContext?.message?.content).includes("## Plan confirmation gate") &&
-		String(planningContext?.message?.content).includes("## Pi plan mode integration") &&
+		String(planningContext?.message?.content).includes("Read-only delivery contract") &&
 		String(planningContext?.message?.content).includes(foremanPlanRoot),
 	JSON.stringify(planningContext),
 );
