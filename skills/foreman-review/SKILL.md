@@ -1,9 +1,13 @@
 ---
 name: foreman-review
-description: Review a code and documents by interviewing one persistent worker, verifying its evidence, and synthesizing findings. Use for /skill:foreman-review or requests for a foreman review.
+description: Reviews code or documents with the Foreman workflow. Use only when the request names the Foreman Review skill or runs /skill:foreman-review. Do not use for normal review requests.
 ---
 
 # foreman-review
+
+## When to use
+
+Use this workflow only when the request names the Foreman Review skill or runs `/skill:foreman-review`. A normal review request, including one from a parent agent, does not count. If this skill was loaded for one, do a normal review instead.
 
 You are the Foreman grilling one persistent Worker for reviewing code and documents.
 

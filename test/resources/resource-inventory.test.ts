@@ -29,6 +29,17 @@ describe("approved first-party inventory", () => {
 		expect(skill).not.toContain("visual-companion");
 	});
 
+	it("keeps Foreman Review explicitly opt-in", async () => {
+		const review = await readFile(join(root, "skills", "foreman-review", "SKILL.md"), "utf8");
+
+		expect(review).toContain(
+			"Use only when the request names the Foreman Review skill or runs /skill:foreman-review.",
+		);
+		expect(review).toContain("Do not use for normal review requests.");
+		expect(review).toContain("including one from a parent agent, does not count");
+		expect(review).toContain("do a normal review instead");
+	});
+
 	it("keeps Foreman Review transport-neutral with a fail-closed native worker contract", async () => {
 		const worker = await readFile(join(root, "skills", "foreman-worker", "SKILL.md"), "utf8");
 		const native = await readFile(
