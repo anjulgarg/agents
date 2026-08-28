@@ -118,13 +118,13 @@ const TaskSchema = Type.Object({
 	model: Type.Optional(
 		Type.String({
 			description:
-				"Available model ID or provider/model; overrides the shared model. The model must be in the active Pi model scope; honor a user-specified model exactly when available.",
+				"Available model ID or provider/model; overrides the shared model. Omit unless the user explicitly requested an exact model. An explicit model must be in the active Pi model scope.",
 		}),
 	),
 	thinking: Type.Optional(
 		StringEnum(THINKING_LEVELS, {
 			description:
-				"Thinking level; overrides the shared level. Honor a user-specified level exactly when available.",
+				"Thinking level; overrides the shared level. Omit unless the user explicitly requested an exact thinking level.",
 		}),
 	),
 	workspace: Type.Optional(
@@ -171,13 +171,13 @@ const SubagentParams = Type.Object({
 	model: Type.Optional(
 		Type.String({
 			description:
-				"Available model used by tasks without a model override; it must be in the active Pi model scope. Honor a user-specified model exactly when available; otherwise choose proportionately to task complexity.",
+				"Default model for tasks without an override. Omit unless the user explicitly requested an exact model; omission uses the current parent model when available. An explicit model must be in the active Pi model scope.",
 		}),
 	),
 	thinking: Type.Optional(
 		StringEnum(THINKING_LEVELS, {
 			description:
-				"Thinking level used by tasks without an override. Honor a user-specified level exactly when available; otherwise choose proportionately to task complexity.",
+				"Default thinking level for tasks without an override. Omit unless the user explicitly requested an exact level; omission inherits the parent thinking level.",
 		}),
 	),
 	mode: Type.Optional(
@@ -511,7 +511,7 @@ export function registerSubagentTools(
 			"Use task for one agent or tasks for parallel agents.",
 			"By default children inherit every active parent tool except the subagent management tools; explicit tool allowlists may narrow access.",
 			"Child subagents cannot invoke subagent or any session-management tool.",
-			"For subagent tasks, honor user-specified model and thinking levels exactly when available. When unspecified, select a subagent model and thinking level proportionate to task complexity. Requested models must be in the active Pi model scope; unavailable models are rejected.",
+			"Omit model and thinking unless the user explicitly requests exact overrides; omitted values inherit the current parent model and thinking level. Explicit models must be in the active Pi model scope and unavailable models are rejected rather than substituted.",
 			"Treat scheduled progress checkpoints as bounded evidence, not proof of idleness. If activity is healthy, settle without calling subagent_status. Refresh one current snapshot only when steering or aborting requires race-safe evidence.",
 			"Manage subagents autonomously: steer recoverable work; abort idle, looping, disproportionate, unsafe, or misdirected work only after refreshing status and supplying its exact activity token plus a concrete reason. Never abort from stale evidence or from silence, cost, turns, or missing edits alone; shared-workspace git changes are evidence, not proof of which agent made them.",
 			"When one subagent output is needed by a later subagent, pass its runId/taskId through inputFrom instead of reading and manually relaying the result.",
