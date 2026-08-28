@@ -58,6 +58,8 @@ A resumed child receives normal Pi session context from the same append-only JSO
 
 The F6 thread view reads that durable active branch, merges any live resumed events, and displays cumulative turns, tokens, and cost across invocations. Repeated resumes remain one thread even though each invocation has a distinct run ID and task ID.
 
+Ephemeral children remain one-shot and non-resumable, but their final read-only transcript is retained for F6 history. Before terminal cleanup, the supervisor freezes completed messages plus the latest streaming assistant snapshot. The runtime writes that transcript once as a dedicated `subagent-transcript` entry in the parent session, separate from repeatedly updated orchestration state. Successful completion, failure, timeout, and manual termination follow the same retention path. Reloading a persisted parent session restores those historical ephemeral messages; an unsaved parent retains them only for its current process lifetime. Status, result, wake, and session-management payloads continue to omit transcripts.
+
 A persistent child cannot invoke subagent or subagent-management tools. Dependency outputs may still be supplied through `inputFrom` when spawning or resuming.
 
 Children inherit the parent's active tool allowlist. When the parent MCP tool is inactive, the child uses an isolated empty Pi-global MCP config instead of re-enabling configured servers.
@@ -78,7 +80,7 @@ built-in `edit` and `write` tools and do not treat missing mutations as lack of 
 requires the child to honor the read-only system contract. Hard per-invocation timeouts default to 15
 minutes for read-only work and 30 minutes for write work. `timeoutMinutes` may override the default up to
 60 minutes. Activity does not reset the deadline, and each persistent resume starts a fresh invocation
-timeout using the stored execution contract.
+timeout using the stored execution contract. A hard timeout snapshots the child transcript before process-group termination, including the latest partial assistant response, so timeout diagnostics do not replace earlier F6 activity.
 
 ## Provider failure recovery
 
@@ -120,7 +122,7 @@ Persistent mode requires the parent session to be saved on disk. An in-memory pa
 
 Child session files and lock state live below Pi's agent directory, partitioned by parent session ID. Tests and integrations can inject a separate state root. Runtime files are not package resources and are never written into this repository.
 
-Persistent sessions have no automatic expiry or garbage collection. Logical close preserves their files. Destructive cleanup is intentionally not provided, so operators must treat retained transcripts as local sensitive data and manage storage through their normal Pi data-retention procedures.
+Terminal ephemeral transcripts are stored once in the parent session rather than in resumable child-session storage. They therefore follow the parent session's branch visibility and retention lifecycle. Persistent sessions have no automatic expiry or garbage collection. Logical close preserves their files. Destructive cleanup is intentionally not provided, so operators must treat retained transcripts as local sensitive data and manage storage through their normal Pi data-retention procedures.
 
 ## Process and lock safety
 

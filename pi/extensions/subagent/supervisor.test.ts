@@ -26,6 +26,7 @@ interface Wake {
 
 class FakeChild implements ChildHandle {
 	readonly usage: UsageStats = emptyUsage();
+	readonly messages: any[] = [];
 	killed = false;
 	steered: string[] = [];
 	promptMessages: string[] = [];
@@ -63,6 +64,10 @@ class FakeChild implements ChildHandle {
 
 	output(): string {
 		return this.text;
+	}
+
+	transcript(): readonly any[] {
+		return this.messages;
 	}
 
 	kill(): void {
@@ -381,6 +386,10 @@ async function testHardTimeout(): Promise<void> {
 
 	try {
 		const { runId } = supervisor.spawn([baseSpec({ task: "hang forever" })]);
+		children[0].messages.push({
+			role: "assistant",
+			content: [{ type: "text", text: "partial work before timeout" }],
+		});
 		await new Promise((resolve) => setTimeout(resolve, 80));
 		const task = supervisor.runs.get(runId)?.tasks[0];
 		assert(
@@ -392,6 +401,11 @@ async function testHardTimeout(): Promise<void> {
 			`status=${task?.status} error=${task?.error} wakes=${JSON.stringify(wakes)}`,
 		);
 		assert(`${name} (child killed)`, children[0].killed, "child was not killed on timeout");
+		assert(
+			`${name} (transcript frozen)`,
+			task?.messages?.[0]?.content?.[0]?.text === "partial work before timeout",
+			`messages=${JSON.stringify(task?.messages)}`,
+		);
 	} finally {
 		supervisor.dispose();
 	}

@@ -87,6 +87,10 @@ export interface TaskState {
 	usage: UsageStats;
 	/** Latest validated context occupancy; cleared when a newer refresh fails. */
 	contextUsage?: ContextUsageSnapshot;
+	/** Frozen child transcript retained after terminal cleanup. */
+	messages?: Message[];
+	/** Frozen child UI projection retained after terminal cleanup. */
+	uiState?: ChildUiSnapshot;
 	child?: ChildHandle;
 	/** Spawn inputs retained while queued; never persisted. */
 	spawnSpec?: TaskSpawnSpec;
@@ -1339,6 +1343,23 @@ export class Supervisor {
 		this.abortFallbacks.set(taskId, timer);
 	}
 
+	private snapshotChildPresentation(task: TaskState): void {
+		const child = task.child;
+		if (!child) return;
+		try {
+			const messages = child.transcript?.();
+			if (messages) task.messages = structuredClone([...messages]);
+		} catch {
+			// Preserve the most recent valid snapshot when child projection fails.
+		}
+		try {
+			const uiState = child.uiSnapshot?.();
+			if (uiState) task.uiState = structuredClone(uiState);
+		} catch {
+			// UI projection is best-effort and must not block child cleanup.
+		}
+	}
+
 	private beginFinalization(runId: string, taskId: string, result: FinalizationResult): void {
 		const abortFallback = this.abortFallbacks.get(taskId);
 		if (abortFallback) {
@@ -1369,6 +1390,7 @@ export class Supervisor {
 			} catch {
 				// Preserve any previously captured state.
 			}
+			this.snapshotChildPresentation(task);
 		}
 		this.notifyListeners();
 
@@ -1458,6 +1480,9 @@ export class Supervisor {
 	): void {
 		const task = this.findTask(runId, taskId);
 		if (!task || !task.finalizing) return;
+		// Capture events flushed while termination was in progress, including the
+		// latest streaming assistant snapshot on hard timeout.
+		this.snapshotChildPresentation(task);
 		task.finalizing = false;
 		task.reaped = reaped;
 		task.status = reaped ? result.status : "failed";

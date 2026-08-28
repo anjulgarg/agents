@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
+import type { Message } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
 	type ExtensionAPI,
@@ -62,6 +63,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 const PERSIST_TYPE = "subagent-state";
+const TERMINAL_TRANSCRIPT_TYPE = "subagent-transcript";
+const TERMINAL_TRANSCRIPT_VERSION = 1;
 const WAKE_MESSAGE_TYPE = "subagent-wake";
 const ACTIVITY_SECTION = "subagents";
 const ACTIVITY_FRAMES = ["◐", "◓", "◑", "◒"] as const;
@@ -107,6 +110,13 @@ interface PersistedRun {
 	startedAt: number;
 	maxConcurrency?: number;
 	tasks: PersistedTask[];
+}
+
+interface PersistedTerminalTranscript {
+	version: typeof TERMINAL_TRANSCRIPT_VERSION;
+	runId: string;
+	taskId: string;
+	messages: Message[];
 }
 
 export interface ProcAccess {
@@ -294,6 +304,32 @@ function loadPersistedRuns(
 	return runs;
 }
 
+function terminalTranscriptKey(runId: string, taskId: string): string {
+	return `${runId}\0${taskId}`;
+}
+
+function loadPersistedTerminalTranscripts(
+	ctx: ExtensionContext,
+): Map<string, PersistedTerminalTranscript> {
+	const transcripts = new Map<string, PersistedTerminalTranscript>();
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type !== "custom" || entry.customType !== TERMINAL_TRANSCRIPT_TYPE) continue;
+		const transcript = (entry.data as { transcript?: PersistedTerminalTranscript } | undefined)
+			?.transcript;
+		if (
+			transcript?.version !== TERMINAL_TRANSCRIPT_VERSION ||
+			typeof transcript.runId !== "string" ||
+			!transcript.runId ||
+			typeof transcript.taskId !== "string" ||
+			!transcript.taskId ||
+			!Array.isArray(transcript.messages)
+		)
+			continue;
+		transcripts.set(terminalTranscriptKey(transcript.runId, transcript.taskId), transcript);
+	}
+	return transcripts;
+}
+
 export class SubagentRuntime {
 	readonly supervisor: Supervisor;
 
@@ -303,6 +339,7 @@ export class SubagentRuntime {
 	private persistentStore: PersistentSessionStore | undefined;
 	private readonly persistentLeases = new Map<string, PersistentInvocationLease>();
 	private readonly persistentFinalizedTasks = new Set<string>();
+	private readonly persistedTerminalTranscripts = new Set<string>();
 	private readonly taskMeta = new Map<string, SubagentTaskMeta>();
 	private readonly historical = new Map<string, SubagentDetails>();
 	private persistentThreadHistory = new Map<string, PersistentThreadHistory>();
@@ -672,6 +709,20 @@ export class SubagentRuntime {
 		};
 	}
 
+	private persistTerminalTranscript(runId: string, task: TaskState): void {
+		if (!isTerminalStatus(task.status) || task.mode === "persistent" || !task.messages) return;
+		const key = terminalTranscriptKey(runId, task.taskId);
+		if (this.persistedTerminalTranscripts.has(key)) return;
+		const transcript: PersistedTerminalTranscript = {
+			version: TERMINAL_TRANSCRIPT_VERSION,
+			runId,
+			taskId: task.taskId,
+			messages: structuredClone(task.messages),
+		};
+		this.pi.appendEntry(TERMINAL_TRANSCRIPT_TYPE, { transcript });
+		this.persistedTerminalTranscripts.add(key);
+	}
+
 	persistRun(run: RunState): void {
 		const persisted: PersistedRun = {
 			runId: run.runId,
@@ -716,6 +767,7 @@ export class SubagentRuntime {
 			this.emitUpdate(details);
 			this.persistRun(run);
 			for (const task of run.tasks) {
+				this.persistTerminalTranscript(run.runId, task);
 				if (task.mode === "persistent") {
 					const lease = this.persistentLeases.get(task.taskId);
 					if (
@@ -1016,9 +1068,11 @@ export class SubagentRuntime {
 	}
 
 	hydrateHistorical(ctx: ExtensionContext): void {
+		const transcripts = loadPersistedTerminalTranscripts(ctx);
+		for (const key of transcripts.keys()) this.persistedTerminalTranscripts.add(key);
 		for (const run of loadPersistedRuns(ctx).values()) {
 			if (this.historical.has(run.runId) || this.supervisor.runs.has(run.runId)) continue;
-			this.historical.set(run.runId, this.historicalDetails(run));
+			this.historical.set(run.runId, this.historicalDetails(run, transcripts));
 		}
 	}
 
@@ -1026,6 +1080,8 @@ export class SubagentRuntime {
 		this.clearActivityWidget();
 		this.setActivityContext(ctx.mode === "tui" ? ctx : undefined);
 		const persisted = loadPersistedRuns(ctx);
+		const transcripts = loadPersistedTerminalTranscripts(ctx);
+		for (const key of transcripts.keys()) this.persistedTerminalTranscripts.add(key);
 		for (const run of persisted.values()) {
 			let changed = false;
 			for (const task of run.tasks) {
@@ -1053,33 +1109,7 @@ export class SubagentRuntime {
 				changed = true;
 			}
 			if (changed) this.pi.appendEntry(PERSIST_TYPE, { run });
-			this.historical.set(run.runId, {
-				runId: run.runId,
-				startedAt: run.startedAt,
-				results: run.tasks.map((task) => ({
-					index: task.index,
-					taskId: task.taskId,
-					task: task.task,
-					model: task.model,
-					thinking: task.thinking,
-					workspace: task.workspace,
-					cwd: task.cwd,
-					readOnly: task.readOnly ?? false,
-					timeoutMs: task.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
-					mode: task.mode,
-					sessionId: task.sessionId,
-					worktree: task.worktree,
-					done: true,
-					error: task.error,
-					manualKill: task.manualKill,
-					timedOut: task.timedOut,
-					output: task.output ?? "",
-					usage: task.usage ?? emptyUsage(),
-					status: isTerminalStatus(task.status) ? task.status : "failed",
-					pid: task.pid,
-					contextUsage: task.contextUsage,
-				})),
-			});
+			this.historical.set(run.runId, this.historicalDetails(run, transcripts));
 		}
 		if (this.parentIsPersisted(ctx)) this.reconcilePersistentSessions(ctx);
 		this.updateActivityWidget();
@@ -1088,8 +1118,8 @@ export class SubagentRuntime {
 
 	private viewFromTask(_run: RunState, task: TaskState): SubagentResultView {
 		const meta = this.taskMeta.get(task.taskId);
-		const messages = task.child?.transcript?.();
-		const uiState = task.child?.uiSnapshot?.();
+		const messages = task.child?.transcript?.() ?? task.messages;
+		const uiState = task.child?.uiSnapshot?.() ?? task.uiState;
 		return {
 			index: task.index,
 			taskId: task.taskId,
@@ -1152,7 +1182,10 @@ export class SubagentRuntime {
 		};
 	}
 
-	private historicalDetails(run: PersistedRun): SubagentDetails {
+	private historicalDetails(
+		run: PersistedRun,
+		transcripts: ReadonlyMap<string, PersistedTerminalTranscript> = new Map(),
+	): SubagentDetails {
 		return {
 			runId: run.runId,
 			startedAt: run.startedAt,
@@ -1178,6 +1211,7 @@ export class SubagentRuntime {
 				status: task.status,
 				pid: task.pid,
 				contextUsage: task.contextUsage,
+				messages: transcripts.get(terminalTranscriptKey(run.runId, task.taskId))?.messages,
 			})),
 		};
 	}

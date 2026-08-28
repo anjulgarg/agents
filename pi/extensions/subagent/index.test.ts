@@ -643,7 +643,8 @@ async function testActiveAbortRequiresCurrentEvidence(): Promise<void> {
 }
 
 async function testTranscriptIsolationAndCompactTools(): Promise<void> {
-	const name = "b. child tool calls stay out of parent state and result tools start collapsed";
+	const name =
+		"b. child transcripts persist separately while management tools stay transcript-free";
 	const pi = new FakePi();
 	const children: FakeChild[] = [];
 	const supervisor = install(pi, children);
@@ -673,7 +674,12 @@ async function testTranscriptIsolationAndCompactTools(): Promise<void> {
 		);
 		children[0].settle("RESULT_DETAIL", { input: 10, output: 5 });
 
-		const parentState = JSON.stringify(pi.entries);
+		const orchestrationState = JSON.stringify(
+			pi.entries.filter((entry) => entry.customType === "subagent-state"),
+		);
+		const transcriptState = JSON.stringify(
+			pi.entries.filter((entry) => entry.customType === "subagent-transcript"),
+		);
 		const statusTool = pi.tools.get("subagent_status") as any;
 		const resultTool = pi.tools.get("subagent_result") as any;
 		const statusResult = await statusTool.execute(
@@ -738,9 +744,14 @@ async function testTranscriptIsolationAndCompactTools(): Promise<void> {
 
 		assert(
 			name,
-			!parentState.includes("toolCall") &&
-				!parentState.includes("PRIVATE_TOOL_OUTPUT") &&
-				parentState.includes("RESULT_DETAIL") &&
+			!orchestrationState.includes("toolCall") &&
+				!orchestrationState.includes("PRIVATE_TOOL_OUTPUT") &&
+				orchestrationState.includes("RESULT_DETAIL") &&
+				pi.entries.filter((entry) => entry.customType === "subagent-transcript").length === 1 &&
+				transcriptState.includes("toolCall") &&
+				transcriptState.includes("PRIVATE_TOOL_OUTPUT") &&
+				!JSON.stringify(statusResult).includes("PRIVATE_TOOL_OUTPUT") &&
+				!JSON.stringify(resultResult).includes("PRIVATE_TOOL_OUTPUT") &&
 				!String(statusResult.content[0].text).includes('"tasks"') &&
 				collapsedStatusCall === "" &&
 				collapsedStatus === "" &&
@@ -755,7 +766,7 @@ async function testTranscriptIsolationAndCompactTools(): Promise<void> {
 					.split("\n")
 					.filter((line: string) => line.includes("RESULT_DETAIL"))
 					.every((line: string) => line.startsWith(" ") && !line.startsWith("  ")),
-			`parent=${parentState} statusCall=${collapsedStatusCall} expandedStatusCall=${expandedStatusCall} status=${collapsedStatus} expandedStatus=${expandedStatus} collapsedCall=${collapsedCall} expandedCall=${expandedCall} result=${collapsedResult} failedResult=${collapsedFailedResult} expandedResult=${expandedResult}`,
+			`orchestration=${orchestrationState} transcript=${transcriptState} statusCall=${collapsedStatusCall} expandedStatusCall=${expandedStatusCall} status=${collapsedStatus} expandedStatus=${expandedStatus} collapsedCall=${collapsedCall} expandedCall=${expandedCall} result=${collapsedResult} failedResult=${collapsedFailedResult} expandedResult=${expandedResult}`,
 		);
 	} finally {
 		supervisor.dispose();
@@ -1978,6 +1989,127 @@ async function testF6RetainsPersistentConversation(): Promise<void> {
 	}
 }
 
+async function testTimedOutEphemeralTranscriptSurvivesReload(): Promise<void> {
+	const name =
+		"i1. timed-out ephemeral transcript survives reload without leaking through management tools";
+	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "subagent-timeout-history-"));
+	const pi = new FakePi();
+	const children: FakeChild[] = [];
+	const supervisor = install(pi, children, {
+		createSupervisor: (options: ConstructorParameters<typeof Supervisor>[0]) =>
+			new Supervisor({ ...options, taskTimeoutMs: 25 }),
+	});
+	const sessionManager = {
+		getEntries: () => pi.entries,
+		getBranch: () => pi.entries,
+	};
+	let reloadedSupervisor: SupervisorInstance | undefined;
+	let component: any;
+	try {
+		const ctx = fakeCtx({ cwd: promptRoot, sessionManager });
+		const spawned = await callTool(pi, "subagent", { task: "timeout with history" }, ctx);
+		const runId = spawned.details.runId as string;
+		const taskId = spawned.details.results[0].taskId as string;
+		children[0]!.messages.push(
+			{ role: "user", content: "EPHEMERAL_TIMEOUT_PROMPT", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "EPHEMERAL_PARTIAL_ANSWER" }],
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "aborted",
+				api: "openai-responses",
+				provider: "openai",
+				model: "test",
+				timestamp: 2,
+			},
+		);
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		const terminalTask = supervisor.runs.get(runId)?.tasks[0];
+		const transcriptEntries = pi.entries.filter(
+			(entry) => entry.customType === "subagent-transcript",
+		);
+		const orchestrationEntries = pi.entries.filter(
+			(entry) => entry.customType === "subagent-state",
+		);
+
+		const reloadedPi = new FakePi();
+		reloadedPi.entries = [...pi.entries];
+		reloadedSupervisor = install(reloadedPi, []);
+		const reloadedCtx = fakeCtx({
+			cwd: promptRoot,
+			mode: "tui",
+			sessionManager: {
+				getEntries: () => reloadedPi.entries,
+				getBranch: () => reloadedPi.entries,
+			},
+			ui: {
+				notify: () => {},
+				custom: async (factory: any) => {
+					component = factory(
+						{ terminal: { rows: 40, columns: 120 }, requestRender() {}, invalidate() {} },
+						{
+							fg: (_key: string, text: string) => text,
+							bg: (_key: string, text: string) => text,
+							bold: (text: string) => text,
+						},
+						{},
+						() => {},
+					);
+				},
+			},
+		});
+		await reloadedPi.emit("session_start", {}, reloadedCtx);
+		const shortcut = reloadedPi.shortcuts.get("f6") as {
+			handler: (ctx: any) => Promise<void>;
+		};
+		await shortcut.handler(reloadedCtx);
+		const restored = component
+			?.groups()
+			.flatMap((group: any) => group.items)
+			.find((item: any) => item.result.taskId === taskId)?.result;
+		const rendered = component?.render(120).join("\n") ?? "";
+		const status = await callTool(reloadedPi, "subagent_status", { runId }, reloadedCtx);
+		const result = await callTool(reloadedPi, "subagent_result", { runId, taskId }, reloadedCtx);
+
+		assert(
+			name,
+			terminalTask?.status === "failed" &&
+				terminalTask.timedOut === true &&
+				terminalTask.messages?.length === 2 &&
+				transcriptEntries.length === 1 &&
+				JSON.stringify(transcriptEntries).includes("EPHEMERAL_PARTIAL_ANSWER") &&
+				!JSON.stringify(orchestrationEntries).includes("EPHEMERAL_PARTIAL_ANSWER") &&
+				restored?.timedOut === true &&
+				restored?.messages?.length === 2 &&
+				rendered.includes("EPHEMERAL_TIMEOUT_PROMPT") &&
+				rendered.includes("EPHEMERAL_PARTIAL_ANSWER") &&
+				!JSON.stringify(status).includes("EPHEMERAL_PARTIAL_ANSWER") &&
+				!JSON.stringify(result).includes("EPHEMERAL_PARTIAL_ANSWER"),
+			JSON.stringify({
+				terminalTask,
+				transcriptEntries,
+				restored,
+				rendered,
+				status,
+				result,
+			}),
+		);
+	} finally {
+		component?.dispose?.();
+		reloadedSupervisor?.dispose();
+		supervisor.dispose();
+		await fs.promises.rm(promptRoot, { recursive: true, force: true });
+	}
+}
+
 function testF6ShortcutRegistered(): void {
 	const pi = new FakePi();
 	const supervisor = install(pi, []);
@@ -2862,6 +2994,7 @@ async function main(): Promise<void> {
 	testF6ShortcutRegistered();
 	await testF6DefaultsToNewestCompletedGroup();
 	await testF6RetainsPersistentConversation();
+	await testTimedOutEphemeralTranscriptSurvivesReload();
 	testGenericChildUiReducer();
 	await testContextTelemetryEphemeralProjection();
 	await testContextTelemetryPersistentRestore();
