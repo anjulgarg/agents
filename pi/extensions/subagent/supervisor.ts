@@ -9,13 +9,14 @@ import {
 	type RpcChildOptions,
 	type RpcEvent,
 } from "./rpc-client.ts";
-import type {
-	ContextUsageSnapshot,
-	PersistentChildSession,
-	SubagentMode,
-	ThinkingLevel,
-	UsageStats,
-	WorkspaceMode,
+import {
+	MAX_SUBAGENT_TIMEOUT_MS,
+	type ContextUsageSnapshot,
+	type PersistentChildSession,
+	type SubagentMode,
+	type ThinkingLevel,
+	type UsageStats,
+	type WorkspaceMode,
 } from "./contracts.ts";
 export {
 	SUBAGENT_MODES,
@@ -26,11 +27,12 @@ export {
 } from "./contracts.ts";
 import { isTransientProviderFailure, providerErrorText } from "../lib/provider-retry.ts";
 import {
-	StuckDetector,
+	MAX_CHANGED_FILES,
+	MAX_RECENT_TOOL_ERRORS,
+	ActivityTracker,
 	type RecentToolActivity,
-	type SignalKind,
-	type StuckDetectorOptions,
-} from "./watchdog.ts";
+	type RecentToolError,
+} from "./activity.ts";
 
 export type TaskStatus = "queued" | "starting" | "running" | "stopping" | "done" | "failed";
 
@@ -56,6 +58,10 @@ export interface TaskSpawnSpec {
 	tools?: string[];
 	systemPromptFile: string;
 	projectTrusted?: boolean;
+	/** Explicitly read-only work uses the shorter default timeout. */
+	readOnly?: boolean;
+	/** Optional per-invocation wall-clock timeout, capped at 60 minutes. */
+	timeoutMs?: number;
 	piBin?: string;
 	mode?: SubagentMode;
 	/** Exact child session identity for persistent invocations. */
@@ -71,6 +77,8 @@ export interface TaskState {
 	workspace: WorkspaceMode;
 	cwd: string;
 	mode: SubagentMode;
+	readOnly: boolean;
+	timeoutMs: number;
 	sessionId?: string;
 	status: TaskStatus;
 	output: string;
@@ -99,10 +107,9 @@ export interface TaskState {
 	activityVersion: number;
 	startedAt: number;
 	finishedAt?: number;
-	/** Completion or soft signal recorded but not yet delivered via a wake. */
+	/** Completion recorded but not yet delivered via a wake. */
 	unreaped: boolean;
-	/** Soft-signal payload waiting to be delivered via wake. */
-	pendingSoft?: { summary: string; steerable: boolean };
+	timedOut?: boolean;
 }
 
 export interface RunState {
@@ -116,6 +123,7 @@ interface FinalizationResult {
 	status: "done" | "failed";
 	error?: string;
 	manualKill?: boolean;
+	timedOut?: boolean;
 	notifyParent?: boolean;
 }
 
@@ -143,9 +151,38 @@ export interface ChildHandle {
 	abort(): Promise<unknown>;
 }
 
+export type ParentWakeKind = "completion" | "checkpoint";
+
+export interface ProgressCheckpoint {
+	runId: string;
+	taskId: string;
+	status: TaskStatus;
+	elapsedMs: number;
+	lastEventAgeMs: number;
+	turns: number;
+	outputTokens: number;
+	outputTokensDelta: number;
+	costUsd: number;
+	costUsdDelta: number;
+	toolCalls: number;
+	succeededTools: number;
+	failedTools: number;
+	runningTools: number;
+	recentTools: RecentToolActivity[];
+	changedFiles: string[];
+	recentErrors: RecentToolError[];
+	consecutiveToolFailures: number;
+}
+
+export interface ParentWakeOptions {
+	deliverAs?: "steer" | "followUp";
+	kind?: ParentWakeKind;
+	checkpoint?: ProgressCheckpoint | ProgressCheckpoint[];
+}
+
 export type SendUserMessage = (
 	content: string,
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: ParentWakeOptions,
 ) => void | Promise<void>;
 
 export type ChildFactory = (options: RpcChildOptions) => ChildHandle;
@@ -163,18 +200,20 @@ export interface TaskActivitySnapshot {
 	toolCalls: number;
 	succeededTools: number;
 	failedTools: number;
+	runningTools: number;
 	changedFiles: string[];
 	/** Current git working-tree changes, populated opportunistically by subagent_status. */
 	workspaceChanges?: string[];
 	recentTools: RecentToolActivity[];
-	signals: SignalKind[];
+	recentErrors: RecentToolError[];
+	consecutiveToolFailures: number;
+	outputTokens: number;
 }
 
 export interface AbortAssessment {
 	status: TaskStatus;
 	activityToken: string;
 	eventAgeMs: number;
-	signals: SignalKind[];
 }
 
 export interface TaskSnapshot {
@@ -187,6 +226,9 @@ export interface TaskSnapshot {
 	cwd: string;
 	mode?: SubagentMode;
 	sessionId?: string;
+	readOnly: boolean;
+	timeoutMs: number;
+	timedOut?: boolean;
 	error?: string;
 	manualKill?: boolean;
 	reaped: boolean;
@@ -211,23 +253,23 @@ export interface TaskResult {
 	sessionId?: string;
 	error?: string;
 	manualKill?: boolean;
+	timedOut?: boolean;
 }
 
 export interface SupervisorOptions {
 	sendUserMessage: SendUserMessage;
 	/** Defaults to constructing a real RpcChild. Inject a fake in tests. */
 	createChild?: ChildFactory;
-	/** Hard wall-clock timeout per task. Default 15 minutes. */
+	/** Legacy global hard timeout override; per-task timeoutMs takes precedence. */
 	taskTimeoutMs?: number;
-	/**
-	 * Soft watchdog evaluation interval. Default 30s.
-	 * Set to 0 to disable the auto-timer (tests drive tickWatchdog manually).
-	 */
-	watchdogTickMs?: number;
-	/** Options forwarded to each task's StuckDetector. */
-	stuckDetectorOptions?: StuckDetectorOptions;
+	/** Scheduled parent progress checkpoint interval. Default 2 minutes. */
+	checkpointIntervalMs?: number;
+	/** Deterministic process-cleanup retry interval. Default 30 seconds. */
+	cleanupTickMs?: number;
 	/** Clock injection for deterministic tests. Defaults to Date.now. */
 	now?: () => number;
+	/** Persist terminal/reaping transitions independently from wake delivery. */
+	onTerminalStateChange?: () => void;
 	defaultTools?: string[];
 	/** Hard cap across all runs owned by this supervisor. Default 8. */
 	maxActiveChildren?: number;
@@ -244,8 +286,10 @@ export interface SupervisorOptions {
 	betweenSettleCheckAndWait?: () => void;
 }
 
-const DEFAULT_TASK_TIMEOUT_MS = 15 * 60 * 1000;
-const DEFAULT_WATCHDOG_TICK_MS = 30_000;
+export const DEFAULT_READ_ONLY_TIMEOUT_MS = 15 * 60 * 1000;
+export const DEFAULT_WRITE_TIMEOUT_MS = 30 * 60 * 1000;
+export const DEFAULT_CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
+const DEFAULT_CLEANUP_TICK_MS = 30_000;
 const DEFAULT_MAX_ACTIVE_CHILDREN = 8;
 const DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS = 2_000;
 const DEFAULT_TRANSIENT_RETRY_WINDOW_MS = 60_000;
@@ -254,7 +298,20 @@ const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 /** Bound on the final context refresh before normal process termination begins. */
 const FINAL_CONTEXT_REFRESH_TIMEOUT_MS = 1000;
 const STDERR_TAIL_MAX = 500;
+const CHECKPOINT_EVENT_MAX_CHARS = 1024;
+const CHECKPOINT_STRING_MAX = 80;
 const ANSI_ESCAPE_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+export function resolveTaskTimeoutMs(
+	readOnly: boolean,
+	requested?: number,
+	legacyOverride?: number,
+): number {
+	const fallback = readOnly ? DEFAULT_READ_ONLY_TIMEOUT_MS : DEFAULT_WRITE_TIMEOUT_MS;
+	const value = requested ?? legacyOverride;
+	if (value === undefined || !Number.isFinite(value)) return fallback;
+	return Math.min(MAX_SUBAGENT_TIMEOUT_MS, Math.max(1, Math.floor(value)));
+}
 
 function oneLine(text: string): string {
 	const line = text.trim().split(/\r?\n/)[0] ?? "";
@@ -264,6 +321,41 @@ function oneLine(text: string): string {
 function nonNegativeInteger(value: number | undefined, fallback: number): number {
 	if (value === undefined || !Number.isFinite(value)) return fallback;
 	return Math.max(0, Math.floor(value));
+}
+
+function finiteMetric(value: number | undefined): number {
+	return Number.isFinite(value) ? Math.max(0, value ?? 0) : 0;
+}
+
+function boundedCheckpointText(value: string): string {
+	const oneLineValue = value.replace(/\s+/g, " ").trim();
+	return oneLineValue.length <= CHECKPOINT_STRING_MAX
+		? oneLineValue
+		: `${oneLineValue.slice(0, CHECKPOINT_STRING_MAX - 3)}...`;
+}
+
+function boundCheckpoint(checkpoint: ProgressCheckpoint): ProgressCheckpoint {
+	const bounded: ProgressCheckpoint = {
+		...checkpoint,
+		recentTools: checkpoint.recentTools.slice(-6).map((tool) => ({
+			...tool,
+			args: boundedCheckpointText(tool.args),
+		})),
+		changedFiles: checkpoint.changedFiles.slice(-MAX_CHANGED_FILES).map(boundedCheckpointText),
+		recentErrors: checkpoint.recentErrors.slice(-MAX_RECENT_TOOL_ERRORS).map((error) => ({
+			...error,
+			toolName: boundedCheckpointText(error.toolName),
+			target: boundedCheckpointText(error.target),
+			message: boundedCheckpointText(error.message),
+		})),
+	};
+	while (JSON.stringify(bounded).length > CHECKPOINT_EVENT_MAX_CHARS) {
+		if (bounded.changedFiles.length > 2) bounded.changedFiles.shift();
+		else if (bounded.recentErrors.length > 2) bounded.recentErrors.shift();
+		else if (bounded.recentTools.length > 3) bounded.recentTools.shift();
+		else break;
+	}
+	return bounded;
 }
 
 /** Strip CSI/ANSI color sequences so wake/result text stays readable. */
@@ -291,10 +383,6 @@ function formatChildExitError(child: ChildHandle, fallback: string): string {
 
 function wakeMessage(task: TaskState): string {
 	const label = `task ${task.index + 1}`;
-	if (task.pendingSoft) {
-		const { summary, steerable } = task.pendingSoft;
-		return `Subagent ${label} stuck: ${oneLine(summary)} (steerable=${steerable})`;
-	}
 	if (task.status === "done") {
 		const summary = oneLine(task.output) || "(no output)";
 		return `Subagent ${label} done: ${summary}`;
@@ -309,18 +397,17 @@ function wakeMessage(task: TaskState): string {
  * Completion is agent_settled (or timeout/failure), not process exit. The parent
  * never polls and never idles while work is outstanding: onParentSettled +
  * onTaskComplete form a condition variable around sendUserMessage wakes.
- *
- * Soft stuck signals reuse the same wake path; hard timeout still kills.
  */
 export class Supervisor {
 	readonly runs = new Map<string, RunState>();
 
 	private readonly sendUserMessage: SendUserMessage;
 	private readonly createChild: ChildFactory;
-	private readonly taskTimeoutMs: number;
-	private readonly watchdogTickMs: number;
-	private readonly stuckDetectorOptions: StuckDetectorOptions;
+	private readonly taskTimeoutMs: number | undefined;
+	private readonly checkpointIntervalMs: number;
+	private readonly cleanupTickMs: number;
 	private readonly now: () => number;
+	private readonly onTerminalStateChange?: () => void;
 	private readonly defaultTools: string[];
 	private readonly maxActiveChildren: number;
 	private readonly maxTransientRetries: number | undefined;
@@ -328,18 +415,28 @@ export class Supervisor {
 	private readonly transientRetryWindowMs: number;
 	private readonly betweenSettleCheckAndWait?: () => void;
 	private readonly timeouts = new Map<string, NodeJS.Timeout>();
+	private readonly checkpointTimers = new Map<string, NodeJS.Timeout>();
+	private readonly checkpointBaselines = new Map<
+		string,
+		{ outputTokens: number; costUsd: number }
+	>();
+	private readonly pendingCheckpoints = new Set<string>();
+	private readonly checkpointWakeTasks = new Set<string>();
 	private readonly providerRetryTimers = new Map<string, NodeJS.Timeout>();
 	private readonly abortFallbacks = new Map<string, NodeJS.Timeout>();
-	private readonly detectors = new Map<string, StuckDetector>();
+	private readonly activityTrackers = new Map<string, ActivityTracker>();
 	private readonly exitHandlers: Array<{ event: string; handler: (...args: any[]) => void }> = [];
 	private readonly listeners = new Set<() => void>();
-	private watchdogTimer?: NodeJS.Timeout;
+	private cleanupTimer?: NodeJS.Timeout;
 	private deferredKillTimer?: NodeJS.Timeout;
 	private disposed = false;
 	private scheduling = false;
 	private scheduleRequested = false;
+	private checkpointWakeOutstanding = false;
+	private wakeInFlight = false;
+	private wakeDispatchScheduled = false;
 
-	/** Parent has settled and is waiting for the next task completion. */
+	/** Parent has settled and is waiting for the next task completion or checkpoint. */
 	private parentWaiting = false;
 	/** True only during the outstanding-check → parentWaiting=true window. */
 	private inSettleCheck = false;
@@ -347,10 +444,17 @@ export class Supervisor {
 	constructor(options: SupervisorOptions) {
 		this.sendUserMessage = options.sendUserMessage;
 		this.createChild = options.createChild ?? ((opts) => new RpcChild(opts));
-		this.taskTimeoutMs = options.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
-		this.watchdogTickMs = options.watchdogTickMs ?? DEFAULT_WATCHDOG_TICK_MS;
-		this.stuckDetectorOptions = options.stuckDetectorOptions ?? {};
+		this.taskTimeoutMs =
+			options.taskTimeoutMs === undefined
+				? undefined
+				: resolveTaskTimeoutMs(false, options.taskTimeoutMs);
+		this.checkpointIntervalMs = nonNegativeInteger(
+			options.checkpointIntervalMs,
+			DEFAULT_CHECKPOINT_INTERVAL_MS,
+		);
+		this.cleanupTickMs = options.cleanupTickMs ?? DEFAULT_CLEANUP_TICK_MS;
 		this.now = options.now ?? (() => Date.now());
+		this.onTerminalStateChange = options.onTerminalStateChange;
 		this.defaultTools = options.defaultTools ?? DEFAULT_TOOLS;
 		this.maxActiveChildren = Math.max(1, options.maxActiveChildren ?? DEFAULT_MAX_ACTIVE_CHILDREN);
 		this.maxTransientRetries =
@@ -367,7 +471,7 @@ export class Supervisor {
 		);
 		this.betweenSettleCheckAndWait = options.betweenSettleCheckAndWait;
 		this.installProcessHandlers();
-		this.installWatchdogTimer();
+		this.installCleanupTimer();
 	}
 
 	/** Snapshot of the run registry for persistence/reconciliation. */
@@ -396,6 +500,8 @@ export class Supervisor {
 		const startedAt = this.now();
 		const tasks = specs.map((spec, index): TaskState => {
 			const mode = spec.mode ?? (spec.persistentSession ? "persistent" : "ephemeral");
+			const readOnly = spec.readOnly === true;
+			const timeoutMs = resolveTaskTimeoutMs(readOnly, spec.timeoutMs, this.taskTimeoutMs);
 			if (mode === "ephemeral" && spec.persistentSession) {
 				throw new Error("ephemeral tasks cannot include a persistent child session");
 			}
@@ -411,6 +517,8 @@ export class Supervisor {
 				workspace: spec.workspace,
 				cwd: spec.cwd,
 				mode,
+				readOnly,
+				timeoutMs,
 				sessionId: spec.persistentSession?.sessionId,
 				status: "queued",
 				output: "",
@@ -434,32 +542,36 @@ export class Supervisor {
 
 	/**
 	 * Parent agent has settled. If subagent work is still outstanding, wait for a
-	 * wake instead of going idle. Handles the check/flag race via unreaped recheck.
+	 * completion or checkpoint wake instead of going idle. The outstanding check,
+	 * waiting flag, and recheck form a condition variable around parent wakes.
 	 */
 	onParentSettled(): void {
+		// A previously delivered wake has now had its one parent turn. Release its
+		// deduplication slot and begin the next checkpoint interval only now.
+		this.wakeInFlight = false;
+		this.finishCheckpointWake();
+
+		let hadRunningTasks = false;
 		this.inSettleCheck = true;
 		try {
-			if (!this.hasRunningTasks()) {
+			hadRunningTasks = this.hasRunningTasks();
+			if (hadRunningTasks) {
+				this.betweenSettleCheckAndWait?.();
+				this.parentWaiting = true;
+			} else {
 				this.parentWaiting = false;
-				return;
 			}
-			this.betweenSettleCheckAndWait?.();
-			this.parentWaiting = true;
 		} finally {
 			this.inSettleCheck = false;
 		}
 
-		// Recheck: a completion may have landed between the check and the flag.
-		const unreaped = this.unreapedTasks();
-		if (unreaped.length > 0) {
-			this.parentWaiting = false;
-			this.wake(unreaped, /* steer */ false);
+		// Recheck: completion or checkpoint delivery can race the check above.
+		if (this.unreapedTasks().length > 0 || this.pendingCheckpointTasks().length > 0) {
+			this.parentWaiting = true;
+			this.dispatchWake();
 			return;
 		}
-		if (!this.hasRunningTasks()) {
-			// Last task finished (and already steered) during the race window.
-			this.parentWaiting = false;
-		}
+		if (!this.hasRunningTasks()) this.parentWaiting = false;
 	}
 
 	/** Steer a running child. Rejects for queued, stopping, or terminal tasks. */
@@ -479,7 +591,6 @@ export class Supervisor {
 			status: task.status,
 			activityToken: `${task.taskId}:${task.activityVersion}`,
 			eventAgeMs: Math.max(0, now - task.lastEventAt),
-			signals: this.detectors.get(taskId)?.activeSignals(now) ?? [],
 		};
 	}
 
@@ -533,16 +644,6 @@ export class Supervisor {
 		this.killAll({ ...options, defer: true });
 	}
 
-	/** Acknowledge a soft diagnosis for a task's StuckDetector. */
-	ack(
-		runId: string,
-		taskId: string,
-		options?: { extendBudgetUsd?: number; snoozeMs?: number },
-	): void {
-		this.requireTask(runId, taskId);
-		this.detectors.get(taskId)?.ack(this.now(), options);
-	}
-
 	/**
 	 * Terse serializable snapshot for opportunistic parent polls.
 	 * No transcripts, messages, or output bodies.
@@ -566,26 +667,15 @@ export class Supervisor {
 			sessionId: task.sessionId,
 			error: task.error,
 			manualKill: task.manualKill,
+			timedOut: task.timedOut,
 		};
 	}
 
-	/**
-	 * Evaluate stuck detectors for all running tasks.
-	 * Production calls this on the watchdog interval; tests drive it manually.
-	 */
-	tickWatchdog(now = this.now()): void {
+	/** Retry only deterministic process cleanup work. */
+	tickCleanup(): void {
 		for (const run of this.runs.values()) {
 			for (const task of run.tasks) {
-				if (isTerminalStatus(task.status) && !task.reaped) {
-					this.retryCleanup(run, task);
-					continue;
-				}
-				if (task.status !== "running") continue;
-				const detector = this.detectors.get(task.taskId);
-				if (!detector) continue;
-				const diagnosis = detector.evaluate(now);
-				if (!diagnosis) continue;
-				this.onSoftSignal(task, diagnosis);
+				if (isTerminalStatus(task.status) && !task.reaped) this.retryCleanup(run, task);
 			}
 		}
 	}
@@ -635,13 +725,18 @@ export class Supervisor {
 		this.exitHandlers.length = 0;
 		for (const timer of this.timeouts.values()) clearTimeout(timer);
 		this.timeouts.clear();
+		for (const timer of this.checkpointTimers.values()) clearTimeout(timer);
+		this.checkpointTimers.clear();
+		this.pendingCheckpoints.clear();
+		this.checkpointWakeTasks.clear();
+		this.checkpointBaselines.clear();
 		for (const timer of this.abortFallbacks.values()) clearTimeout(timer);
 		this.abortFallbacks.clear();
 		for (const timer of this.providerRetryTimers.values()) clearTimeout(timer);
 		this.providerRetryTimers.clear();
-		if (this.watchdogTimer) {
-			clearInterval(this.watchdogTimer);
-			this.watchdogTimer = undefined;
+		if (this.cleanupTimer) {
+			clearInterval(this.cleanupTimer);
+			this.cleanupTimer = undefined;
 		}
 		this.cancelDeferredKill();
 		for (const run of this.runs.values()) {
@@ -684,11 +779,11 @@ export class Supervisor {
 		);
 	}
 
-	private installWatchdogTimer(): void {
-		if (this.watchdogTickMs <= 0) return;
-		const timer = setInterval(() => this.tickWatchdog(), this.watchdogTickMs);
+	private installCleanupTimer(): void {
+		if (this.cleanupTickMs <= 0) return;
+		const timer = setInterval(() => this.tickCleanup(), this.cleanupTickMs);
 		timer.unref?.();
-		this.watchdogTimer = timer;
+		this.cleanupTimer = timer;
 	}
 
 	private startQueuedTasks(_triggerRun?: RunState): void {
@@ -753,13 +848,12 @@ export class Supervisor {
 			task.child = child;
 			task.status = "running";
 			task.spawnSpec = undefined;
-			this.detectors.set(task.taskId, new StuckDetector(this.stuckDetectorOptions));
-			const timer = setTimeout(
-				() => this.onTaskTimeout(run.runId, task.taskId),
-				this.taskTimeoutMs,
-			);
+			this.activityTrackers.set(task.taskId, new ActivityTracker());
+			const timer = setTimeout(() => this.onTaskTimeout(run.runId, task.taskId), task.timeoutMs);
 			timer.unref?.();
 			this.timeouts.set(task.taskId, timer);
+			this.checkpointBaselines.set(task.taskId, { outputTokens: 0, costUsd: 0 });
+			this.scheduleCheckpoint(run.runId, task.taskId);
 			void child.prompt(spec.prompt ?? spec.task).catch((error) => {
 				const fallback = error instanceof Error ? error.message : String(error);
 				this.beginFinalization(run.runId, task.taskId, {
@@ -812,8 +906,8 @@ export class Supervisor {
 			startedAt: run.startedAt,
 			maxConcurrency: run.maxConcurrency,
 			tasks: run.tasks.map((task) => {
-				const detector = this.detectors.get(task.taskId);
-				const facts = detector?.activity(now);
+				const tracker = this.activityTrackers.get(task.taskId);
+				const facts = tracker?.activity(now);
 				const active = isActiveStatus(task.status);
 				return {
 					taskId: task.taskId,
@@ -825,6 +919,9 @@ export class Supervisor {
 					cwd: task.cwd,
 					mode: task.mode,
 					sessionId: task.sessionId,
+					readOnly: task.readOnly,
+					timeoutMs: task.timeoutMs,
+					timedOut: task.timedOut,
 					error: task.error,
 					manualKill: task.manualKill,
 					reaped: task.reaped,
@@ -843,14 +940,175 @@ export class Supervisor {
 								toolCalls: facts?.toolCalls ?? 0,
 								succeededTools: facts?.succeededTools ?? 0,
 								failedTools: facts?.failedTools ?? 0,
+								runningTools: facts?.runningTools ?? 0,
 								changedFiles: facts?.changedFiles ?? [],
 								recentTools: facts?.recentTools ?? [],
-								signals: detector?.activeSignals(now) ?? [],
+								recentErrors: facts?.recentErrors ?? [],
+								consecutiveToolFailures: facts?.consecutiveToolFailures ?? 0,
+								outputTokens: facts?.outputTokens ?? 0,
 							}
 						: undefined,
 				};
 			}),
 		};
+	}
+
+	private scheduleCheckpoint(runId: string, taskId: string): void {
+		if (this.checkpointIntervalMs <= 0 || this.disposed) return;
+		const previous = this.checkpointTimers.get(taskId);
+		if (previous) clearTimeout(previous);
+		const timer = setTimeout(() => {
+			this.checkpointTimers.delete(taskId);
+			const task = this.findTask(runId, taskId);
+			if (!task || !isActiveStatus(task.status) || task.finalizing) return;
+			this.pendingCheckpoints.add(taskId);
+			if (!this.wakeInFlight && !this.checkpointWakeOutstanding && !this.inSettleCheck)
+				this.scheduleWakeDispatch();
+		}, this.checkpointIntervalMs);
+		timer.unref?.();
+		this.checkpointTimers.set(taskId, timer);
+	}
+
+	private scheduleWakeDispatch(): void {
+		if (this.wakeDispatchScheduled || this.disposed) return;
+		this.wakeDispatchScheduled = true;
+		queueMicrotask(() => {
+			this.wakeDispatchScheduled = false;
+			this.dispatchWake();
+		});
+	}
+
+	private pendingCheckpointTasks(): TaskState[] {
+		const tasks: TaskState[] = [];
+		for (const taskId of this.pendingCheckpoints) {
+			const task = this.findTaskAnywhere(taskId);
+			if (task && isActiveStatus(task.status) && !task.finalizing) tasks.push(task);
+		}
+		return tasks;
+	}
+
+	private findTaskAnywhere(taskId: string): TaskState | undefined {
+		for (const run of this.runs.values()) {
+			const task = run.tasks.find((candidate) => candidate.taskId === taskId);
+			if (task) return task;
+		}
+		return undefined;
+	}
+
+	private cancelCheckpoint(taskId: string): void {
+		const timer = this.checkpointTimers.get(taskId);
+		if (timer) clearTimeout(timer);
+		this.checkpointTimers.delete(taskId);
+		this.pendingCheckpoints.delete(taskId);
+	}
+
+	private finishCheckpointWake(): void {
+		if (!this.checkpointWakeOutstanding) return;
+		const delivered = [...this.checkpointWakeTasks];
+		this.checkpointWakeTasks.clear();
+		this.checkpointWakeOutstanding = false;
+		for (const taskId of delivered) {
+			const task = this.findTaskAnywhere(taskId);
+			if (!task || !isActiveStatus(task.status) || task.finalizing) continue;
+			if (!this.pendingCheckpoints.has(taskId)) {
+				const run = [...this.runs.values()].find((candidate) =>
+					candidate.tasks.some((item) => item.taskId === taskId),
+				);
+				if (run) this.scheduleCheckpoint(run.runId, taskId);
+			}
+		}
+	}
+
+	private buildCheckpoint(run: RunState, task: TaskState, now: number): ProgressCheckpoint {
+		const facts = this.activityTrackers.get(task.taskId)?.activity(now);
+		const usage = task.child?.usage ?? task.usage;
+		const outputTokens = Math.max(finiteMetric(usage.output), finiteMetric(facts?.outputTokens));
+		const costUsd = Math.max(finiteMetric(usage.cost), finiteMetric(facts?.costUsd));
+		const turns = Math.max(
+			Math.floor(finiteMetric(usage.turns)),
+			Math.floor(finiteMetric(facts?.turns)),
+		);
+		const previous = this.checkpointBaselines.get(task.taskId) ?? {
+			outputTokens: 0,
+			costUsd: 0,
+		};
+		return boundCheckpoint({
+			runId: run.runId,
+			taskId: task.taskId,
+			status: task.status,
+			elapsedMs: Math.max(0, now - task.startedAt),
+			lastEventAgeMs: Math.max(0, now - task.lastEventAt),
+			turns,
+			outputTokens,
+			outputTokensDelta: Math.max(0, outputTokens - previous.outputTokens),
+			costUsd,
+			costUsdDelta: Math.max(0, costUsd - previous.costUsd),
+			toolCalls: facts?.toolCalls ?? 0,
+			succeededTools: facts?.succeededTools ?? 0,
+			failedTools: facts?.failedTools ?? 0,
+			runningTools: facts?.runningTools ?? 0,
+			recentTools: facts?.recentTools ?? [],
+			changedFiles: facts?.changedFiles ?? [],
+			recentErrors: facts?.recentErrors ?? [],
+			consecutiveToolFailures: facts?.consecutiveToolFailures ?? 0,
+		});
+	}
+
+	private dispatchWake(deliverAsOverride?: "steer" | "followUp"): void {
+		if (this.disposed || this.wakeInFlight) return;
+		const completions = this.unreapedTasks();
+		for (const task of completions) this.cancelCheckpoint(task.taskId);
+		const completionIds = new Set(completions.map((task) => task.taskId));
+		const checkpointTasks = this.pendingCheckpointTasks().filter(
+			(task) => !completionIds.has(task.taskId),
+		);
+		if (completions.length === 0 && checkpointTasks.length === 0) return;
+
+		const checkpoints = checkpointTasks.map((task) => {
+			const run = [...this.runs.values()].find((candidate) =>
+				candidate.tasks.some((item) => item.taskId === task.taskId),
+			);
+			if (!run) return undefined;
+			const checkpoint = this.buildCheckpoint(run, task, this.now());
+			const bounded = boundCheckpoint(checkpoint);
+			this.checkpointBaselines.set(task.taskId, {
+				outputTokens: checkpoint.outputTokens,
+				costUsd: checkpoint.costUsd,
+			});
+			return bounded;
+		});
+		const deliveredCheckpoints = checkpoints.filter(
+			(checkpoint): checkpoint is ProgressCheckpoint => checkpoint !== undefined,
+		);
+		const parts = completions.map(wakeMessage);
+		if (deliveredCheckpoints.length > 0) {
+			const payload =
+				deliveredCheckpoints.length === 1 ? deliveredCheckpoints[0] : deliveredCheckpoints;
+			parts.push(
+				`Progress checkpoint: ${JSON.stringify(payload)}\n` +
+					"Inspect this supplied snapshot. If activity is healthy, settle without calling subagent_status. " +
+					"Do not poll between checkpoints. Use one fresh subagent_status only when steering or aborting requires current race-safe evidence.",
+			);
+		}
+		const wasWaiting = this.parentWaiting;
+		this.parentWaiting = false;
+		this.wakeInFlight = true;
+		for (const task of completions) task.unreaped = false;
+		for (const task of checkpointTasks) this.pendingCheckpoints.delete(task.taskId);
+		if (deliveredCheckpoints.length > 0) {
+			this.checkpointWakeOutstanding = true;
+			for (const checkpoint of deliveredCheckpoints)
+				this.checkpointWakeTasks.add(checkpoint.taskId);
+		}
+		const options: ParentWakeOptions = {
+			kind: deliveredCheckpoints.length > 0 ? "checkpoint" : "completion",
+		};
+		const deliverAs = deliverAsOverride ?? (wasWaiting ? undefined : "steer");
+		if (deliverAs) options.deliverAs = deliverAs;
+		if (deliveredCheckpoints.length > 0)
+			options.checkpoint =
+				deliveredCheckpoints.length === 1 ? deliveredCheckpoints[0] : deliveredCheckpoints;
+		void this.sendUserMessage(parts.join("\n"), options);
 	}
 
 	private retryCleanup(run: RunState, task: TaskState): void {
@@ -863,13 +1121,8 @@ export class Supervisor {
 				if (!reaped) return;
 				task.reaped = true;
 				this.startQueuedTasks(run);
-				task.pendingSoft = {
-					summary: "process cleanup recovered; queued work resumed",
-					steerable: true,
-				};
-				task.unreaped = true;
 				this.notifyListeners();
-				this.notifyParent(task);
+				this.onTerminalStateChange?.();
 			})
 			.catch(() => {
 				task.cleanupRetrying = false;
@@ -973,7 +1226,7 @@ export class Supervisor {
 			if (task.child) task.usage = { ...task.child.usage };
 			this.refreshContext(runId, taskId);
 		}
-		if (task.status === "running") this.detectors.get(taskId)?.observe(event, now);
+		if (task.status === "running") this.activityTrackers.get(taskId)?.observe(event, now);
 		if (event.type === "message_end") {
 			const message = event.message as {
 				role?: unknown;
@@ -1064,17 +1317,9 @@ export class Supervisor {
 		if (!task || isTerminalStatus(task.status) || task.finalizing) return;
 		this.beginFinalization(runId, taskId, {
 			status: "failed",
-			error: `timed out after ${this.taskTimeoutMs}ms`,
+			error: `timed out after ${task.timeoutMs}ms`,
+			timedOut: true,
 		});
-	}
-
-	private onSoftSignal(task: TaskState, diagnosis: { summary: string; steerable: boolean }): void {
-		task.pendingSoft = {
-			summary: diagnosis.summary,
-			steerable: diagnosis.steerable,
-		};
-		task.unreaped = true;
-		this.notifyParent(task);
 	}
 
 	private scheduleAbortFallback(runId: string, taskId: string, reason: string): void {
@@ -1107,6 +1352,7 @@ export class Supervisor {
 		}
 		const task = this.findTask(runId, taskId);
 		if (!task || isTerminalStatus(task.status) || task.finalizing) return;
+		this.cancelCheckpoint(taskId);
 		task.finalizing = true;
 		task.status = "stopping";
 		const timer = this.timeouts.get(taskId);
@@ -1114,8 +1360,7 @@ export class Supervisor {
 			clearTimeout(timer);
 			this.timeouts.delete(taskId);
 		}
-		this.detectors.delete(taskId);
-		task.pendingSoft = undefined;
+		this.activityTrackers.delete(taskId);
 		task.manualKill = result.manualKill;
 		if (task.child) {
 			try {
@@ -1197,6 +1442,7 @@ export class Supervisor {
 						status: "failed",
 						error: `${result.error ?? "completed"}; cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
 						manualKill: result.manualKill,
+						timedOut: result.timedOut,
 						notifyParent: result.notifyParent,
 					},
 					false,
@@ -1221,6 +1467,7 @@ export class Supervisor {
 				: reaped
 					? (result.error ?? "failed")
 					: `${result.error ?? "failed"}; child process cleanup could not be confirmed`;
+		task.timedOut = result.timedOut;
 		task.finishedAt = this.now();
 		task.lastEventAt = task.finishedAt;
 		const notifyParent = result.notifyParent !== false && !task.suppressWake;
@@ -1229,6 +1476,7 @@ export class Supervisor {
 		const run = this.runs.get(runId);
 		if (run && reaped) this.startQueuedTasks(run);
 		this.notifyListeners();
+		this.onTerminalStateChange?.();
 		if (notifyParent) this.notifyParent(task);
 	}
 
@@ -1246,22 +1494,6 @@ export class Supervisor {
 			// Leave unreaped; onParentSettled recheck will wake exactly once.
 			return;
 		}
-		if (this.parentWaiting) {
-			this.parentWaiting = false;
-			this.wake([task], /* steer */ false);
-			return;
-		}
-		this.wake([task], /* steer */ true);
-	}
-
-	private wake(tasks: TaskState[], steer: boolean): void {
-		const pending = tasks.filter((task) => task.unreaped);
-		if (pending.length === 0) return;
-		const content = pending.map(wakeMessage).join("\n");
-		for (const task of pending) {
-			task.unreaped = false;
-			task.pendingSoft = undefined;
-		}
-		void this.sendUserMessage(content, steer ? { deliverAs: "steer" } : undefined);
+		this.dispatchWake(this.parentWaiting ? undefined : "steer");
 	}
 }

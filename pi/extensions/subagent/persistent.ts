@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
+	MAX_SUBAGENT_TIMEOUT_MS,
 	THINKING_LEVELS,
 	type PersistentChildSession,
 	PersistentExecutionContract,
@@ -368,6 +369,12 @@ function validateSnapshot(
 		typeof execution.cwd !== "string" ||
 		execution.cwd.trim() === "" ||
 		typeof execution.projectTrusted !== "boolean" ||
+		(execution.readOnly !== undefined && typeof execution.readOnly !== "boolean") ||
+		(execution.timeoutMs !== undefined &&
+			(typeof execution.timeoutMs !== "number" ||
+				!Number.isFinite(execution.timeoutMs) ||
+				execution.timeoutMs <= 0 ||
+				execution.timeoutMs > MAX_SUBAGENT_TIMEOUT_MS)) ||
 		typeof execution.systemPrompt !== "string"
 	) {
 		throw new PersistentSessionError("INVALID", `invalid execution contract for ${sessionId}`);
@@ -454,6 +461,8 @@ function snapshotView(record: SessionRecord): PersistentSessionView {
 		tools: [...record.execution.tools],
 		workspace: record.execution.workspace,
 		cwd: record.execution.cwd,
+		readOnly: record.execution.readOnly,
+		timeoutMs: record.execution.timeoutMs,
 		worktree: record.execution.worktree ? { ...record.execution.worktree } : undefined,
 		latestRunId: record.latestRunId,
 		latestTaskId: record.latestTaskId,

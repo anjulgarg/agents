@@ -1081,14 +1081,14 @@ export class SubagentThreadView implements Component {
 				: []),
 		];
 		const wrappedTask = new Text(item.result.task, 0, 0).render(contentWidth);
-		const taskTitle = this.expanded ? wrappedTask : wrappedTask.slice(0, 3);
-		if (!this.expanded && wrappedTask.length > 3 && taskTitle[2] !== undefined) {
-			taskTitle[2] = truncateToWidth(taskTitle[2], Math.max(1, contentWidth - 1), "") + "…";
+		const taskTitle = this.expanded ? wrappedTask : wrappedTask.slice(0, 2);
+		if (!this.expanded && wrappedTask.length > 2 && taskTitle[1] !== undefined) {
+			taskTitle[1] = truncateToWidth(taskTitle[1], Math.max(1, contentWidth - 1), "") + "…";
 		}
 		const headerTitle = titleSegments.selected.join(
 			pastel(HEADER_PASTELS.separator, TITLE_SEPARATOR),
 		);
-		const headerLines = [...metadataLines, "", ...taskTitle, ""];
+		const headerLines = [...metadataLines, "", ...taskTitle];
 		const renderedHeader = renderHeader({
 			width,
 			title: headerTitle,

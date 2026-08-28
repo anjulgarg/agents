@@ -6,10 +6,11 @@ The parent cache-stability invariant does not cover a child's initial prompt or 
 completion: each is a separate provider request with its own prompt and cache behavior.
 
 Spawn and resume return terminating tool results. Pi therefore skips the routine post-tool parent model
-call, reaches `agent_settled`, and waits for the extension's completion wake instead of giving the parent
-an opportunity to poll. Independent parent tool work may be issued in the same tool-call batch; Pi only
-terminates a batch when every result in it is terminating. A completion, failure, or actionable watchdog
-wake starts the next parent turn.
+call, reaches `agent_settled`, and waits for an extension wake instead of giving the parent an opportunity
+to poll. Independent parent tool work may be issued in the same tool-call batch; Pi only terminates a
+batch when every result in it is terminating. Completion and failure wake immediately. Active invocations
+also emit one bounded progress checkpoint every two minutes; an outstanding checkpoint is deduplicated,
+and completion cancels its timer.
 
 ## Ephemeral and persistent modes
 
@@ -60,6 +61,24 @@ The F6 thread view reads that durable active branch, merges any live resumed eve
 A persistent child cannot invoke subagent or subagent-management tools. Dependency outputs may still be supplied through `inputFrom` when spawning or resuming.
 
 Children inherit the parent's active tool allowlist. When the parent MCP tool is inactive, the child uses an isolated empty Pi-global MCP config instead of re-enabling configured servers.
+
+## Progress checkpoints and timeouts
+
+A progress checkpoint contains observable activity, not a transcript or a semantic verdict. Its bounded
+payload reports elapsed time, event age, turns, output-token and cost totals plus deltas, tool counts, at
+most six recent tools, changed files, structured recent errors, and consecutive tool failures. If activity
+is healthy, the parent settles without calling `subagent_status`. Steering or aborting may use one fresh
+status snapshot for race-safe evidence. An active `subagent_status` result is terminating, so an accidental
+check cannot become a polling loop. There is no watchdog, stuck detector, heuristic health signal,
+acknowledgment tool, or mutation-based progress verdict. Only checkpoints, explicit parent decisions,
+hard invocation deadlines, and deterministic process cleanup affect supervision.
+
+Set `access` to `read-only` or `write`; write is the backward-compatible default. Read-only tasks omit the
+built-in `edit` and `write` tools and do not treat missing mutations as lack of progress. Shell access still
+requires the child to honor the read-only system contract. Hard per-invocation timeouts default to 15
+minutes for read-only work and 30 minutes for write work. `timeoutMinutes` may override the default up to
+60 minutes. Activity does not reset the deadline, and each persistent resume starts a fresh invocation
+timeout using the stored execution contract.
 
 ## Provider failure recovery
 

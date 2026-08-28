@@ -41,6 +41,7 @@ import {
 	type PersistentSessionStore,
 } from "./persistent.ts";
 import {
+	DEFAULT_WRITE_TIMEOUT_MS,
 	Supervisor,
 	isTerminalStatus,
 	type ChildFactory,
@@ -82,11 +83,14 @@ interface PersistedTask {
 	thinking: ThinkingLevel;
 	workspace: WorkspaceMode;
 	cwd: string;
+	readOnly?: boolean;
+	timeoutMs?: number;
 	mode?: "ephemeral" | "persistent";
 	sessionId?: string;
 	pid?: number;
 	error?: string;
 	manualKill?: boolean;
+	timedOut?: boolean;
 	output?: string;
 	usage?: UsageStats;
 	/** Optional bounded context snapshot; legacy records without it remain readable. */
@@ -138,7 +142,7 @@ export interface SubagentRuntimeOptions {
 	createSupervisor?: (options: ConstructorParameters<typeof Supervisor>[0]) => Supervisor;
 	createChild?: ChildFactory;
 	proc?: ProcAccess;
-	watchdogTickMs?: number;
+	cleanupTickMs?: number;
 }
 
 export function childPid(handle: ChildHandle | undefined): number | undefined {
@@ -300,7 +304,6 @@ export class SubagentRuntime {
 	private readonly persistentLeases = new Map<string, PersistentInvocationLease>();
 	private readonly persistentFinalizedTasks = new Set<string>();
 	private readonly taskMeta = new Map<string, SubagentTaskMeta>();
-	private readonly wedgedTasks = new Set<string>();
 	private readonly historical = new Map<string, SubagentDetails>();
 	private persistentThreadHistory = new Map<string, PersistentThreadHistory>();
 	private readonly lastViewedTaskByGroup = new Map<string, string>();
@@ -334,7 +337,6 @@ export class SubagentRuntime {
 			} catch (error) {
 				this.recordPersistentSyncFailure(String(content), error);
 			}
-			this.trackWedgedFromWake(String(content));
 			this.pi.sendMessage(
 				{
 					customType: WAKE_MESSAGE_TYPE,
@@ -349,12 +351,13 @@ export class SubagentRuntime {
 			options.createSupervisor?.({
 				sendUserMessage: sendWakeMessage,
 				createChild,
-				watchdogTickMs: options.watchdogTickMs,
+				cleanupTickMs: options.cleanupTickMs,
 			}) ??
 			new Supervisor({
 				sendUserMessage: sendWakeMessage,
 				createChild,
-				watchdogTickMs: options.watchdogTickMs,
+				cleanupTickMs: options.cleanupTickMs,
+				onTerminalStateChange: () => this.syncFromSupervisor(),
 			});
 
 		this.supervisor.subscribe(() => {
@@ -685,11 +688,14 @@ export class SubagentRuntime {
 					thinking: task.thinking,
 					workspace: task.workspace,
 					cwd: task.cwd,
+					readOnly: task.readOnly,
+					timeoutMs: task.timeoutMs,
 					mode: task.mode,
 					sessionId: task.sessionId,
 					pid: childPid(task.child),
 					error: task.error,
 					manualKill: task.manualKill,
+					timedOut: task.timedOut,
 					output: task.output,
 					usage: { ...task.usage },
 					contextUsage: task.contextUsage,
@@ -754,7 +760,6 @@ export class SubagentRuntime {
 					}
 				}
 				if (isTerminalStatus(task.status)) {
-					this.wedgedTasks.delete(task.taskId);
 					const meta = this.taskMeta.get(task.taskId);
 					if (meta?.promptDir) {
 						void fs.promises.rm(meta.promptDir, { recursive: true, force: true });
@@ -875,21 +880,6 @@ export class SubagentRuntime {
 
 	approveManualRetries(keys: readonly string[]): void {
 		for (const key of keys) this.approvedManualRetries.add(key);
-	}
-
-	isSteerable(task: TaskState): boolean {
-		if (task.pendingSoft && task.pendingSoft.steerable === false) return false;
-		if (this.wedgedTasks.has(task.taskId)) return false;
-		return true;
-	}
-
-	ack(
-		runId: string,
-		taskId: string,
-		options?: { extendBudgetUsd?: number; snoozeMs?: number },
-	): void {
-		this.supervisor.ack(runId, taskId, options);
-		this.wedgedTasks.delete(taskId);
 	}
 
 	subscribeDashboard(listener: () => void): () => void {
@@ -1074,12 +1064,15 @@ export class SubagentRuntime {
 					thinking: task.thinking,
 					workspace: task.workspace,
 					cwd: task.cwd,
+					readOnly: task.readOnly ?? false,
+					timeoutMs: task.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
 					mode: task.mode,
 					sessionId: task.sessionId,
 					worktree: task.worktree,
 					done: true,
 					error: task.error,
 					manualKill: task.manualKill,
+					timedOut: task.timedOut,
 					output: task.output ?? "",
 					usage: task.usage ?? emptyUsage(),
 					status: isTerminalStatus(task.status) ? task.status : "failed",
@@ -1107,10 +1100,13 @@ export class SubagentRuntime {
 			thinking: task.thinking,
 			workspace: task.workspace,
 			cwd: task.cwd,
+			readOnly: task.readOnly,
+			timeoutMs: task.timeoutMs,
 			worktree: meta?.worktree,
 			done: isTerminalStatus(task.status),
 			error: task.error,
 			manualKill: task.manualKill,
+			timedOut: task.timedOut,
 			output: task.output,
 			usage: { ...task.usage },
 			status: task.status,
@@ -1141,10 +1137,13 @@ export class SubagentRuntime {
 				thinking: task.thinking,
 				workspace: task.workspace,
 				cwd: task.cwd,
+				readOnly: task.readOnly ?? false,
+				timeoutMs: task.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
 				mode: task.mode,
 				sessionId: task.sessionId,
 				error: task.error,
 				manualKill: task.manualKill,
+				timedOut: task.timedOut,
 				reaped: task.reaped ?? isTerminalStatus(task.status),
 				lastEventAt: task.finishedAt ?? task.startedAt ?? run.startedAt,
 				startedAt: task.startedAt ?? run.startedAt,
@@ -1165,12 +1164,15 @@ export class SubagentRuntime {
 				thinking: task.thinking,
 				workspace: task.workspace,
 				cwd: task.cwd,
+				readOnly: task.readOnly ?? false,
+				timeoutMs: task.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
 				mode: task.mode,
 				sessionId: task.sessionId,
 				worktree: task.worktree,
 				done: isTerminalStatus(task.status),
 				error: task.error,
 				manualKill: task.manualKill,
+				timedOut: task.timedOut,
 				output: task.output ?? "",
 				usage: task.usage ?? emptyUsage(),
 				status: task.status,
@@ -1195,19 +1197,6 @@ export class SubagentRuntime {
 			}
 		}
 		void content;
-	}
-
-	private trackWedgedFromWake(content: string): void {
-		for (const run of this.supervisor.runs.values()) {
-			for (const task of run.tasks) {
-				const label = `Subagent task ${task.index + 1}`;
-				const stuckFalse = new RegExp(`${label} stuck:.*\\(steerable=false\\)`);
-				const stuckTrue = new RegExp(`${label} stuck:.*\\(steerable=true\\)`);
-				const terminal = content.includes(`${label} done:`) || content.includes(`${label} failed:`);
-				if (stuckFalse.test(content)) this.wedgedTasks.add(task.taskId);
-				if (stuckTrue.test(content) || terminal) this.wedgedTasks.delete(task.taskId);
-			}
-		}
 	}
 
 	private notifyDashboards(): void {

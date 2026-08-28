@@ -59,7 +59,7 @@ export interface SubagentExtensionOptions {
 	/** Inject model resolution in tests instead of using the native Pi model scope. */
 	getModels?: (ctx: ExtensionContext) => Promise<Model<any>[]>;
 	/** Disable process-exit handlers in tests (Supervisor still installs its own). */
-	watchdogTickMs?: number;
+	cleanupTickMs?: number;
 }
 
 export function registerSubagentExtension(
@@ -83,7 +83,7 @@ export function registerSubagentExtension(
 		createSupervisor: options.createSupervisor,
 		createChild: options.createChild,
 		proc: options.proc,
-		watchdogTickMs: options.watchdogTickMs,
+		cleanupTickMs: options.cleanupTickMs,
 	});
 	const supervisor = runtime.supervisor;
 	bindSubagentControl({

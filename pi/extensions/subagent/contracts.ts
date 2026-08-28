@@ -15,6 +15,9 @@ export const SUBAGENT_MODES = ["ephemeral", "persistent"] as const;
 
 export type SubagentMode = (typeof SUBAGENT_MODES)[number];
 
+/** Maximum supported wall-clock timeout for one child invocation. */
+export const MAX_SUBAGENT_TIMEOUT_MS = 60 * 60 * 1000;
+
 export const PERSISTENT_SESSION_STATES = ["idle", "running", "blocked", "closed"] as const;
 
 export type PersistentSessionState = (typeof PERSISTENT_SESSION_STATES)[number];
@@ -37,6 +40,10 @@ export interface PersistentExecutionContract {
 	workspace: WorkspaceMode;
 	cwd: string;
 	projectTrusted: boolean;
+	/** Explicit task intent used to select the default invocation timeout. */
+	readOnly?: boolean;
+	/** Optional per-invocation timeout; legacy sessions omit it. */
+	timeoutMs?: number;
 	/** Exact generated prompt body, intentionally omitted from safe views. */
 	systemPrompt: string;
 	worktree?: WorktreeInfo;
@@ -53,6 +60,8 @@ export interface PersistentSessionView {
 	tools?: string[];
 	workspace?: WorkspaceMode;
 	cwd?: string;
+	readOnly?: boolean;
+	timeoutMs?: number;
 	worktree?: WorktreeInfo;
 	latestRunId?: string;
 	latestTaskId?: string;
@@ -127,10 +136,13 @@ export interface SubagentResultView {
 	thinking: ThinkingLevel;
 	workspace: WorkspaceMode;
 	cwd: string;
+	readOnly?: boolean;
+	timeoutMs?: number;
 	worktree?: WorktreeInfo;
 	done: boolean;
 	error?: string;
 	manualKill?: boolean;
+	timedOut?: boolean;
 	output: string;
 	usage: UsageStats;
 	status: TaskStatus;

@@ -350,7 +350,7 @@ function install(
 	extra: SubagentExtensionOptions = {},
 ): SupervisorInstance {
 	return registerSubagentExtension(pi as any, {
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		getModels: fakeModels,
 		createChild: (options: RpcChildOptions) => {
 			const child = new FakeChild({ ...options, pid: 40_000 + children.length });
@@ -383,7 +383,6 @@ async function testPromptFreeStableSubagentMetadata(): Promise<void> {
 		"subagent_result",
 		"subagent_steer",
 		"subagent_abort",
-		"subagent_ack",
 		"subagent_resume",
 		"subagent_sessions",
 		"subagent_close",
@@ -414,7 +413,7 @@ async function testPromptFreeStableSubagentMetadata(): Promise<void> {
 			"explicit, exclusive set of files",
 			"potentially overlapping mutation targets",
 			"Do not poll",
-			"watchdog alerts",
+			"scheduled progress checkpoints",
 			"exact activity token",
 			"Never abort from stale evidence",
 			"user-specified model and thinking levels exactly",
@@ -443,7 +442,6 @@ async function testPromptFreeStableSubagentMetadata(): Promise<void> {
 			["subagent_result", "after a wake"],
 			["subagent_steer", "running subagent mid-flight"],
 			["subagent_abort", "exact activity tokens"],
-			["subagent_ack", "watchdog soft alert"],
 			["subagent_resume", "exact persistent subagent conversation"],
 			["subagent_sessions", "stable sessionId"],
 			["subagent_close", "non-destructive"],
@@ -491,7 +489,6 @@ async function testNonBlockingReturn(): Promise<void> {
 			"subagent_result",
 			"subagent_steer",
 			"subagent_abort",
-			"subagent_ack",
 		);
 		await pi.emit("session_start", {}, ctx);
 		assert(
@@ -502,7 +499,6 @@ async function testNonBlockingReturn(): Promise<void> {
 					"subagent_result",
 					"subagent_steer",
 					"subagent_abort",
-					"subagent_ack",
 					"subagent_resume",
 					"subagent_sessions",
 					"subagent_close",
@@ -510,7 +506,12 @@ async function testNonBlockingReturn(): Promise<void> {
 			`tools=${pi.activeTools.join(",")}`,
 		);
 		// Point cwd at an empty dir so worktree isn't needed; shared mode only.
-		const result = await callTool(pi, "subagent", { task: "long job" }, ctx);
+		const result = await callTool(
+			pi,
+			"subagent",
+			{ task: "long job", access: "read-only", timeoutMinutes: 2 },
+			ctx,
+		);
 		const runId = result?.details?.runId as string | undefined;
 		const task = runId ? supervisor.runs.get(runId)?.tasks[0] : undefined;
 		assert(
@@ -526,12 +527,15 @@ async function testNonBlockingReturn(): Promise<void> {
 					"subagent_result",
 					"subagent_steer",
 					"subagent_abort",
-					"subagent_ack",
 					"subagent_resume",
 					"subagent_sessions",
 					"subagent_close",
 				].every((tool) => pi.activeTools.includes(tool)) &&
 				task?.mode === "ephemeral" &&
+				task.readOnly === true &&
+				task.timeoutMs === 120_000 &&
+				!children[0].tools.includes("edit") &&
+				!children[0].tools.includes("write") &&
 				task.sessionId === undefined &&
 				!pi.entries.some((entry) => entry.customType === "subagent-session-state"),
 			`runId=${runId} status=${task?.status} tools=${pi.activeTools.join(",")} text=${result?.content?.[0]?.text}`,
@@ -621,7 +625,9 @@ async function testActiveAbortRequiresCurrentEvidence(): Promise<void> {
 		});
 		assert(
 			name,
-			missingRefusal.includes("Refresh subagent_status") &&
+			firstStatus.terminate === true &&
+				refreshed.terminate === true &&
+				missingRefusal.includes("Refresh subagent_status") &&
 				staleRefusal.includes("Refusing stale abort") &&
 				firstToken !== currentToken &&
 				children[0].aborted === 1 &&
@@ -819,19 +825,6 @@ async function testPrimaryRendererIsQuietAndExpandable(): Promise<void> {
 			.renderResult(failed, resultOptions(false), theme, renderContext(false))
 			.render(120)
 			.join("\n");
-		const ackTool = pi.tools.get("subagent_ack") as any;
-		const ackCall = ackTool
-			.renderCall({ taskId: "task-1" }, theme, { expanded: false, isError: false })
-			.render(120);
-		const ackResult = ackTool
-			.renderResult(
-				{ content: [{ type: "text", text: "Acknowledged task-1" }] },
-				resultOptions(false),
-				theme,
-				renderContext(false),
-			)
-			.render(120);
-
 		assert(
 			name,
 			tool.renderShell === "self" &&
@@ -843,11 +836,8 @@ async function testPrimaryRendererIsQuietAndExpandable(): Promise<void> {
 				expanded.includes("taskId=") &&
 				collapsedCompleted.length === 0 &&
 				collapsedFailed.includes("subagents failed: 1/1") &&
-				!collapsedFailed.includes("delegated failure") &&
-				ackTool.renderShell === "self" &&
-				ackCall.length === 0 &&
-				ackResult.length === 0,
-			`call=${collapsedCall} expandedCall=${expandedCall} running=${running} expanded=${expanded} completed=${collapsedCompleted} failed=${collapsedFailed} ackCall=${ackCall} ackResult=${ackResult}`,
+				!collapsedFailed.includes("delegated failure"),
+			`call=${collapsedCall} expandedCall=${expandedCall} running=${running} expanded=${expanded} completed=${collapsedCompleted} failed=${collapsedFailed}`,
 		);
 
 		// ---------- Markdown indentation ----------
@@ -899,11 +889,6 @@ function testManagementRenderersStayOutOfCollapsedHistory(): void {
 			name: "subagent_abort",
 			args: { runId: "run-1", taskId },
 			result: "Aborted run-1:0",
-		},
-		{
-			name: "subagent_ack",
-			args: { runId: "run-1", taskId },
-			result: "Acknowledged run-1:0",
 		},
 	];
 
@@ -1536,47 +1521,6 @@ async function testGetScopedExport(): Promise<void> {
 	);
 }
 
-async function testSteerRefusesWedged(): Promise<void> {
-	const name = "d. subagent_steer refuses on a non-steerable (wedged) task";
-	const pi = new FakePi();
-	const children: FakeChild[] = [];
-	const supervisor = install(pi, children);
-	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-test-"));
-
-	try {
-		const spawned = await callTool(
-			pi,
-			"subagent",
-			{ task: "wedge me" },
-			fakeCtx({ cwd: promptRoot }),
-		);
-		const runId = spawned.details.runId as string;
-		const task = supervisor.runs.get(runId)!.tasks[0];
-		task.pendingSoft = { summary: "stuck in `bash` 2m", steerable: false };
-
-		let refused = false;
-		let message = "";
-		try {
-			await callTool(pi, "subagent_steer", {
-				runId,
-				taskId: task.taskId,
-				message: "nudge",
-			});
-		} catch (error) {
-			refused = true;
-			message = error instanceof Error ? error.message : String(error);
-		}
-		assert(
-			name,
-			refused && /not steerable|wedged|abort/i.test(message) && children[0].steered.length === 0,
-			`refused=${refused} message=${message} steered=${children[0].steered.length}`,
-		);
-	} finally {
-		supervisor.dispose();
-		await fs.promises.rm(promptRoot, { recursive: true, force: true });
-	}
-}
-
 async function testAgentSettledHook(): Promise<void> {
 	const name = "e. agent_settled hook calls supervisor.onParentSettled()";
 	const pi = new FakePi();
@@ -1584,7 +1528,7 @@ async function testAgentSettledHook(): Promise<void> {
 	let onParentSettledCalls = 0;
 
 	const supervisor = registerSubagentExtension(pi as any, {
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		getModels: fakeModels,
 		createSupervisor: (opts) => {
 			const inner = new Supervisor({
@@ -1620,7 +1564,7 @@ async function testAbortCallsKillAll(): Promise<void> {
 	let killAllNotifyParent: boolean[] = [];
 
 	const supervisor = registerSubagentExtension(pi as any, {
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		getModels: fakeModels,
 		createSupervisor: (opts) => {
 			const inner = new Supervisor({
@@ -2130,7 +2074,12 @@ async function setupPersistent(trusted = false): Promise<{
 	const spawned = await callTool(
 		pi,
 		"subagent",
-		{ task: "persistent first", mode: "persistent" },
+		{
+			task: "persistent first",
+			mode: "persistent",
+			access: "read-only",
+			timeoutMinutes: 2,
+		},
 		ctx,
 	);
 	const sessionId = spawned.details.results[0].sessionId as string;
@@ -2194,6 +2143,7 @@ async function testPersistentPublicControls(): Promise<void> {
 				reloadedCtx,
 			);
 			const resumedTask = resumed.details.results[0];
+			const resumedRuntimeTask = reloadedSupervisor.runs.get(resumed.details.runId)?.tasks[0];
 			assert(
 				`${name} (resume settles the parent until its completion wake)`,
 				resumed.terminate === true && String(resumed.content[0].text).includes("WOKEN"),
@@ -2207,6 +2157,8 @@ async function testPersistentPublicControls(): Promise<void> {
 					visible.details.some((item: any) => item.sessionId === first.sessionId) &&
 					resumedTask.sessionId === first.sessionId &&
 					resumedTask.taskId !== firstDetails.latestTaskId &&
+					resumedRuntimeTask?.readOnly === true &&
+					resumedRuntimeTask.timeoutMs === 120_000 &&
 					resumedChild.persistentSession?.sessionId === first.sessionId &&
 					resumedChild.persistentSession?.sessionDir ===
 						initialChild.persistentSession?.sessionDir &&
@@ -2335,6 +2287,7 @@ async function testPersistentWorktreeRetention(): Promise<void> {
 		const first = spawned.details.results[0];
 		const sessionId = first.sessionId as string;
 		worktree = first.worktree;
+		await pi.emit("agent_settled", {});
 		children[0]!.settle("first worktree turn");
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const retainedFile = path.join(worktree!.path, "uncommitted.txt");
@@ -2347,6 +2300,7 @@ async function testPersistentWorktreeRetention(): Promise<void> {
 			ctx,
 		);
 		const resumedInPlace = children[1]?.cwd === worktree!.path;
+		await pi.emit("agent_settled", {});
 		children[1]!.settle("second worktree turn");
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		await callTool(pi, "subagent_close", { sessionId }, ctx);
@@ -2401,7 +2355,7 @@ async function testPersistentCleanupRetry(): Promise<void> {
 		child!.settle("finished before cleanup retry");
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const blocked = (await callTool(pi, "subagent_sessions", { sessionId }, ctx)).details as any;
-		supervisor.tickWatchdog();
+		supervisor.tickCleanup();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const recovered = (await callTool(pi, "subagent_sessions", { sessionId }, ctx)).details as any;
 		assert(
@@ -2895,7 +2849,6 @@ async function main(): Promise<void> {
 	await testParentActivityWidgetAggregatesStandaloneRuns();
 	await testSubagentUpdateShape();
 	await testGetScopedExport();
-	await testSteerRefusesWedged();
 	await testAgentSettledHook();
 	await testAbortCallsKillAll();
 	await testPidSweepSkipsInnocent();

@@ -326,10 +326,12 @@ function testSubagentDashboard(): void {
 	);
 	const promptLine = threadLines.findIndex((line: string) => line.includes("Do a thing"));
 	check(
-		"subagent thread: prompt has vertical padding",
+		"subagent thread: prompt keeps the metadata gap without trailing padding",
 		promptLine > 0 &&
 			threadLines[promptLine - 1]?.trim() === "" &&
-			threadLines[promptLine + 1]?.trim() === "",
+			stripAnsi(threadLines[promptLine + 1] ?? "")
+				.trim()
+				.startsWith("─"),
 	);
 	check(
 		"subagent thread: footer has exactly one trailing blank row",
@@ -423,12 +425,20 @@ function testSubagentDashboard(): void {
 		"subagent thread: prompt starts collapsed",
 		!collapsedPrompt.join("\n").includes("PROMPT_TAIL"),
 	);
+	const collapsedPromptStart = collapsedPrompt.findIndex((line: string) =>
+		stripAnsi(line).includes("word"),
+	);
 	const collapsedPromptTail = collapsedPrompt.findIndex((line: string) =>
 		stripAnsi(line).trimEnd().endsWith("…"),
 	);
 	check(
-		"subagent thread: collapsed prompt shows three lines",
-		collapsedPromptTail >= 0 && collapsedPrompt[collapsedPromptTail + 1]?.trim() === "",
+		"subagent thread: collapsed prompt shows two lines without trailing padding",
+		collapsedPromptStart > 0 &&
+			collapsedPrompt[collapsedPromptStart - 1]?.trim() === "" &&
+			collapsedPromptTail === collapsedPromptStart + 1 &&
+			stripAnsi(collapsedPrompt[collapsedPromptTail + 1] ?? "")
+				.trim()
+				.startsWith("─"),
 	);
 	expandable.handleInput("\x0f");
 	check(

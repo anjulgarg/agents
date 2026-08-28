@@ -10,7 +10,14 @@ import {
 	type RpcEvent,
 	type UsageStats,
 } from "./rpc-client.ts";
-import { Supervisor, type ChildHandle, type TaskSpawnSpec } from "./supervisor.ts";
+import {
+	DEFAULT_READ_ONLY_TIMEOUT_MS,
+	DEFAULT_WRITE_TIMEOUT_MS,
+	resolveTaskTimeoutMs,
+	Supervisor,
+	type ChildHandle,
+	type TaskSpawnSpec,
+} from "./supervisor.ts";
 
 interface Wake {
 	content: string;
@@ -132,12 +139,23 @@ function baseSpec(overrides: Partial<TaskSpawnSpec> = {}): TaskSpawnSpec {
 	};
 }
 
+function testTaskTimeoutContract(): void {
+	const name = "a0. task timeout defaults follow access and cap at sixty minutes";
+	assert(
+		name,
+		resolveTaskTimeoutMs(true) === DEFAULT_READ_ONLY_TIMEOUT_MS &&
+			resolveTaskTimeoutMs(false) === DEFAULT_WRITE_TIMEOUT_MS &&
+			resolveTaskTimeoutMs(false, 90 * 60_000) === 60 * 60_000,
+		"unexpected task timeout resolution",
+	);
+}
+
 async function testPersistentMetadata(): Promise<void> {
 	const name = "a. persistent mode and session identity reach child and snapshot";
 	const children: FakeChild[] = [];
 	let received: RpcChildOptions | undefined;
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			received = options;
@@ -207,7 +225,7 @@ async function testSpawnReturnsBeforeCompletion(): Promise<void> {
 	let settled = false;
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -244,7 +262,7 @@ async function testSteerWhenParentRunning(): Promise<void> {
 	const wakes: Wake[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -280,7 +298,7 @@ async function testPlainWakeWhenParentWaiting(): Promise<void> {
 	const wakes: Wake[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -311,7 +329,7 @@ async function testRaceExactlyOneWake(): Promise<void> {
 	const wakes: Wake[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -350,7 +368,7 @@ async function testHardTimeout(): Promise<void> {
 
 	const supervisor = new Supervisor({
 		taskTimeoutMs: 30,
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -367,7 +385,10 @@ async function testHardTimeout(): Promise<void> {
 		const task = supervisor.runs.get(runId)?.tasks[0];
 		assert(
 			name,
-			task?.status === "failed" && !!task.error?.includes("timed out") && wakes.length >= 1,
+			task?.status === "failed" &&
+				task.timedOut === true &&
+				!!task.error?.includes("timed out") &&
+				wakes.length >= 1,
 			`status=${task?.status} error=${task?.error} wakes=${JSON.stringify(wakes)}`,
 		);
 		assert(`${name} (child killed)`, children[0].killed, "child was not killed on timeout");
@@ -382,7 +403,7 @@ async function testKillAll(): Promise<void> {
 	const wakes: Wake[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -411,7 +432,7 @@ async function testSilentKillDuringFinalization(): Promise<void> {
 	const wakes: Wake[] = [];
 	let child: DeferredTerminateChild | undefined;
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -444,7 +465,7 @@ async function testSteerControlSurface(): Promise<void> {
 	const wakes: Wake[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -487,7 +508,7 @@ async function testAbortTask(): Promise<void> {
 	const children: FakeChild[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -510,7 +531,7 @@ async function testStatusTerse(): Promise<void> {
 	const children: FakeChild[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -549,7 +570,7 @@ async function testStatusReportsObjectiveActivity(): Promise<void> {
 	const children: FakeChild[] = [];
 	let clock = 10_000;
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		now: () => clock,
 		sendUserMessage: () => {},
 		createChild: (options) => {
@@ -591,7 +612,7 @@ async function testLiveUsageProjection(): Promise<void> {
 	const name = "j. running task projects usage after each assistant turn";
 	const children: FakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -625,7 +646,7 @@ async function testResultDetail(): Promise<void> {
 	const children: FakeChild[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -658,7 +679,7 @@ async function testManualKillMetadata(): Promise<void> {
 	const children: FakeChild[] = [];
 	const wakes: Wake[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -684,16 +705,13 @@ async function testManualKillMetadata(): Promise<void> {
 	}
 }
 
-async function testSoftSignalStuckInTool(): Promise<void> {
-	const name = "k. soft STUCK_IN_TOOL wakes once, steerable=false, does not kill";
+async function testProgressCheckpoint(): Promise<void> {
+	const name = "l. progress checkpoints are bounded, deduplicated, and completion-cancelled";
 	const children: FakeChild[] = [];
 	const wakes: Wake[] = [];
-	let clock = 100_000;
-
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
-		stuckDetectorOptions: { silenceMs: 5_000 },
-		now: () => clock,
+		cleanupTickMs: 0,
+		checkpointIntervalMs: 10,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -703,43 +721,61 @@ async function testSoftSignalStuckInTool(): Promise<void> {
 			return child;
 		},
 	});
-
 	try {
-		const { runId, taskIds } = supervisor.spawn([baseSpec({ task: "tool-wedge" })]);
-		children[0].emit({
-			type: "tool_execution_start",
-			toolCallId: "c1",
-			toolName: "bash",
-			args: { command: "sleep 999" },
-		});
-		clock = 105_000;
-		supervisor.tickWatchdog(clock);
-
-		const task = supervisor.runs.get(runId)?.tasks[0];
+		const { runId } = supervisor.spawn([baseSpec({ task: "checkpoint", readOnly: true })]);
+		for (let index = 0; index < 8; index++) {
+			children[0].emit({
+				type: "tool_execution_start",
+				toolCallId: `c${index}`,
+				toolName: index % 2 === 0 ? "read" : "grep",
+				args: { path: `src/file-${index}.ts`, pattern: `query-${index}` },
+			});
+			children[0].emit({
+				type: "tool_execution_end",
+				toolCallId: `c${index}`,
+				toolName: index % 2 === 0 ? "read" : "grep",
+				result: index >= 6 ? { isError: true, content: "failed lookup" } : { content: "ok" },
+				isError: index >= 6,
+			});
+		}
+		children[0].completeTurn({ turns: 1, output: 120, cost: 0.25 });
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		const checkpointWake = wakes.find((wake) => wake.content.includes("Progress checkpoint:"));
+		const encoded = checkpointWake?.content.match(/Progress checkpoint: (\{.*\})\n/)?.[1];
+		const checkpoint = encoded ? JSON.parse(encoded) : undefined;
 		assert(
 			name,
 			wakes.length === 1 &&
-				wakes[0].content.includes("steerable=false") &&
-				wakes[0].deliverAs === "steer" &&
-				task?.status === "running" &&
-				!children[0].killed,
-			`wakes=${JSON.stringify(wakes)} status=${task?.status} killed=${children[0].killed}`,
+				checkpointWake?.content.includes("Do not poll between checkpoints") === true &&
+				JSON.stringify(checkpoint).length <= 1024 &&
+				checkpoint?.recentTools?.length <= 6 &&
+				checkpoint?.recentErrors?.every(
+					(error: Record<string, unknown>) => error.toolName && error.target && error.message,
+				) &&
+				checkpoint?.consecutiveToolFailures === 2,
+			`wakes=${JSON.stringify(wakes)} checkpoint=${JSON.stringify(checkpoint)}`,
 		);
-
-		// Case l: second tick on same latched signal must not re-wake.
-		clock = 106_000;
-		supervisor.tickWatchdog(clock);
+		supervisor.onParentSettled();
+		children[0].completeTurn({ turns: 2, output: 180, cost: 0.4 });
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		const secondEncoded = wakes[1]?.content.match(/Progress checkpoint: (\{.*\})\n/)?.[1];
+		const secondCheckpoint = secondEncoded ? JSON.parse(secondEncoded) : undefined;
 		assert(
-			"l. detector latch: second tick does not re-wake",
-			wakes.length === 1,
-			`expected 1 wake after second tick, got ${wakes.length}: ${JSON.stringify(wakes)}`,
+			`${name} (deltas advance after parent settles)`,
+			wakes.length === 2 &&
+				secondCheckpoint?.outputTokensDelta === 60 &&
+				Math.abs(secondCheckpoint?.costUsdDelta - 0.15) < 0.000001,
+			`wakes=${JSON.stringify(wakes)} checkpoint=${JSON.stringify(secondCheckpoint)}`,
 		);
+		children[0].settle("done");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		supervisor.onParentSettled();
+		await new Promise((resolve) => setTimeout(resolve, 30));
 		assert(
-			`${name} (still running after latch)`,
-			supervisor.runs.get(runId)?.tasks[0]?.status === "running" && !children[0].killed,
-			"task was killed or completed after soft signal",
+			`${name} (completion cancels later checkpoints without losing its wake)`,
+			wakes.length === 3 && wakes[2].content.includes("Subagent task 1 done: done"),
+			`unexpected wakes=${JSON.stringify(wakes)}`,
 		);
-		void taskIds;
 	} finally {
 		supervisor.dispose();
 	}
@@ -750,7 +786,7 @@ async function testTransientProviderRecovery(): Promise<void> {
 	const children: FakeChild[] = [];
 	const wakes: Wake[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		maxTransientRetries: 2,
 		transientRetryBaseDelayMs: 1,
 		sendUserMessage: (content, options) => {
@@ -803,7 +839,7 @@ async function testTransientProviderFailureExhaustion(): Promise<void> {
 	const children: FakeChild[] = [];
 	const wakes: Wake[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		maxTransientRetries: 1,
 		transientRetryBaseDelayMs: 1,
 		sendUserMessage: (content, options) => {
@@ -855,7 +891,7 @@ async function testTransientProviderRecoveryWindow(): Promise<void> {
 	const wakes: Wake[] = [];
 	let now = 0;
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		transientRetryBaseDelayMs: 1,
 		transientRetryWindowMs: 100,
 		now: () => now,
@@ -920,7 +956,7 @@ async function testNonTransientProviderFailureDoesNotRetry(): Promise<void> {
 	const name = "o. deterministic provider failures fail fast without retry";
 	const children: FakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -964,7 +1000,7 @@ async function testExitPropagatesStderr(): Promise<void> {
 		"\u001b[90m    at loadExtension (ext.ts:1:1)\u001b[0m\n";
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -1011,7 +1047,7 @@ async function testExitDoesNotLeakStderrOnSuccess(): Promise<void> {
 	const wakes: Wake[] = [];
 
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: (content, options) => {
 			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
 		},
@@ -1046,7 +1082,7 @@ async function testBoundedConcurrency(): Promise<void> {
 	const name = "o. maxConcurrency queues tasks and advances one slot at a time";
 	const children: FakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -1085,7 +1121,7 @@ async function testGlobalConcurrencyCap(): Promise<void> {
 	const name = "p. global child cap applies across independent runs";
 	const children: FakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		maxActiveChildren: 2,
 		sendUserMessage: () => {},
 		createChild: (options) => {
@@ -1116,7 +1152,7 @@ async function testCompletionReapsChild(): Promise<void> {
 	const name = "p. successful completion captures output and reaps the child";
 	const children: FakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -1152,7 +1188,7 @@ async function testUnconfirmedCleanupPausesQueue(): Promise<void> {
 	const children: FakeChild[] = [];
 	let terminateCalls = 0;
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		maxActiveChildren: 1,
 		sendUserMessage: () => {},
 		createChild: (options) => {
@@ -1178,7 +1214,7 @@ async function testUnconfirmedCleanupPausesQueue(): Promise<void> {
 				supervisor.runs.get(other.runId)?.tasks[0].status === "queued",
 			`children=${children.length} statuses=${tasks?.map((task) => `${task.status}:${task.reaped}`)} other=${supervisor.runs.get(other.runId)?.tasks[0].status}`,
 		);
-		supervisor.tickWatchdog();
+		supervisor.tickCleanup();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		tasks = supervisor.runs.get(runId)?.tasks;
 		assert(
@@ -1195,7 +1231,7 @@ async function testAbortCannotSucceed(): Promise<void> {
 	const name = "q. aborted task settles as failed, never successful";
 	const children: FakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -1230,7 +1266,7 @@ async function testUnexpectedExitFailsImmediately(): Promise<void> {
 	const children: FakeChild[] = [];
 	const supervisor = new Supervisor({
 		taskTimeoutMs: 60_000,
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new FakeChild(options);
@@ -1257,7 +1293,7 @@ async function testLiveContextRefreshOnAssistantTurn(): Promise<void> {
 	const name = "s. completed assistant turns and compaction events refresh context";
 	const children: TelemetryFakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new TelemetryFakeChild(options);
@@ -1311,7 +1347,7 @@ async function testFinalRefreshAppliesBeforeCleanup(): Promise<void> {
 	const name = "t. one final refresh settles context before confirmed cleanup";
 	const children: TelemetryFakeChild[] = [];
 	const supervisor = new Supervisor({
-		watchdogTickMs: 0,
+		cleanupTickMs: 0,
 		sendUserMessage: () => {},
 		createChild: (options) => {
 			const child = new TelemetryFakeChild(options);
@@ -1348,7 +1384,7 @@ async function testFinalRefreshFailureNeverBlocksCleanup(): Promise<void> {
 		const name = `u. ${variant} final refresh: bounded cleanup, result unchanged, context unavailable`;
 		const children: TelemetryFakeChild[] = [];
 		const supervisor = new Supervisor({
-			watchdogTickMs: 0,
+			cleanupTickMs: 0,
 			sendUserMessage: () => {},
 			createChild: (options) => {
 				const child = new TelemetryFakeChild(options);
@@ -1390,6 +1426,7 @@ async function testFinalRefreshFailureNeverBlocksCleanup(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+	testTaskTimeoutContract();
 	await testPersistentMetadata();
 	await testSpawnReturnsBeforeCompletion();
 	await testSteerWhenParentRunning();
@@ -1405,7 +1442,7 @@ async function main(): Promise<void> {
 	await testLiveUsageProjection();
 	await testResultDetail();
 	await testManualKillMetadata();
-	await testSoftSignalStuckInTool();
+	await testProgressCheckpoint();
 	await testTransientProviderRecovery();
 	await testTransientProviderFailureExhaustion();
 	await testTransientProviderRecoveryWindow();
