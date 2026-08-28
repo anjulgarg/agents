@@ -328,6 +328,78 @@ async function testPlainWakeWhenParentWaiting(): Promise<void> {
 	}
 }
 
+async function testSuccessfulRunCompletionsBatchUntilTerminal(): Promise<void> {
+	const name = "c1. successful task completions batch until the run is terminal";
+	const children: FakeChild[] = [];
+	const wakes: Wake[] = [];
+	const supervisor = new Supervisor({
+		cleanupTickMs: 0,
+		sendUserMessage: (content, options) => {
+			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
+		},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+	try {
+		supervisor.spawn([
+			baseSpec({ task: "first" }),
+			baseSpec({ task: "second" }),
+			baseSpec({ task: "third" }),
+		]);
+		supervisor.onParentSettled();
+		children[0].settle("first done");
+		children[1].settle("second done");
+		assert(`${name} (intermediate)`, wakes.length === 0, JSON.stringify(wakes));
+		children[2].settle("third done");
+		assert(
+			name,
+			wakes.length === 1 &&
+				wakes[0]?.deliverAs === undefined &&
+				(wakes[0]?.content.match(/Subagent task/g) ?? []).length === 3,
+			JSON.stringify(wakes),
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
+async function testFailureWakesBeforeRunCompletes(): Promise<void> {
+	const name = "c2. task failure wakes immediately before the rest of its run completes";
+	const children: FakeChild[] = [];
+	const wakes: Wake[] = [];
+	const supervisor = new Supervisor({
+		cleanupTickMs: 0,
+		sendUserMessage: (content, options) => {
+			wakes.push({ content: String(content), deliverAs: options?.deliverAs });
+		},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+	try {
+		const { runId, taskIds } = supervisor.spawn([
+			baseSpec({ task: "fails" }),
+			baseSpec({ task: "continues" }),
+		]);
+		supervisor.onParentSettled();
+		supervisor.killTask(runId, taskIds[0]!);
+		assert(
+			name,
+			wakes.length === 1 &&
+				wakes[0]?.content.includes("failed") === true &&
+				supervisor.runs.get(runId)?.tasks[1]?.status === "running",
+			JSON.stringify(wakes),
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
 async function testRaceExactlyOneWake(): Promise<void> {
 	const name = "d. race: completion between settle-check and flag → exactly one wake";
 	const children: FakeChild[] = [];
@@ -1162,6 +1234,36 @@ async function testGlobalConcurrencyCap(): Promise<void> {
 	}
 }
 
+async function testDefaultGlobalConcurrencyCap(): Promise<void> {
+	const name = "p. default global child cap allows 10 active children across runs";
+	const children: FakeChild[] = [];
+	const supervisor = new Supervisor({
+		cleanupTickMs: 0,
+		sendUserMessage: () => {},
+		createChild: (options) => {
+			const child = new FakeChild(options);
+			children.push(child);
+			return child;
+		},
+	});
+	try {
+		supervisor.spawn(Array.from({ length: 6 }, (_, index) => baseSpec({ task: `a${index}` })));
+		const second = supervisor.spawn(
+			Array.from({ length: 6 }, (_, index) => baseSpec({ task: `b${index}` })),
+		);
+		const secondStatuses = supervisor.runs.get(second.runId)?.tasks.map((task) => task.status);
+		assert(
+			name,
+			children.length === 10 &&
+				secondStatuses?.filter((status) => status === "running").length === 4 &&
+				secondStatuses.filter((status) => status === "queued").length === 2,
+			`children=${children.length} second=${secondStatuses}`,
+		);
+	} finally {
+		supervisor.dispose();
+	}
+}
+
 async function testCompletionReapsChild(): Promise<void> {
 	const name = "p. successful completion captures output and reaps the child";
 	const children: FakeChild[] = [];
@@ -1445,6 +1547,8 @@ async function main(): Promise<void> {
 	await testSpawnReturnsBeforeCompletion();
 	await testSteerWhenParentRunning();
 	await testPlainWakeWhenParentWaiting();
+	await testSuccessfulRunCompletionsBatchUntilTerminal();
+	await testFailureWakesBeforeRunCompletes();
 	await testRaceExactlyOneWake();
 	await testHardTimeout();
 	await testKillAll();
@@ -1465,6 +1569,7 @@ async function main(): Promise<void> {
 	await testExitDoesNotLeakStderrOnSuccess();
 	await testBoundedConcurrency();
 	await testGlobalConcurrencyCap();
+	await testDefaultGlobalConcurrencyCap();
 	await testCompletionReapsChild();
 	await testUnconfirmedCleanupPausesQueue();
 	await testAbortCannotSucceed();

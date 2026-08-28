@@ -26,7 +26,7 @@ digraph ForemanReview {
     report [label="REPORT"];
 
     scope -> brief -> static -> skeptic -> lenses -> challenge -> verify -> report;
-    static -> static [label="next prompt file"];
+    static -> static [label="next static prompt"];
     skeptic -> skeptic [label="next material risk"];
     lenses -> lenses [label="next unresolved hypothesis"];
 }
@@ -54,7 +54,7 @@ Record `BASE`, `HEAD`, and merge base. Review only `BASE...HEAD`. Use a clean ch
 
 Read [../foreman-worker/SKILL.md](../foreman-worker/SKILL.md). Explicitly request `TRANSPORT=auto`, `MODE=persistent`, `ACCESS=read-only`, and the pinned review checkout. If the host's active, documented tools provide persistent, resumable, long-running child tasks or subagents that return each turn's result, use that native adapter. Otherwise ask the user which reviewed CLI to use and wait for explicit consent, unless they already named a CLI in the prompt. Read only the chosen adapter. If no model or reasoning recommendation exists, omit those options and use the worker default.
 
-Build the first `PROMPT_FILE` without printing its contents:
+Compose the first turn from `prompts/worker-system.md`, the pinned target metadata, and `prompts/brief.md`. With the native adapter, read those sources and pass the complete composition directly through the structured task field; do not create a prompt file or ask the worker to read one. With a CLI adapter, materialize the composition without printing it:
 
 ```bash
 cat prompts/worker-system.md > "$PROMPT_FILE"
@@ -63,7 +63,7 @@ printf '\nTarget: %s\nBASE: %s\nHEAD: %s\nScope: %s...%s\n' \
 cat prompts/brief.md >> "$PROMPT_FILE"
 ```
 
-The selected adapter pipes, attaches, or has the worker safely read this file during the first invocation. Retain the selected transport, harness, exact session identifier, and invocation reference. The brief must be exhaustive but concise and becomes the worker's reusable evidence map.
+The selected adapter receives either the direct native prompt or the CLI prompt file during the first invocation. Retain the selected transport, harness, exact session identifier, and invocation reference. The brief must be exhaustive but concise and becomes the worker's reusable evidence map.
 
 ## Interview
 
@@ -72,7 +72,7 @@ digraph Interview {
     rankdir=LR;
     node [shape=box];
 
-    prompt [label="ONE PROMPT FILE"];
+    prompt [label="ONE TURN PROMPT"];
     answer [label="TLDR ANSWER"];
     check [label="CHECK NEW EVIDENCE"];
     ledger [label="UPDATE LEDGER"];
@@ -85,7 +85,7 @@ digraph Interview {
 
 ### Static
 
-Read every Markdown file in `prompts/static/` in lexical order, one worker turn per file. The directory is the extensible source of static coverage. For the first turn only, prepend `prompts/interview-contract.md`; later turns contain only the prompt file. Send every turn through the selected transport to the same exact session, retrieve its result by invocation reference, verify new evidence, and update the ledger before advancing.
+Read every Markdown file in `prompts/static/` in lexical order, one worker turn per file. The directory is the extensible source of static coverage. For the first turn only, prepend `prompts/interview-contract.md`; later turns contain only that static prompt's content. With the native adapter, pass each complete turn directly as task text and never ask the worker to read the prompt file. With a CLI adapter, materialize the turn in `PROMPT_FILE`. Send every turn to the same exact session, retrieve its result by invocation reference, verify new evidence, and update the ledger before advancing.
 
 ### Skeptic
 
@@ -102,7 +102,7 @@ Compose `prompts/final-challenge.md` with a compact list of surviving candidates
 ## Token discipline
 
 - Reuse worker memory. Tell it to inspect again only for a missing citation, counterexample, or contradiction.
-- Keep static instructions in prompt files and pass files directly; never restate them in orchestration commands.
+- Keep static instructions in their source files. Pass their contents directly as native task text; materialize and pass prompt files only for CLI adapters. Never restate them in shell orchestration commands.
 - Read only newly cited lines and enough flow to route the next question. Cache verified ranges and never print or reread unchanged evidence.
 - Fully revalidate only surviving findings after the final challenge.
 - Do not narrate each turn or copy raw worker output into user updates.

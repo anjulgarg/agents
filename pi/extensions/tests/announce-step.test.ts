@@ -355,6 +355,144 @@ assert(
 	}),
 );
 
+const historicalWakeHarness = createHarness();
+const historicalWakeEntries = [
+	{
+		type: "custom_message",
+		customType: "subagent-wake",
+		content: "Subagent task done",
+		display: false,
+	},
+	{
+		type: "custom",
+		id: "old-noop-activity",
+		customType: ACTIVITY_ENTRY_TYPE,
+		data: {
+			phase: WORKING_PHASE,
+			durationMs: 3_000,
+			status: "completed",
+			receivedTokens: 15,
+			toolCount: 0,
+			changedFiles: [],
+		},
+	},
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: " (blank) " }],
+			stopReason: "stop",
+		},
+	},
+];
+const historicalWakeContext = createContext("tui", historicalWakeEntries);
+historicalWakeHarness.emit(
+	"session_start",
+	{ type: "session_start", reason: "resume" },
+	historicalWakeContext.context,
+);
+const hiddenHistoricalActivity = historicalWakeHarness.renderers
+	.get(ACTIVITY_ENTRY_TYPE)?.(historicalWakeEntries[1], {}, theme)
+	.render(100) as string[];
+assert(
+	"persisted no-op subagent wake receipts stay hidden after resume",
+	hiddenHistoricalActivity.length === 0,
+	JSON.stringify(hiddenHistoricalActivity),
+);
+
+const wakeHarness = createHarness();
+const wakeContext = createContext("tui", [
+	{
+		type: "custom_message",
+		customType: "subagent-wake",
+		content: "Subagent task done",
+		display: false,
+	},
+]);
+wakeHarness.emit("agent_start", { type: "agent_start" }, wakeContext.context);
+const noopWakeReplacement = wakeHarness.emit(
+	"message_end",
+	{
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: " (blank) " }],
+			stopReason: "stop",
+			usage: { output: 12 },
+		},
+	},
+	wakeContext.context,
+) as { message?: { content?: unknown[] } } | undefined;
+wakeHarness.emit("agent_settled", { type: "agent_settled" }, wakeContext.context);
+assert(
+	"no-op hidden subagent wake turns leave no durable Working receipt or blank sentinel",
+	wakeHarness.appended.length === 0 &&
+		noopWakeReplacement?.message?.content?.length === 0 &&
+		wakeContext.workingIndicators.length === 0 &&
+		wakeContext.workingMessages.every((message) => message === undefined),
+	JSON.stringify({
+		appended: wakeHarness.appended,
+		working: wakeContext.workingMessages,
+		indicators: wakeContext.workingIndicators,
+	}),
+);
+
+wakeHarness.emit("agent_start", { type: "agent_start" }, wakeContext.context);
+wakeHarness.emit(
+	"tool_execution_start",
+	{
+		type: "tool_execution_start",
+		toolCallId: "wake-read",
+		toolName: "read",
+		args: { path: "src/wake.ts" },
+	},
+	wakeContext.context,
+);
+wakeHarness.emit(
+	"message_end",
+	{
+		type: "message_end",
+		message: { role: "assistant", content: [], stopReason: "stop", usage: { output: 12 } },
+	},
+	wakeContext.context,
+);
+assert(
+	"hidden subagent wake turns retain receipts when they perform real tool work",
+	wakeHarness.appended.length === 1 && wakeHarness.appended[0]?.data.toolCount === 1,
+	JSON.stringify(wakeHarness.appended),
+);
+wakeHarness.emit("agent_settled", { type: "agent_settled" }, wakeContext.context);
+
+const lateWakeHarness = createHarness();
+const lateWakeEntries: unknown[] = [];
+const lateWakeContext = createContext("tui", lateWakeEntries);
+lateWakeHarness.emit("agent_start", { type: "agent_start" }, lateWakeContext.context);
+lateWakeEntries.push({
+	type: "custom_message",
+	customType: "subagent-wake",
+	content: "Subagent task done",
+	display: false,
+});
+const lateWakeReplacement = lateWakeHarness.emit(
+	"message_end",
+	{
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "(blank)" }],
+			stopReason: "stop",
+			usage: { output: 221 },
+		},
+	},
+	lateWakeContext.context,
+) as { message?: { content?: unknown[] } } | undefined;
+assert(
+	"message-end filtering removes no-op wake receipts when agent-start state was stale",
+	lateWakeHarness.appended.length === 0 && lateWakeReplacement?.message?.content?.length === 0,
+	JSON.stringify({ appended: lateWakeHarness.appended, replacement: lateWakeReplacement }),
+);
+lateWakeHarness.emit("agent_settled", { type: "agent_settled" }, lateWakeContext.context);
+
 const noToolHarness = createHarness();
 const noToolContext = createContext("tui");
 noToolHarness.emit("agent_start", { type: "agent_start" }, noToolContext.context);

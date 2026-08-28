@@ -168,13 +168,13 @@ async function concurrencyAndControl(dir: string, promptFile: string): Promise<v
 	]);
 
 	const deadline = Date.now() + TIMEOUT_MS;
-	while (wakes.length < 2 && Date.now() < deadline) {
+	while (wakes.length < 1 && Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 	}
 
 	check(
-		"two concurrent children both woke the parent",
-		wakes.length === 2,
+		"two concurrent children produced one terminal-run wake",
+		wakes.length === 1 && (wakes[0].match(/Subagent task/g) ?? []).length === 2,
 		`wakes=${wakes.length}`,
 	);
 	const alpha = String(supervisor.result(runId, taskIds[0]).output ?? "");

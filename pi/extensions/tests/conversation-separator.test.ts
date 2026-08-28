@@ -45,6 +45,7 @@ let idle = true;
 const context = {
 	mode: "tui",
 	isIdle: () => idle,
+	sessionManager: { getEntries: () => [] },
 };
 const settled = handlers.get("agent_settled");
 settled?.({}, context);
@@ -94,4 +95,48 @@ assert(
 	"non-interactive runs do not persist visual separators",
 	entries.length === 2,
 	JSON.stringify(entries),
+);
+
+const historicalEntries = [
+	{
+		type: "custom_message",
+		customType: "subagent-wake",
+		display: false,
+		content: "done",
+	},
+	{
+		type: "custom",
+		customType: "announce-step-activity",
+		data: { toolCount: 0 },
+	},
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: " (blank) " }],
+			stopReason: "stop",
+		},
+	},
+	{
+		type: "custom",
+		id: "noop-separator",
+		customType: CONVERSATION_SEPARATOR_ENTRY_TYPE,
+	},
+];
+const noopContext = {
+	...context,
+	sessionManager: { getEntries: () => historicalEntries },
+};
+handlers.get("session_start")?.({}, noopContext);
+const hiddenSeparator = renderer?.(
+	historicalEntries[3],
+	{},
+	{ fg: (_name: string, text: string) => text },
+).render(12) as string[];
+settled?.({}, noopContext);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert(
+	"no-op subagent wake turns hide historical separators and append no new separator",
+	hiddenSeparator.length === 0 && entries.length === 2,
+	JSON.stringify({ hiddenSeparator, entries }),
 );

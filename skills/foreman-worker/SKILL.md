@@ -39,7 +39,8 @@ The caller supplies:
 - `MODE`: `ephemeral` by default; use `persistent` only when explicitly requested.
 - `CWD`: trusted target checkout.
 - `ACCESS`: `read-only` or `write`, with review, analysis, and diagnosis defaulting to `read-only`.
-- `PROMPT_FILE`: a trusted local Markdown file containing the complete turn prompt.
+- `PROMPT`: the complete turn prompt. Native transports pass this text directly through their structured task field.
+- `PROMPT_FILE`: CLI-only trusted local Markdown materialization of `PROMPT`, created only after a CLI transport is selected.
 - Optional model and reasoning recommendation. Pass supported options when supplied; otherwise omit them and use the worker default.
 
 Return the selected transport and harness, mode, model if specified, stable session identifier for persistent work, latest invocation reference, response artifact or payload, exit or lifecycle state, and any capability limitation.
@@ -71,7 +72,7 @@ digraph SessionLifecycle {
     rankdir=LR;
     node [shape=box];
 
-    prompt [label="PROMPT FILE"];
+    prompt [label="TURN PROMPT"];
     start [label="START"];
     capture [label="CAPTURE RESPONSE"];
     id [label="CAPTURE SESSION ID"];
@@ -89,7 +90,8 @@ digraph SessionLifecycle {
 - A native transport may reap each invocation process while retaining one exact conversation. Worker identity is the stable session, not a permanently running process.
 - Never use ambiguous `continue latest` behavior when an explicit identifier is available.
 - Never switch transport, harness, checkout, access mode, model, reasoning, tools, or session midway through a persistent task.
-- Pass prompt files through stdin when documented. Otherwise attach the file or have the native worker read its trusted absolute path. Never print or interpolate its contents into an orchestration command or tool argument.
+- For native transports, pass `PROMPT` directly through the documented structured task field. Never create a prompt file merely for a native worker to read.
+- For CLI transports, materialize `PROMPT_FILE` only after transport selection and pass it through stdin or the adapter's documented attachment mechanism. Never print or interpolate its contents into shell syntax.
 
 ## Safety and verification
 

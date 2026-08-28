@@ -624,6 +624,7 @@ async function testChangesView(): Promise<void> {
 			initial.every((line) => visibleWidth(line) === width) &&
 			initialText.includes("src/file-0.ts") &&
 			initialText.includes("new value for src_file_0_ts") &&
+			initialText.includes("Esc/F5 close") &&
 			fetchCalls.some((call) => call.path === "src/file-0.ts" && call.mode === "collapsed"),
 		inspect({ initial, fetchCalls }),
 	);
@@ -857,8 +858,8 @@ async function testChangesView(): Promise<void> {
 		(empty.match(/No current Git changes\./g) ?? []).length === 1 && /No upstream/.test(empty),
 		empty,
 	);
-	emptyView.handleInput("\x1b");
-	assert("empty ChangesView Escape closes", emptyDone === 1, String(emptyDone));
+	emptyView.handleInput("\x1b[15~");
+	assert("empty ChangesView F5 closes", emptyDone === 1, String(emptyDone));
 	emptyView.dispose();
 }
 
@@ -954,13 +955,13 @@ async function testCommandHarness(): Promise<void> {
 					lines.length === 8 && lines.every((line: string) => visibleWidth(line) === 40),
 					inspect(lines),
 				);
-				component.handleInput("\x1b");
+				component.handleInput("\x1b[15~");
 				component.dispose?.();
 			},
 		},
 	});
 	assert(
-		"/changes opens fullscreen custom UI and Escape closes it",
+		"/changes opens fullscreen custom UI and F5 closes it",
 		customCalls === 1 && closed === 1 && execCalls > 0,
 		inspect({ customCalls, closed, execCalls }),
 	);

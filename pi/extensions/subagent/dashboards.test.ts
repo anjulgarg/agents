@@ -318,7 +318,7 @@ function testSubagentDashboard(): void {
 		"subagent thread: loader and identity match the parent activity accent",
 		coloredTitle.includes("\x1b[35m\x1b[1m◐") &&
 			coloredTitle.includes("\x1b[35m\x1b[1mSubagent 1/1") &&
-			coloredTitle.includes("\x1b[38;5;183m\x1b[1mgpt-5.6 luna low") &&
+			coloredTitle.includes("\x1b[38;5;183m\x1b[1mopenai-codex/gpt-5.6 luna low") &&
 			coloredTitle.includes("\x1b[38;5;117m\x1b[1mcontext unavailable") &&
 			coloredTitle.includes("\x1b[38;5;222m\x1b[1mephemeral") &&
 			coloredTitle.includes("\x1b[38;5;245m · "),
@@ -793,7 +793,7 @@ function testSubagentDashboard(): void {
 	const wideTitle = stripAnsi(wideLines[0] ?? "");
 	check(
 		"thread @120: exact semantic title",
-		wideTitle.includes("✓ Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent"),
+		wideTitle.includes("✓ Subagent 1/1 · openai-codex/gpt-5.6 luna max · 168k/258k · persistent"),
 		JSON.stringify(wideTitle),
 	);
 	check(
@@ -810,7 +810,7 @@ function testSubagentDashboard(): void {
 		failedTitle.includes("✗ Subagent 1/1") && !failedTitle.includes("· ✗"),
 		JSON.stringify(failedTitle),
 	);
-	check("thread @120: provider prefix absent", !wideTitle.includes("openai-codex/"));
+	check("thread @120: provider prefix is visible", wideTitle.includes("openai-codex/"));
 	check("thread @120: no delegation label", !wideTitle.includes("delegation"));
 	check("thread @120: no RUNNING status word", !wideTitle.includes("RUNNING"));
 	check("thread @120: no legacy 'of' position", !wideTitle.includes("Subagent 1 of 1"));
@@ -828,12 +828,12 @@ function testSubagentDashboard(): void {
 	);
 
 	// ---------- thread: narrow essentials and truthful fallback ----------
-	for (const width of [40]) {
+	for (const width of [60]) {
 		const lines = makeThread([persistentTask]).render(width);
 		const title = stripAnsi(lines[0] ?? "");
 		check(
-			`thread @${width}: prefixed icon, position, and model stay in title`,
-			title.includes(`✓ Subagent 1/1 · gpt-5.6 luna max`),
+			`thread @${width}: prefixed icon, position, and provider-qualified model stay in title`,
+			title.includes(`✓ Subagent 1/1 · openai-codex/gpt-5.6 luna max`),
 			JSON.stringify(title),
 		);
 		check(
@@ -858,8 +858,8 @@ function testSubagentDashboard(): void {
 		const output = lines.map(stripAnsi).join("\n");
 		check(
 			`thread @${width}: truncated model stays after prefixed status and position`,
-			title.includes("✓ Subagent 1/1 · gpt-5.…") &&
-				!title.includes("gpt-5.6 luna max") &&
+			title.includes("✓ Subagent 1/1 · openai…") &&
+				!title.includes("openai-codex/gpt-5.6 luna max") &&
 				!title.includes("168k/258k") &&
 				!title.includes("persistent"),
 			JSON.stringify(title),
@@ -877,11 +877,12 @@ function testSubagentDashboard(): void {
 	const tinyThreadLines = belowThread.render(18);
 	const tinyThreadTitle = stripAnsi(tinyThreadLines[0] ?? "");
 	const tinyThreadOutput = tinyThreadLines.map(stripAnsi).join("\n");
+	const tinyThreadCompactOutput = tinyThreadOutput.replace(/\s/g, "");
 	check(
 		"thread: tiny widths keep prefixed icon and position with model in metadata",
 		tinyThreadTitle.includes("✓ Subagent 1/1") &&
-			!tinyThreadTitle.includes("gpt-5.6 luna max") &&
-			tinyThreadOutput.includes("gpt-5.6 luna max") &&
+			!tinyThreadTitle.includes("openai-codex/gpt-5.6 luna max") &&
+			tinyThreadCompactOutput.includes("openai-codex/gpt-5.6lunamax") &&
 			tinyThreadLines.every((line: string) => visibleWidth(line) === 18),
 		JSON.stringify(tinyThreadTitle),
 	);
@@ -1438,17 +1439,17 @@ function testSubagentDashboard(): void {
 
 	// ---------- pure formatters ----------
 	check(
-		"formatReadableModel strips provider and appends thinking",
-		formatReadableModel("openai-codex/gpt-5.6-luna", "max") === "gpt-5.6 luna max",
+		"formatReadableModel keeps provider and appends thinking",
+		formatReadableModel("openai-codex/gpt-5.6-luna", "max") === "openai-codex/gpt-5.6 luna max",
 		formatReadableModel("openai-codex/gpt-5.6-luna", "max"),
 	);
 	check(
 		"formatReadableModel keeps digit dashes",
-		formatReadableModel("openai/gpt-4o", "low") === "gpt-4o low",
+		formatReadableModel("openai/gpt-4o", "low") === "openai/gpt-4o low",
 	);
 	check(
 		"formatReadableModel normalizes non-gpt ids",
-		formatReadableModel("anthropic/claude-sonnet-4-5") === "claude sonnet-4-5",
+		formatReadableModel("anthropic/claude-sonnet-4-5") === "anthropic/claude sonnet-4-5",
 	);
 	check(
 		"formatContextLabel renders known occupancy",
@@ -1469,19 +1470,19 @@ function testSubagentDashboard(): void {
 	);
 	const fiveSegments = [
 		{ text: "✓ Subagent 1/1", fixed: true },
-		{ text: "gpt-5.6 luna max", essential: true },
+		{ text: "openai-codex/gpt-5.6 luna max", essential: true },
 		{ text: "168k/258k" },
 		{ text: "persistent" },
 	];
 	check(
 		"selectTitleSegments keeps the full sequence when it fits",
 		selectTitleSegments(120, fiveSegments).selected.join(" · ") ===
-			"✓ Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent",
+			"✓ Subagent 1/1 · openai-codex/gpt-5.6 luna max · 168k/258k · persistent",
 	);
-	const narrowSegments = selectTitleSegments(40, fiveSegments);
+	const narrowSegments = selectTitleSegments(50, fiveSegments);
 	check(
 		"selectTitleSegments narrows to prefixed icon, position, and model",
-		narrowSegments.selected.join(" · ") === "✓ Subagent 1/1 · gpt-5.6 luna max",
+		narrowSegments.selected.join(" · ") === "✓ Subagent 1/1 · openai-codex/gpt-5.6 luna max",
 		JSON.stringify(narrowSegments.selected),
 	);
 	check(
@@ -1493,7 +1494,7 @@ function testSubagentDashboard(): void {
 	const truncatedSegments = selectTitleSegments(24, fiveSegments);
 	check(
 		"selectTitleSegments truncates the model below the essentials threshold",
-		truncatedSegments.selected.map(stripAnsi).join(" · ") === "✓ Subagent 1/1 · gpt-5.…" &&
+		truncatedSegments.selected.map(stripAnsi).join(" · ") === "✓ Subagent 1/1 · openai…" &&
 			truncatedSegments.dropped.map((segment: { text: string }) => segment.text).join(",") ===
 				"168k/258k,persistent",
 		JSON.stringify(truncatedSegments.selected),

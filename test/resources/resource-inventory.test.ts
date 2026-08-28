@@ -47,9 +47,17 @@ describe("approved first-party inventory", () => {
 			"utf8",
 		);
 		const review = await readFile(join(root, "skills", "foreman-review", "SKILL.md"), "utf8");
+		const codex = await readFile(
+			join(root, "skills", "foreman-worker", "references", "codex.md"),
+			"utf8",
+		);
+		const orchestrate = await readFile(join(root, "pi", "prompts", "orchestrate.md"), "utf8");
 
 		expect(worker).toContain("`TRANSPORT`: `auto` by default");
 		expect(worker).toContain("references/native-subagent.md");
+		expect(worker).toContain("`PROMPT`: the complete turn prompt");
+		expect(worker).toContain("`PROMPT_FILE`: CLI-only");
+		expect(worker).toContain("Never create a prompt file merely for a native worker to read");
 		expect(worker).toContain("A failed persistent resume never creates a replacement worker");
 		expect(worker).toContain("fall back only when no child session or invocation was created");
 		expect(worker).toContain(
@@ -62,10 +70,16 @@ describe("approved first-party inventory", () => {
 			"persistent, resumable, long-running child tasks or subagents that return each turn's result",
 		);
 		expect(native).toContain("If it is absent or undocumented, this adapter is ineligible");
+		expect(native).toContain("Pass the complete `PROMPT` directly");
+		expect(native).toContain("Do not create a prompt or system-prompt file");
+		expect(native).not.toContain("PROMPT_FILE");
 		expect(native).not.toContain("`subagent_resume`");
 		expect(native).not.toContain("`subagent_result`");
 		expect(review).toContain("`TRANSPORT=auto`");
 		expect(review).toContain("same exact session");
+		expect(review).toContain("pass the complete composition directly");
+		expect(review).toContain("do not create a prompt file or ask the worker to read one");
+		expect(review).toContain("With a CLI adapter, materialize");
 		expect(review).toContain("transport, harness, and session ID");
 		expect(review).toContain(
 			"persistent, resumable, long-running child tasks or subagents that return each turn's result",
@@ -74,5 +88,8 @@ describe("approved first-party inventory", () => {
 			"ask the user which reviewed CLI to use and wait for explicit consent",
 		);
 		expect(review).not.toContain("`subagent_resume`");
+		expect(codex).toContain('< "$PROMPT_FILE"');
+		expect(orchestrate).toContain("put each complete delegation brief directly in `task`");
+		expect(orchestrate).toContain("Never create a prompt or system-prompt file");
 	});
 });

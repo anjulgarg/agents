@@ -1145,7 +1145,7 @@ const VIEW_HINTS = [
 	{ key: "Ctrl+O", label: "full file" },
 	{ key: "E", label: "edit" },
 	{ key: "R", label: "refresh" },
-	{ key: "Esc", label: "close" },
+	{ key: "Esc/F5", label: "close" },
 ] as const;
 
 interface DiffCacheEntry {
@@ -1605,7 +1605,7 @@ export class ChangesView implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, "escape")) {
+		if (matchesKey(data, "escape") || matchesKey(data, "f5")) {
 			this.close();
 			return;
 		}

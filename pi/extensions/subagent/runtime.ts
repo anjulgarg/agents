@@ -14,6 +14,7 @@ import {
 
 import { killSubagentRuns } from "./control.ts";
 
+import { SUBAGENT_WAKE_MESSAGE_TYPE } from "./contracts.ts";
 import type {
 	ContextUsageSnapshot,
 	Handoff,
@@ -65,7 +66,6 @@ const execFileAsync = promisify(execFile);
 const PERSIST_TYPE = "subagent-state";
 const TERMINAL_TRANSCRIPT_TYPE = "subagent-transcript";
 const TERMINAL_TRANSCRIPT_VERSION = 1;
-const WAKE_MESSAGE_TYPE = "subagent-wake";
 const ACTIVITY_SECTION = "subagents";
 const ACTIVITY_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 const ACTIVITY_FRAME_INTERVAL_MS = 360;
@@ -376,7 +376,7 @@ export class SubagentRuntime {
 			}
 			this.pi.sendMessage(
 				{
-					customType: WAKE_MESSAGE_TYPE,
+					customType: SUBAGENT_WAKE_MESSAGE_TYPE,
 					content: `${INTERNAL_WAKE_GUIDANCE}\n\nEvent:\n${content}`,
 					display: false,
 				},

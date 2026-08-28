@@ -17,7 +17,12 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { ExpandableToolRender, TOOL_CHAT_PADDING } from "../lib/tui/index.ts";
 import { Type } from "typebox";
 
-import { SUBAGENT_MODES, THINKING_LEVELS, WORKSPACE_MODES } from "./contracts.ts";
+import {
+	MAX_PARALLEL_SUBAGENTS,
+	SUBAGENT_MODES,
+	THINKING_LEVELS,
+	WORKSPACE_MODES,
+} from "./contracts.ts";
 import type {
 	Handoff,
 	ResultRef,
@@ -43,16 +48,17 @@ import {
 } from "./supervisor.ts";
 
 const execFileAsync = promisify(execFile);
-const MAX_TASKS = 8;
+const MAX_TASKS = MAX_PARALLEL_SUBAGENTS;
 const MAX_HANDOFFS = 64;
 const MAX_HANDOFF_BYTES = 50 * 1024;
 const MAX_TOTAL_HANDOFF_BYTES = 200 * 1024;
 export const CHAT_PADDING = TOOL_CHAT_PADDING;
 export const SELF_CONTAINED_TASK_GUIDANCE =
-	"Subagents see only your task text, so make it self-contained: objective, relevant background and decisions, " +
-	"constraints, expected deliverable, and verification criteria. Cite every referenced artifact by exact path and " +
-	"name, absolute for ignored or untracked files; embed content when cheaper; never expect discovery. Pass " +
-	"prerequisite subagent output via inputFrom.";
+	"Subagents see only your task text, so put the complete delegation brief directly in task: objective, relevant " +
+	"background and decisions, constraints, expected deliverable, and verification criteria. Never create a prompt " +
+	"or system-prompt file merely for a subagent to read. Cite existing source artifacts by exact path and name, " +
+	"absolute for ignored or untracked files; embed content when cheaper; never expect discovery. Pass prerequisite " +
+	"subagent output via inputFrom.";
 export const PARALLEL_FILE_OWNERSHIP_GUIDANCE =
 	"For parallel tasks in the shared workspace, assign each task an explicit, exclusive set of files it may " +
 	"modify before spawning. Never let parallel tasks discover or choose potentially overlapping mutation " +

@@ -70,14 +70,19 @@ const GROUPED_TOOL_NAMES = ["read", "find", "grep", "ls", "edit"];
 const TITLE_SEPARATOR = " · ";
 
 /**
- * Display-only model label: the provider prefix is removed and dashes before a
- * non-digit become spaces, so `openai-codex/gpt-5.6-luna` reads as
- * `gpt-5.6 luna`. Thinking effort is appended. Stored identity is untouched.
+ * Display-only provider-qualified model label. Dashes before a non-digit in the
+ * model ID become spaces, so `openai-codex/gpt-5.6-luna` reads as
+ * `openai-codex/gpt-5.6 luna`. Thinking effort is appended. Stored identity is untouched.
  */
 export function formatReadableModel(model: string, thinking?: string): string {
-	const id = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
-	const readable = id.replace(/-([^\d])/g, " $1").trim();
-	const base = readable || model || "unknown model";
+	const separator = model.indexOf("/");
+	const provider = separator >= 0 ? model.slice(0, separator).trim() : "";
+	const id = separator >= 0 ? model.slice(separator + 1) : model;
+	const readableId = id.replace(/-([^\d])/g, " $1").trim();
+	const base =
+		provider && readableId
+			? `${provider}/${readableId}`
+			: provider || readableId || model || "unknown model";
 	return thinking ? `${base} ${thinking}` : base;
 }
 

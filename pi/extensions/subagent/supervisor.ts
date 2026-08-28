@@ -10,6 +10,7 @@ import {
 	type RpcEvent,
 } from "./rpc-client.ts";
 import {
+	MAX_PARALLEL_SUBAGENTS,
 	MAX_SUBAGENT_TIMEOUT_MS,
 	type ContextUsageSnapshot,
 	type PersistentChildSession,
@@ -275,7 +276,7 @@ export interface SupervisorOptions {
 	/** Persist terminal/reaping transitions independently from wake delivery. */
 	onTerminalStateChange?: () => void;
 	defaultTools?: string[];
-	/** Hard cap across all runs owned by this supervisor. Default 8. */
+	/** Hard cap across all runs owned by this supervisor. Defaults to MAX_PARALLEL_SUBAGENTS. */
 	maxActiveChildren?: number;
 	/** Optional safety cap after the child Pi retry policy is exhausted. */
 	maxTransientRetries?: number;
@@ -294,7 +295,7 @@ export const DEFAULT_READ_ONLY_TIMEOUT_MS = 15 * 60 * 1000;
 export const DEFAULT_WRITE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEFAULT_CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
 const DEFAULT_CLEANUP_TICK_MS = 30_000;
-const DEFAULT_MAX_ACTIVE_CHILDREN = 8;
+const DEFAULT_MAX_ACTIVE_CHILDREN = MAX_PARALLEL_SUBAGENTS;
 const DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS = 2_000;
 const DEFAULT_TRANSIENT_RETRY_WINDOW_MS = 60_000;
 const MAX_TRANSIENT_RETRY_DELAY_MS = 30_000;
@@ -569,8 +570,8 @@ export class Supervisor {
 			this.inSettleCheck = false;
 		}
 
-		// Recheck: completion or checkpoint delivery can race the check above.
-		if (this.unreapedTasks().length > 0 || this.pendingCheckpointTasks().length > 0) {
+		// Recheck: terminal-run completion batches or checkpoints can race the check above.
+		if (this.wakeableCompletions().length > 0 || this.pendingCheckpointTasks().length > 0) {
 			this.parentWaiting = true;
 			this.dispatchWake();
 			return;
@@ -883,12 +884,15 @@ export class Supervisor {
 		return false;
 	}
 
-	private unreapedTasks(): TaskState[] {
+	/** Batch successful completions until their run settles; surface failures immediately. */
+	private wakeableCompletions(): TaskState[] {
 		const out: TaskState[] = [];
 		for (const run of this.runs.values()) {
-			for (const task of run.tasks) {
-				if (task.unreaped) out.push(task);
-			}
+			const pending = run.tasks.filter((task) => task.unreaped);
+			if (pending.length === 0) continue;
+			const runSettled = run.tasks.every((task) => isTerminalStatus(task.status));
+			const hasFailure = pending.some((task) => task.status === "failed");
+			if (runSettled || hasFailure) out.push(...pending);
 		}
 		return out;
 	}
@@ -1060,7 +1064,7 @@ export class Supervisor {
 
 	private dispatchWake(deliverAsOverride?: "steer" | "followUp"): void {
 		if (this.disposed || this.wakeInFlight) return;
-		const completions = this.unreapedTasks();
+		const completions = this.wakeableCompletions();
 		for (const task of completions) this.cancelCheckpoint(task.taskId);
 		const completionIds = new Set(completions.map((task) => task.taskId));
 		const checkpointTasks = this.pendingCheckpointTasks().filter(

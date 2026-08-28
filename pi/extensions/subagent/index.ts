@@ -3,6 +3,7 @@ import { Text } from "@earendil-works/pi-tui";
 
 import type { Model } from "@earendil-works/pi-ai";
 import { bindSubagentControl } from "./control.ts";
+import { SUBAGENT_WAKE_MESSAGE_TYPE } from "./contracts.ts";
 
 import { SubagentRuntime, type ProcAccess } from "./runtime.ts";
 export {
@@ -48,8 +49,6 @@ export {
 } from "./runtime.ts";
 export { formatStatusReport, formatStatusSummary, formatTaskWithHandoffs } from "./tools.ts";
 
-const WAKE_MESSAGE_TYPE = "subagent-wake";
-
 export interface SubagentExtensionOptions {
 	/** Inject a temporary persistent runtime root in tests. */
 	persistentStateRoot?: string;
@@ -66,7 +65,7 @@ export function registerSubagentExtension(
 	pi: ExtensionAPI,
 	options: SubagentExtensionOptions = {},
 ): Supervisor {
-	pi.registerMessageRenderer(WAKE_MESSAGE_TYPE, (message, _options, theme) => {
+	pi.registerMessageRenderer(SUBAGENT_WAKE_MESSAGE_TYPE, (message, _options, theme) => {
 		const content =
 			typeof message.content === "string"
 				? message.content

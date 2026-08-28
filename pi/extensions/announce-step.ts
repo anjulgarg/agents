@@ -8,6 +8,12 @@ import {
 	PROCESS_ANIMATION_FRAME_INTERVAL_MS,
 	subscribeProcessAnimation,
 } from "./lib/animation-coordinator.ts";
+import {
+	isHiddenSubagentWakeTurn,
+	isNoopAssistantEntry,
+	isNoopSubagentWakeAssistant,
+	sessionEntries,
+} from "./subagent/wake-turn.ts";
 
 export const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const WORKING_FRAME_INTERVAL_MS = PROCESS_ANIMATION_FRAME_INTERVAL_MS;
@@ -239,13 +245,24 @@ function isTerminalAssistantMessage(message: unknown): boolean {
 	return message.stopReason === "stop" || message.stopReason === "length";
 }
 
-function sessionEntries(ctx: ExtensionContext): unknown[] {
-	const manager = ctx.sessionManager as unknown as {
-		getBranch?: () => unknown[];
-		getEntries?: () => unknown[];
-	};
-	const entries = manager.getBranch?.() ?? manager.getEntries?.() ?? [];
-	return Array.isArray(entries) ? entries : [];
+/** Hide legacy receipts already persisted immediately around a no-op hidden wake turn. */
+function hiddenWakeActivityIds(entries: unknown[]): Set<string> {
+	const hidden = new Set<string>();
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!isRecord(entry) || entry.type !== "custom" || entry.customType !== ACTIVITY_ENTRY_TYPE)
+			continue;
+		const data = activityEntryData(entry);
+		if (!data || data.toolCount !== 0 || typeof entry.id !== "string") continue;
+
+		for (let after = index + 1; after < entries.length; after++) {
+			const candidate = entries[after];
+			if (!isRecord(candidate) || candidate.type === "custom") continue;
+			if (isNoopSubagentWakeAssistant(entries, after)) hidden.add(entry.id);
+			break;
+		}
+	}
+	return hidden;
 }
 
 function reconcileLegacyEntries(ctx: ExtensionContext): void {
@@ -277,6 +294,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 	let unsubscribeWorkingAnimation: (() => void) | undefined;
 	let workingFrame = 0;
 	let workingContext: ExtensionContext | undefined;
+	let hiddenActivityIds = new Set<string>();
 
 	const stopSliceTimer = (): void => {
 		if (sliceTimer !== undefined) clearInterval(sliceTimer);
@@ -395,6 +413,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		if (!data) return undefined;
 		return {
 			render(width: number): string[] {
+				if (typeof entry.id === "string" && hiddenActivityIds.has(entry.id)) return [];
 				return new Text(
 					theme.fg("muted", formatSlice(data.phase, data.durationMs, data.receivedTokens, data)),
 					CHAT_PADDING,
@@ -433,6 +452,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", (_event, ctx) => {
 		workingContext = ctx;
+		if (!activeRun && isHiddenSubagentWakeTurn(ctx)) return;
 		ensureRun(Date.now());
 		updateWorkingLine();
 		startSliceTimer();
@@ -450,7 +470,18 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("message_end", (event, ctx) => {
-		if (!activeRun || event.message.role !== "assistant") return;
+		if (event.message.role !== "assistant") return;
+		const noOpHiddenWake =
+			ctx &&
+			isTerminalAssistantMessage(event.message) &&
+			(!activeRun || activeRun.toolCount === 0) &&
+			isHiddenSubagentWakeTurn(ctx) &&
+			isNoopAssistantEntry({ type: "message", message: event.message });
+		if (noOpHiddenWake) {
+			if (activeRun) activeRun.receiptAppended = true;
+			return { message: { ...event.message, content: [] } };
+		}
+		if (!activeRun) return;
 		if (ctx) workingContext = ctx;
 		const output = messageOutputTokens(event.message);
 		activeRun.receivedTokens +=
@@ -478,6 +509,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		// direct replacement event safe and prevents a stale timer from surviving.
 		if (activeRun || sliceTimer !== undefined || unsubscribeWorkingAnimation || workingContext)
 			clearRuntime();
+		hiddenActivityIds = hiddenWakeActivityIds(sessionEntries(ctx));
 		reconcileLegacyEntries(ctx);
 	});
 

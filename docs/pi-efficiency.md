@@ -75,8 +75,11 @@ the stack:
 Long-running work displays a fixed `Working` status with bounded elapsed time and activity counts
 (tools, changed files, received tokens). It is passive: no progress tool call, prompt instruction,
 follow-up message, or additional model turn is created. Completed activity is stored as a muted,
-context-free receipt immediately before the final assistant message, never after it. Failure labels
-and error coloring are omitted. Historical legacy announcement receipts remain readable.
+context-free receipt immediately before the final assistant message, never after it. A parent turn
+triggered only by a hidden subagent completion wake does not create a receipt unless it performs tool
+work. New no-op wake responses suppress the `(blank)` sentinel; persisted no-op wake receipts and their
+separators stay hidden when older sessions render. Failure labels and error coloring are omitted. Other
+historical legacy announcement receipts remain readable.
 
 ## Bottom activity panel
 

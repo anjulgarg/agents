@@ -15,6 +15,12 @@ export const SUBAGENT_MODES = ["ephemeral", "persistent"] as const;
 
 export type SubagentMode = (typeof SUBAGENT_MODES)[number];
 
+/** Hidden custom-message type used to wake the parent after child activity. */
+export const SUBAGENT_WAKE_MESSAGE_TYPE = "subagent-wake";
+
+/** Maximum number of child agents that may execute simultaneously. */
+export const MAX_PARALLEL_SUBAGENTS = 10;
+
 /** Maximum supported wall-clock timeout for one child invocation. */
 export const MAX_SUBAGENT_TIMEOUT_MS = 60 * 60 * 1000;
 

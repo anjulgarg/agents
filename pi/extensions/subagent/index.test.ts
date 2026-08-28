@@ -405,10 +405,11 @@ async function testPromptFreeStableSubagentMetadata(): Promise<void> {
 		);
 		const criticalContractTexts = [
 			"see only your task text",
-			"make it self-contained",
+			"put the complete delegation brief directly in task",
+			"Never create a prompt or system-prompt file",
 			"relevant background and decisions",
 			"verification criteria",
-			"Cite every referenced artifact by exact path and",
+			"Cite existing source artifacts by exact path and name",
 			"never expect discovery",
 			"explicit, exclusive set of files",
 			"potentially overlapping mutation targets",
@@ -2765,6 +2766,47 @@ async function testPublicConcurrencyLimit(): Promise<void> {
 	}
 }
 
+async function testPublicMaximumConcurrency(): Promise<void> {
+	const name = "k. public concurrency accepts 10 subagents and rejects 11";
+	const pi = new FakePi();
+	const children: FakeChild[] = [];
+	const supervisor = install(pi, children);
+	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-test-"));
+	try {
+		const tasks = Array.from({ length: 10 }, (_, index) => ({ task: `task ${index + 1}` }));
+		const result = await callTool(
+			pi,
+			"subagent",
+			{ tasks, maxConcurrency: 10 },
+			fakeCtx({ cwd: promptRoot }),
+		);
+		let rejection = "";
+		try {
+			await callTool(
+				pi,
+				"subagent",
+				{ tasks: [...tasks, { task: "task 11" }], maxConcurrency: 10 },
+				fakeCtx({ cwd: promptRoot }),
+			);
+		} catch (error) {
+			rejection = error instanceof Error ? error.message : String(error);
+		}
+		assert(
+			name,
+			result.details.results.length === 10 &&
+				children.length === 10 &&
+				supervisor.runs
+					.get(result.details.runId)
+					?.tasks.every((task) => task.status === "running") === true &&
+				rejection.includes("At most 10 subagents are allowed"),
+			`children=${children.length} rejection=${JSON.stringify(rejection)}`,
+		);
+	} finally {
+		supervisor.dispose();
+		await fs.promises.rm(promptRoot, { recursive: true, force: true });
+	}
+}
+
 async function testContextTelemetryEphemeralProjection(): Promise<void> {
 	const name = "l. ephemeral tasks project the latest bounded context snapshot";
 	const pi = new FakePi();
@@ -2986,6 +3028,7 @@ async function main(): Promise<void> {
 	await testAbortCallsKillAll();
 	await testPidSweepSkipsInnocent();
 	await testPublicConcurrencyLimit();
+	await testPublicMaximumConcurrency();
 	await testPersistentPublicControls();
 	await testPersistentWorktreeRetention();
 	await testPersistentCleanupRetry();

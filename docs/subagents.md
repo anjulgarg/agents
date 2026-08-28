@@ -8,9 +8,12 @@ completion: each is a separate provider request with its own prompt and cache be
 Spawn and resume return terminating tool results. Pi therefore skips the routine post-tool parent model
 call, reaches `agent_settled`, and waits for an extension wake instead of giving the parent an opportunity
 to poll. Independent parent tool work may be issued in the same tool-call batch; Pi only terminates a
-batch when every result in it is terminating. Completion and failure wake immediately. Active invocations
-also emit one bounded progress checkpoint every two minutes; an outstanding checkpoint is deduplicated,
-and completion cancels its timer.
+batch when every result in it is terminating. Failures wake immediately. Successful tasks from one run
+are combined into a single wake after that run becomes terminal, so staggered parallel completions do not
+create repeated no-op parent turns. Active invocations also emit one bounded progress checkpoint every two
+minutes; an outstanding checkpoint is deduplicated, and completion cancels its timer. New no-op wake
+responses suppress the `(blank)` sentinel, while historical no-op turns render without their standalone
+`Working...` receipt and separator artifacts.
 
 ## Ephemeral and persistent modes
 
@@ -21,6 +24,8 @@ Ephemeral mode is the default. It starts a sessionless one-shot child and does n
 	"task": "Inspect the parser and report likely defects"
 }
 ```
+
+The `task` field carries the complete parent-authored delegation brief directly. Parents must not create prompt or system-prompt files merely for native children to read. Existing files should be referenced only when they are source material to inspect. The extension retains ownership of its fixed child safety prompt and passes that prompt through an internal mode-`0600` temporary file required by Pi's `--append-system-prompt`; this is not a parent-facing handoff contract.
 
 Choose persistent mode only when later prompts must continue the exact child conversation.
 
@@ -33,7 +38,7 @@ Choose persistent mode only when later prompts must continue the exact child con
 
 The spawn result includes a stable `sessionId`. Every invocation still receives a new run ID and task ID.
 
-Persistent mode also works in parallel calls. A task-level `mode` overrides the top-level default, so one call may contain persistent and ephemeral tasks.
+Persistent mode also works in parallel calls. A task-level `mode` overrides the top-level default, so one call may contain persistent and ephemeral tasks. One call accepts up to 10 tasks, and the supervisor runs at most 10 child agents concurrently across all active runs. Set `maxConcurrency` lower to queue excess tasks intentionally.
 
 ## Resume and management
 
@@ -94,7 +99,7 @@ The F6 thread view is a strictly read-only viewer. It renders the child's active
 
 ### Header
 
-The header is provider-free and responsive. The wide title follows `✓ Subagent 1/1 · gpt-5.6 luna max · 168k/258k · persistent`: an icon-only status directly prefixes the subagent position without a dot separator, followed by a readable model label with thinking effort appended, true context occupancy, and the mode. The running loader and subagent identity share the parent activity indicator's red pastel; model, context, mode, and separators use distinct colors from the parent status-line palette. Provider prefixes are stripped and model IDs are normalized for reading; the stored model identity is never changed. Status uses the same semantic accent as the parent activity indicator while running, such as `◒`, then failure or success coloring for `✗` or `✓`; status words never appear next to the icon in the title.
+The header is provider-qualified and responsive. The wide title follows `✓ Subagent 1/1 · openai-codex/gpt-5.6 luna max · 168k/258k · persistent`: an icon-only status directly prefixes the subagent position without a dot separator, followed by the full provider/model label with thinking effort appended, true context occupancy, and the mode. The running loader and subagent identity share the parent activity indicator's red pastel; model, context, mode, and separators use distinct colors from the parent status-line palette. Provider prefixes remain visible while model IDs are normalized for reading; the stored model identity is never changed. Status uses the same semantic accent as the parent activity indicator while running, such as `◒`, then failure or success coloring for `✗` or `✓`; status words never appear next to the icon in the title.
 
 At narrow widths the title keeps the prefixed status and subagent position plus the readable model, and moves context, mode, and compact cumulative usage into wrapped secondary metadata together with token speed. Cumulative usage updates after each completed assistant turn, moves from the transcript bottom into this metadata, and renders like `↻ 18 · ⇅ 317k · $0.0045`; the standard Unicode `⇅` marks combined input/output/cache token traffic, and larger totals use compact lowercase units such as `⇅ 5.5m`. Persistent session IDs are hidden from the visual UI and remain programmatic control identifiers, not visual metadata. Shared workspace text is hidden. Tasks with verified worktree branch metadata show the real branch as `󰙅 <branch>` followed by compact usage; the marker is omitted when no actual branch metadata exists. The complete branch is shown whenever it fits, and only the branch is truncated with `…` when needed to preserve usage. Secondary metadata wraps to the exact terminal width. Static child `mcp` status is filtered while meaningful custom statuses remain.
 
