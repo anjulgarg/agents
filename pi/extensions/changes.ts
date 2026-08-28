@@ -70,10 +70,17 @@ export interface ChangedFile {
 	isSubmodule: boolean;
 }
 
+export interface ChangeLineStats {
+	additions: number;
+	deletions: number;
+	available: boolean;
+}
+
 export interface ChangesSnapshot {
 	root: string;
 	files: ChangedFile[];
 	fingerprint: string;
+	lineStats: ChangeLineStats;
 	upstream?: string;
 	unpushedAvailable: boolean;
 }
@@ -87,7 +94,7 @@ export type DiffMode = "collapsed" | "full";
 
 export interface FileDiff {
 	kind: "text" | "binary" | "submodule" | "empty" | "unavailable";
-	/** Lines are already styled by Pi's standard edit-tool diff renderer. */
+	/** Lines are already styled by the changes view's pastel diff renderer. */
 	lines: string[];
 	note?: string;
 }
@@ -534,7 +541,161 @@ function enrichSubmodules(
 	});
 }
 
-/** Collect only the Git file inventory. Diff text is loaded separately by the view. */
+function parseShortStat(output: string): Pick<ChangeLineStats, "additions" | "deletions"> {
+	const insertions = /(?:^|,\s*)(\d+) insertions?\(\+\)/.exec(output);
+	const deletions = /(?:^|,\s*)(\d+) deletions?\(-\)/.exec(output);
+	return {
+		additions: insertions ? Number(insertions[1]) : 0,
+		deletions: deletions ? Number(deletions[1]) : 0,
+	};
+}
+
+function lineStatPathBatches(files: readonly ChangedFile[]): string[][] {
+	const batches: string[][] = [];
+	let batch: string[] = [];
+	let batchBytes = 0;
+	const flush = (): void => {
+		if (batch.length > 0) batches.push(batch);
+		batch = [];
+		batchBytes = 0;
+	};
+	for (const file of files) {
+		const names = [...new Set(pathNames(file))];
+		const namesBytes = names.reduce(
+			(total, path) => total + Buffer.byteLength(path, "utf8") + 1,
+			0,
+		);
+		if (batch.length > 0 && batchBytes + namesBytes > MAX_COMMAND_ARGUMENT_BYTES) flush();
+		batch.push(...names);
+		batchBytes += namesBytes;
+	}
+	flush();
+	return batches;
+}
+
+function markStatsUnavailable(error: unknown, signal?: AbortSignal): void {
+	if (signal?.aborted || isAbortError(error)) throwIfAborted(signal);
+}
+
+async function collectLineStats(
+	exec: GitExec,
+	root: string,
+	files: readonly ChangedFile[],
+	upstream: string | undefined,
+	signal?: AbortSignal,
+): Promise<ChangeLineStats> {
+	let additions = 0;
+	let deletions = 0;
+	let available = true;
+	const options = { cwd: root, timeout: GIT_TIMEOUT_MS };
+	const trackedFiles = files.filter(
+		(file) => file.kind !== "untracked" && file.workingStatus?.trim() !== "??" && !file.isSubmodule,
+	);
+	const workingOnly = trackedFiles.filter(
+		(file) => file.scopes.includes("uncommitted") && !file.scopes.includes("unpushed"),
+	);
+	const unpushedFiles = trackedFiles.filter((file) => file.scopes.includes("unpushed"));
+
+	const collectTracked = async (
+		group: readonly ChangedFile[],
+		groupUpstream: string | undefined,
+	): Promise<void> => {
+		if (group.length === 0) return;
+		let base: string | undefined;
+		try {
+			base = await resolveDiffBase(
+				exec,
+				root,
+				group[0]!,
+				groupUpstream ? { upstream: groupUpstream } : {},
+				signal,
+			);
+		} catch (error) {
+			markStatsUnavailable(error, signal);
+			available = false;
+			return;
+		}
+		if (!base) {
+			available = false;
+			return;
+		}
+		for (const paths of lineStatPathBatches(group)) {
+			try {
+				const result = await exec(
+					"git",
+					[
+						"--literal-pathspecs",
+						"diff",
+						"--shortstat",
+						"--no-color",
+						"--no-ext-diff",
+						"--no-textconv",
+						"--find-renames",
+						"--find-copies",
+						base,
+						"--",
+						...paths,
+					],
+					options,
+				);
+				throwIfAborted(signal);
+				if (result.code !== 0) {
+					available = false;
+					continue;
+				}
+				const stats = parseShortStat(result.stdout);
+				additions += stats.additions;
+				deletions += stats.deletions;
+			} catch (error) {
+				markStatsUnavailable(error, signal);
+				available = false;
+			}
+		}
+	};
+
+	await collectTracked(workingOnly, undefined);
+	await collectTracked(unpushedFiles, upstream);
+
+	for (const file of files.filter(
+		(candidate) =>
+			(candidate.kind === "untracked" || candidate.workingStatus?.trim() === "??") &&
+			!candidate.isSubmodule,
+	)) {
+		try {
+			const result = await exec(
+				"git",
+				[
+					"--literal-pathspecs",
+					"diff",
+					"--shortstat",
+					"--no-color",
+					"--no-ext-diff",
+					"--no-textconv",
+					"--no-index",
+					"--",
+					"/dev/null",
+					file.path,
+				],
+				options,
+			);
+			throwIfAborted(signal);
+			if (result.code !== 0 && result.code !== 1) {
+				available = false;
+				continue;
+			}
+			const stats = parseShortStat(result.stdout);
+			additions += stats.additions;
+			deletions += stats.deletions;
+		} catch (error) {
+			markStatsUnavailable(error, signal);
+			available = false;
+		}
+	}
+
+	return { additions, deletions, available };
+}
+
+/** Collect the Git file inventory and aggregate line statistics. Diff text is loaded separately by the view. */
 export async function collectChangesSnapshot(
 	exec: GitExec,
 	root: string,
@@ -547,10 +708,12 @@ export async function collectChangesSnapshot(
 		mergeChangedFiles(working, unpushed),
 		parseSubmodulePaths(state.submodules),
 	);
+	const lineStats = await collectLineStats(exec, root, files, state.upstream, signal);
 	return {
 		root,
 		files,
 		fingerprint: state.fingerprint,
+		lineStats,
 		...(state.upstream ? { upstream: state.upstream } : {}),
 		unpushedAvailable: state.unpushedAvailable,
 	};
@@ -1151,12 +1314,40 @@ export class ChangesView implements Component {
 			const working = files.filter((file) => file.scopes.includes("uncommitted")).length;
 			const ahead = files.filter((file) => file.scopes.includes("unpushed")).length;
 			const fileWord = files.length === 1 ? "file" : "files";
-			const parts = [`${files.length} ${fileWord}`];
-			if (working > 0) parts.push(`Working ${working}`);
-			if (ahead > 0) parts.push(`Ahead ${ahead}`);
-			else if (!this.display.snapshot.unpushedAvailable) parts.push("No upstream");
-			if (this.display.stale) parts.push("Snapshot changed");
-			summary = parts.join(" · ");
+			const parts: string[] = [];
+			const muted = (text: string): void => parts.push(this.theme.fg("muted", text));
+			muted(`${files.length} ${fileWord}`);
+			const stats = this.display.snapshot.lineStats;
+			if (stats.available && (stats.additions > 0 || stats.deletions > 0)) {
+				muted(" · ");
+				if (stats.additions > 0) {
+					parts.push(
+						`${DIFF_ADDED_COLOR}+${stats.additions.toLocaleString("en-US")}${DIFF_COLOR_RESET}`,
+					);
+				}
+				if (stats.additions > 0 && stats.deletions > 0) muted(" ");
+				if (stats.deletions > 0) {
+					parts.push(
+						`${DIFF_REMOVED_COLOR}−${stats.deletions.toLocaleString("en-US")}${DIFF_COLOR_RESET}`,
+					);
+				}
+			}
+			if (working > 0) {
+				muted(" · ");
+				muted(`Working ${working}`);
+			}
+			if (ahead > 0) {
+				muted(" · ");
+				muted(`Ahead ${ahead}`);
+			} else if (!this.display.snapshot.unpushedAvailable) {
+				muted(" · ");
+				muted("No upstream");
+			}
+			if (this.display.stale) {
+				muted(" · ");
+				muted("Snapshot changed");
+			}
+			summary = parts.join("");
 		}
 		const contentWidth = this.contentWidth(width);
 		const padding = Math.max(0, contentWidth - visibleWidth("Changes") - visibleWidth(summary) - 1);

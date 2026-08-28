@@ -79,6 +79,7 @@ type ChangeKind = import("../changes.ts").ChangeKind;
 type GitChange = import("../changes.ts").GitChange;
 type ChangedFile = import("../changes.ts").ChangedFile;
 type ChangesDisplay = import("../changes.ts").ChangesDisplay;
+type ChangeLineStats = import("../changes.ts").ChangeLineStats;
 type GitExec = import("../changes.ts").GitExec;
 type FileDiff = import("../changes.ts").FileDiff;
 type AnyRecord = Record<string, any>;
@@ -404,7 +405,14 @@ async function testSnapshot(): Promise<void> {
 		if (copied.includes("status")) return { code: 0, stdout: "M  tracked.ts\0", stderr: "" };
 		if (copied.includes("ls-files")) return { code: 0, stdout: "", stderr: "" };
 		if (copied.includes("hash-object")) return { code: 0, stdout: contentHash, stderr: "" };
+		if (copied.includes("--verify")) return { code: 0, stdout: "head-sha\n", stderr: "" };
+		if (copied.includes("merge-base")) return { code: 0, stdout: "base-sha\n", stderr: "" };
 		if (copied.includes("@{upstream}")) return { code: 0, stdout: "origin/main\n", stderr: "" };
+		if (copied.includes("--shortstat")) {
+			return copied.includes("tracked.ts")
+				? { code: 0, stdout: " 1 file changed, 3 insertions(+), 2 deletions(-)\n", stderr: "" }
+				: { code: 0, stdout: " 1 file changed, 7 insertions(+), 4 deletions(-)\n", stderr: "" };
+		}
 		if (copied.includes("--name-status")) {
 			return copied.includes("origin/main...HEAD")
 				? { code: 0, stdout: "M\0outgoing.ts\0", stderr: "" }
@@ -417,6 +425,9 @@ async function testSnapshot(): Promise<void> {
 		"snapshot remains Git-only and uses the three-dot unpushed inventory",
 		snapshot.files.length === 2 &&
 			snapshot.files.every((file) => file.path !== "") &&
+			snapshot.lineStats.additions === 10 &&
+			snapshot.lineStats.deletions === 6 &&
+			snapshot.lineStats.available &&
 			snapshot.upstream === "origin/main" &&
 			!Object.prototype.hasOwnProperty.call(snapshot, "evidence") &&
 			calls.some((call) => call.args.includes("origin/main...HEAD")),
@@ -431,12 +442,17 @@ async function testSnapshot(): Promise<void> {
 	);
 }
 
-function displayFor(files: readonly ChangedFile[], unpushedAvailable = true): ChangesDisplay {
+function displayFor(
+	files: readonly ChangedFile[],
+	unpushedAvailable = true,
+	lineStats: ChangeLineStats = { additions: 0, deletions: 0, available: true },
+): ChangesDisplay {
 	return {
 		snapshot: {
 			root: "/offline/repository",
 			files: [...files],
 			fingerprint: "test-fingerprint",
+			lineStats,
 			...(unpushedAvailable ? { upstream: "origin/main" } : {}),
 			unpushedAvailable,
 		},
@@ -561,7 +577,7 @@ async function testChangesView(): Promise<void> {
 	const files = Array.from({ length: 18 }, (_, index) =>
 		changedFile(`src/file-${index}.ts`, index % 3 === 1 ? "added" : "modified"),
 	);
-	const display = displayFor(files);
+	const display = displayFor(files, true, { additions: 128, deletions: 37, available: true });
 	const loader = controlledLoader();
 	const fetchCalls: Array<{ path: string; mode: string }> = [];
 	const renderRequests: number[] = [];
@@ -615,7 +631,7 @@ async function testChangesView(): Promise<void> {
 	assert(
 		"changes header uses balanced tab spacing, concise counts, and aligned metadata",
 		plainInitial[0]!.trimStart().startsWith("Changes") &&
-			plainInitial[0]!.trimEnd().endsWith("18 files · Working 18") &&
+			plainInitial[0]!.trimEnd().endsWith("18 files · +128 −37 · Working 18") &&
 			plainInitial[0]!.indexOf("18 files") > 20 &&
 			plainInitial[1]!.trim() === "" &&
 			plainInitial[2]!.includes("~ file-0.ts") &&
@@ -625,7 +641,9 @@ async function testChangesView(): Promise<void> {
 			plainInitial[4]!.trimStart().startsWith("src/file-0.ts") &&
 			plainInitial[4]!.trimEnd().endsWith("M · Context 3") &&
 			!plainInitial.slice(0, 5).join("\n").includes("Ahead 0") &&
-			!plainInitial.slice(0, 5).join("\n").includes("uncommitted"),
+			!plainInitial.slice(0, 5).join("\n").includes("uncommitted") &&
+			initial[0]!.includes("\x1b[38;2;129;201;149m+128") &&
+			initial[0]!.includes("\x1b[38;2;242;139;130m−37"),
 		inspect(plainInitial.slice(0, 6)),
 	);
 	assert(
