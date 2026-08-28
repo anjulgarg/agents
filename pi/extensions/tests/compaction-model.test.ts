@@ -14,6 +14,7 @@ import {
 	modelCompletions,
 	parseCompactionModelCommand,
 	restoreCompactionModelState,
+	safeCompactionFailureReason,
 	type CompactionModelState,
 	type CompactionModelStore,
 } from "../compaction-model.ts";
@@ -174,6 +175,23 @@ assert(
 	),
 	formatFallbackNotice(configuredState, undefined, "off"),
 );
+assert(
+	"includes a bounded redacted failure reason",
+	formatFallbackNotice(
+		configuredState,
+		fallbackModel,
+		"medium",
+		"request failed: authorization=secret-token\nretry later",
+	) ===
+		"Compaction model unavailable: deepseek/deepseek-v4-flash max\nReason: request failed: authorization=[REDACTED] retry later\nFalling back to openai-codex/gpt-5.6-sol medium" &&
+		safeCompactionFailureReason("x".repeat(400)).length === 300,
+	formatFallbackNotice(
+		configuredState,
+		fallbackModel,
+		"medium",
+		"request failed: authorization=secret-token\nretry later",
+	),
+);
 
 const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
 const commands = new Map<string, any>();
@@ -188,7 +206,9 @@ const authByProvider: Record<string, boolean> = {
 	openai: false,
 };
 let streamShouldFail = false;
-const calls: Array<{ provider: string; model: string; options: any }> = [];
+let modelAvailable = true;
+let providerAvailable = true;
+const calls: Array<{ provider: string; model: string; baseUrl?: string; options: any }> = [];
 const statusCalls: Array<{ key: string; text: string | undefined }> = [];
 let fakeNow = 10_000;
 let timerCallback: (() => void) | undefined;
@@ -208,7 +228,12 @@ const provider = {
 	id: targetModel.provider,
 	name: targetModel.name,
 	streamSimple: (model: any, _context: any, options: any) => {
-		calls.push({ provider: model.provider, model: model.id, options });
+		calls.push({
+			provider: model.provider,
+			model: model.id,
+			baseUrl: model.baseUrl,
+			options,
+		});
 		return {
 			result: async () => {
 				if (streamShouldFail) throw new Error("provider unavailable");
@@ -232,12 +257,19 @@ const provider = {
 const registry = {
 	getAvailable: () => available,
 	find: (providerId: string, modelId: string) =>
-		models.find((model) => model.provider === providerId && model.id === modelId),
+		modelAvailable
+			? models.find((model) => model.provider === providerId && model.id === modelId)
+			: undefined,
 	getApiKeyAndHeaders: async (model: any) =>
 		authByProvider[model.provider]
 			? { ok: true, apiKey: "test-key", headers: { "x-test": "yes" }, env: { TEST: "1" } }
 			: { ok: false, error: `No auth for ${model.provider}` },
-	getProvider: (providerId: string) => (providerId === targetModel.provider ? provider : undefined),
+	getProviderAuth: async (providerId: string) =>
+		providerId === targetModel.provider
+			? { auth: { apiKey: "test-key", baseUrl: "https://api.enterprise.example" } }
+			: undefined,
+	getProvider: (providerId: string) =>
+		providerAvailable && providerId === targetModel.provider ? provider : undefined,
 };
 const sessionManager = { getBranch: () => entries };
 const context = {
@@ -428,6 +460,7 @@ for (const reason of ["manual", "threshold", "overflow"] as const) {
 		`routes ${reason} compaction through the configured model and cleans up its timer`,
 		result?.compaction?.summary === "structured summary" &&
 			calls.at(-1)?.model === targetModel.id &&
+			calls.at(-1)?.baseUrl === "https://api.enterprise.example" &&
 			calls.at(-1)?.options.reasoning === "high" &&
 			liveStatus?.key === COMPACTION_TIMER_STATUS_KEY &&
 			liveStatus.text === "Compacting 1.3s" &&
@@ -499,6 +532,20 @@ assert(
 );
 
 await command.handler("deepseek/deepseek-v4-flash max", context);
+modelAvailable = false;
+notices.length = 0;
+const missingModelResult = await handlers.get("session_before_compact")?.[0]?.(
+	compactEvent("manual"),
+	context,
+);
+assert(
+	"falls back with the model lookup reason",
+	missingModelResult === undefined &&
+		notices.at(-1)?.message ===
+			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nReason: model not found in the current registry\nFalling back to openai-codex/gpt-5.6-sol medium",
+	JSON.stringify({ missingModelResult, notices }),
+);
+modelAvailable = true;
 authByProvider.deepseek = false;
 const unavailableResult = await handlers.get("session_before_compact")?.[0]?.(
 	compactEvent("manual"),
@@ -509,7 +556,7 @@ assert(
 	unavailableResult === undefined &&
 		timerCallback === undefined &&
 		notices.at(-1)?.message ===
-			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nFalling back to openai-codex/gpt-5.6-sol medium",
+			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nReason: authentication unavailable: No auth for deepseek\nFalling back to openai-codex/gpt-5.6-sol medium",
 	JSON.stringify({ unavailableResult, notices }),
 );
 const noticeCount = notices.length;
@@ -521,6 +568,20 @@ assert(
 );
 
 authByProvider.deepseek = true;
+providerAvailable = false;
+notices.length = 0;
+const missingProviderResult = await handlers.get("session_before_compact")?.[0]?.(
+	compactEvent("manual"),
+	context,
+);
+assert(
+	"falls back with the provider lookup reason",
+	missingProviderResult === undefined &&
+		notices.at(-1)?.message ===
+			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nReason: provider deepseek is not registered\nFalling back to openai-codex/gpt-5.6-sol medium",
+	JSON.stringify({ missingProviderResult, notices }),
+);
+providerAvailable = true;
 await command.handler("deepseek/deepseek-v4-flash max", context);
 streamShouldFail = true;
 notices.length = 0;
@@ -535,7 +596,7 @@ assert(
 		statusCalls.at(-1)?.text === undefined &&
 		notices.length === 1 &&
 		notices[0]?.message ===
-			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nFalling back to openai-codex/gpt-5.6-sol medium",
+			"Compaction model unavailable: deepseek/deepseek-v4-flash max\nReason: compaction request failed: provider unavailable\nFalling back to openai-codex/gpt-5.6-sol medium",
 	JSON.stringify({ failedResult, notices, calls: calls.length }),
 );
 streamShouldFail = false;

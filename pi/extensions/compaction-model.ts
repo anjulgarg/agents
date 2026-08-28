@@ -116,16 +116,38 @@ function isAbortError(error: unknown): boolean {
 	return error instanceof Error && error.name === "AbortError";
 }
 
+export function safeCompactionFailureReason(error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error);
+	const sanitized = raw
+		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
+		.replace(
+			/((?:api[-_]?key|token|authorization|cookie|secret|credential)\s*[:=]\s*)[^\s,;&]+/gi,
+			"$1[REDACTED]",
+		)
+		.replace(
+			/([?&](?:token|api[-_]?key|password|secret|signature|authorization)=)[^&\s]+/gi,
+			"$1[REDACTED]",
+		)
+		.replace(/[\u0000-\u001f\u007f]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	const bounded = sanitized || "unknown failure";
+	return bounded.length > 300 ? `${bounded.slice(0, 297)}...` : bounded;
+}
+
 export function formatFallbackNotice(
 	configured: CompactionModelState,
 	fallback: Pick<Model<Api>, "provider" | "id"> | undefined,
 	fallbackThinkingLevel: ModelThinkingLevel,
+	reason?: string,
 ): string {
 	const requested = `${configured.provider}/${configured.id} ${configured.thinkingLevel}`;
 	const fallbackText = fallback
 		? formatCompactionModel(fallback, fallbackThinkingLevel)
 		: "the active conversation model";
-	return `Compaction model unavailable: ${requested}\nFalling back to ${fallbackText}`;
+	const reasonText = reason ? `\nReason: ${safeCompactionFailureReason(reason)}` : "";
+	return `Compaction model unavailable: ${requested}${reasonText}\nFalling back to ${fallbackText}`;
 }
 
 export default function compactionModelExtension(
@@ -231,17 +253,21 @@ export default function compactionModelExtension(
 		};
 	};
 
-	const notifyFallback = (ctx: ExtensionContext): void => {
+	const notifyFallback = (ctx: ExtensionContext, reason: string): void => {
 		lastCompactionModel = activeCompactionModel(ctx);
 		if (!configured) return;
 		const fallback = ctx.model;
 		const fallbackThinkingLevel = activeThinkingLevel(ctx);
+		const safeReason = safeCompactionFailureReason(reason);
 		const key = `${configured.provider}/${configured.id} ${configured.thinkingLevel}|${
 			fallback ? `${fallback.provider}/${fallback.id}` : "none"
-		}|${fallbackThinkingLevel}`;
+		}|${fallbackThinkingLevel}|${safeReason}`;
 		if (key === lastFallbackKey) return;
 		lastFallbackKey = key;
-		ctx.ui.notify(formatFallbackNotice(configured, fallback, fallbackThinkingLevel), "warning");
+		ctx.ui.notify(
+			formatFallbackNotice(configured, fallback, fallbackThinkingLevel, safeReason),
+			"warning",
+		);
 	};
 
 	const markCompactionModelHealthy = (): void => {
@@ -380,37 +406,52 @@ export default function compactionModelExtension(
 
 		const model = configuredModel(ctx);
 		if (!model) {
-			notifyFallback(ctx);
+			notifyFallback(ctx, "model not found in the current registry");
 			return;
 		}
 
 		let auth: Awaited<ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>>;
 		try {
 			auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		} catch {
-			notifyFallback(ctx);
+		} catch (error) {
+			notifyFallback(ctx, `authentication lookup failed: ${safeCompactionFailureReason(error)}`);
 			return;
 		}
 		if (!auth.ok) {
-			notifyFallback(ctx);
+			notifyFallback(ctx, `authentication unavailable: ${auth.error}`);
 			return;
 		}
+
+		let providerAuth: Awaited<ReturnType<typeof ctx.modelRegistry.getProviderAuth>>;
+		try {
+			providerAuth = await ctx.modelRegistry.getProviderAuth(model.provider);
+		} catch (error) {
+			notifyFallback(
+				ctx,
+				`provider authentication lookup failed: ${safeCompactionFailureReason(error)}`,
+			);
+			return;
+		}
+		const requestModel = providerAuth?.auth.baseUrl
+			? { ...model, baseUrl: providerAuth.auth.baseUrl }
+			: model;
 
 		let provider: ReturnType<typeof ctx.modelRegistry.getProvider>;
 		try {
 			provider = ctx.modelRegistry.getProvider(model.provider);
-		} catch {
-			provider = undefined;
+		} catch (error) {
+			notifyFallback(ctx, `provider lookup failed: ${safeCompactionFailureReason(error)}`);
+			return;
 		}
 		if (!provider) {
-			notifyFallback(ctx);
+			notifyFallback(ctx, `provider ${model.provider} is not registered`);
 			return;
 		}
 
 		lastCompactionModel = {
-			provider: model.provider,
-			id: model.id,
-			thinkingLevel: clampThinkingLevel(model, configured.thinkingLevel),
+			provider: requestModel.provider,
+			id: requestModel.id,
+			thinkingLevel: clampThinkingLevel(requestModel, configured.thinkingLevel),
 		};
 
 		startCompactionTimer(event, ctx);
@@ -422,12 +463,12 @@ export default function compactionModelExtension(
 			) => provider.streamSimple(requestModel, requestContext, options);
 			const result = await runCompaction(
 				event.preparation,
-				model,
+				requestModel,
 				auth.apiKey,
 				auth.headers,
 				event.customInstructions,
 				event.signal,
-				clampThinkingLevel(model, configured.thinkingLevel),
+				clampThinkingLevel(requestModel, configured.thinkingLevel),
 				streamFn,
 				auth.env,
 				retrySettings(ctx),
@@ -441,7 +482,7 @@ export default function compactionModelExtension(
 			// Returning no result deliberately hands the same preparation back to
 			// core, which then uses the active conversation model and its existing
 			// retry/auth path without changing the normal conversation model.
-			notifyFallback(ctx);
+			notifyFallback(ctx, `compaction request failed: ${safeCompactionFailureReason(error)}`);
 			return;
 		}
 	});
