@@ -138,6 +138,7 @@ testWorktreeViewNavigationAndChrome();
 testWorktreeViewScrollEmptyAndNarrow();
 
 let cleanupTool: any;
+let queuedCleanup: { content: string; options?: Record<string, unknown> } | undefined;
 const commands = new Map<string, any>();
 const porcelain = [
 	"worktree /repo",
@@ -159,7 +160,9 @@ worktreeExtension({
 	on: (event: string, handler: (event: unknown, ctx: { cwd: string }) => void) => {
 		if (event === "session_start") handler({}, { cwd: "/repo/wt-current" });
 	},
-	sendUserMessage: () => undefined,
+	sendUserMessage: (content: string, options?: Record<string, unknown>) => {
+		queuedCleanup = { content, options };
+	},
 	getActiveTools: () => [],
 	setActiveTools: () => undefined,
 	exec: async () => ({ stdout: porcelain, stderr: "", code: 0 }),
@@ -240,9 +243,14 @@ assert(
 	JSON.stringify({ rpcSelectCalled, rpcCustomCalled }),
 );
 
-const result = {
-	content: [{ type: "text", text: "Queued interactive worktree cleanup as a follow-up." }],
-};
+const result = await cleanupTool.execute();
+assert(
+	"worktree cleanup dispatches the extension command instead of sending literal slash text",
+	queuedCleanup?.content === "/git:worktree:cleanup" &&
+		queuedCleanup.options?.deliverAs === "followUp" &&
+		queuedCleanup.options?.expandPromptTemplates === true,
+	JSON.stringify(queuedCleanup),
+);
 const collapsedCall = cleanupTool
 	.renderCall({}, theme, { expanded: false, isError: false })
 	.render(80)

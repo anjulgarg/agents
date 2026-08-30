@@ -25,7 +25,6 @@ import {
 import { JobManager } from "./manager.ts";
 import { createJobProcess } from "./process.ts";
 import {
-	CHAT_PADDING,
 	JobReceiptLine,
 	jobReceiptSegments,
 	registerJobTools,
@@ -105,7 +104,7 @@ export function registerJobsExtension(
 	pi: ExtensionAPI,
 	options: JobsExtensionOptions = {},
 ): JobManagerApi {
-	pi.registerMessageRenderer(JOB_WAKE_MESSAGE_TYPE, (message, _options, theme) => {
+	pi.registerMessageRenderer(JOB_WAKE_MESSAGE_TYPE, (message, options, theme) => {
 		const content =
 			typeof message.content === "string"
 				? message.content
@@ -113,7 +112,7 @@ export function registerJobsExtension(
 						.filter((part) => part.type === "text")
 						.map((part) => part.text)
 						.join("\n");
-		return new Text(theme.fg("customMessageText", content), CHAT_PADDING, 0);
+		return new Text(theme.fg("customMessageText", content), options.outputPad, 0);
 	});
 
 	const sendWake = (content: string, deliverAs?: JobWakeDelivery): void => {
@@ -225,14 +224,11 @@ export function registerJobsExtension(
 
 	pi.on("agent_settled", () => {
 		manager.setParentSettled(true);
-		// Failed compaction may skip session_compact and never abort its signal;
-		// settling is a safe boundary to release held wakes.
 		manager.setWakeSuppressed(false);
 	});
 
 	// Wakes delivered mid-compaction would land in a context that is being
-	// replaced, so hold them until compaction finishes, aborts, or the agent
-	// settles after a failed attempt.
+	// replaced, so hold them until compaction finishes, aborts, or fails.
 	pi.on("session_before_compact", (event) => {
 		manager.setWakeSuppressed(true);
 		event.signal?.addEventListener(
@@ -245,6 +241,10 @@ export function registerJobsExtension(
 	});
 
 	pi.on("session_compact", () => {
+		manager.setWakeSuppressed(false);
+	});
+
+	pi.on("session_compact_failed", () => {
 		manager.setWakeSuppressed(false);
 	});
 

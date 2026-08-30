@@ -156,6 +156,31 @@ assert(
 );
 now += 1_234;
 harness.emit(
+	"ui_prompt_start",
+	{ type: "ui_prompt_start", kind: "confirm", title: "Continue?" },
+	tui.context,
+);
+assert(
+	"blocking extension prompts pause the Working indicator",
+	tui.workingMessages.at(-1) === undefined &&
+		getProcessAnimationDiagnostics().subscriptionCount === 0,
+	JSON.stringify({
+		workingMessages: tui.workingMessages,
+		animation: getProcessAnimationDiagnostics(),
+	}),
+);
+now += 5_000;
+harness.emit("ui_prompt_end", { type: "ui_prompt_end" }, tui.context);
+assert(
+	"Working resumes after the extension prompt without counting user wait time",
+	tui.workingMessages.at(-1)?.includes("(1s") === true &&
+		getProcessAnimationDiagnostics().subscriptionCount === 1,
+	JSON.stringify({
+		workingMessages: tui.workingMessages,
+		animation: getProcessAnimationDiagnostics(),
+	}),
+);
+harness.emit(
 	"tool_execution_start",
 	{
 		type: "tool_execution_start",

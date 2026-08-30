@@ -145,6 +145,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (PLAN_MODE_BLOCKED_TOOLS.has(event.toolName)) {
 			return {
 				block: true,
+				terminate: true,
 				reason: `Plan mode: ${event.toolName} tool calls are blocked. Use /plan to disable plan mode first.`,
 			};
 		}
@@ -155,6 +156,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (!isSafeCommand(command)) {
 			return {
 				block: true,
+				terminate: true,
 				reason: `Plan mode: command blocked (not allowlisted). Use /plan to disable plan mode first.\nCommand: ${command}`,
 			};
 		}

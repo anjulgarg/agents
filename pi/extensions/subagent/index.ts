@@ -15,7 +15,7 @@ export {
 	validateContainedRuntimePath,
 } from "./persistent.ts";
 import { Supervisor, type ChildFactory } from "./supervisor.ts";
-import { CHAT_PADDING, registerSubagentTools } from "./tools.ts";
+import { registerSubagentTools } from "./tools.ts";
 import { registerSubagentLifecycle } from "./lifecycle.ts";
 export {
 	PERSISTENT_SESSION_STATES,
@@ -65,7 +65,7 @@ export function registerSubagentExtension(
 	pi: ExtensionAPI,
 	options: SubagentExtensionOptions = {},
 ): Supervisor {
-	pi.registerMessageRenderer(SUBAGENT_WAKE_MESSAGE_TYPE, (message, _options, theme) => {
+	pi.registerMessageRenderer(SUBAGENT_WAKE_MESSAGE_TYPE, (message, options, theme) => {
 		const content =
 			typeof message.content === "string"
 				? message.content
@@ -73,7 +73,7 @@ export function registerSubagentExtension(
 						.filter((part) => part.type === "text")
 						.map((part) => part.text)
 						.join("\n");
-		return new Text(theme.fg("customMessageText", content), CHAT_PADDING, 0);
+		return new Text(theme.fg("customMessageText", content), options.outputPad, 0);
 	});
 
 	const runtime = new SubagentRuntime({

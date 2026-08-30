@@ -303,24 +303,18 @@ const fakeComplete = async (model: any, context: any, options: any) => {
 let customStreamCalls = 0;
 const customResponse = await completeDirectRequest(
 	{
-		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: { test: "1" }, env: {} }),
-		getProviderAuth: async () => undefined,
-		getRegisteredProviderConfig: () => ({
-			streamSimple: (_model: unknown, context: unknown, requestOptions: unknown) => ({
-				result: async () => {
-					customStreamCalls++;
-					completionInputs.push({ context, options: requestOptions });
-					return fakeComplete(null, null, null);
-				},
-			}),
-		}),
+		complete: async (_model: unknown, context: unknown, requestOptions: unknown) => {
+			customStreamCalls++;
+			completionInputs.push({ context, options: requestOptions });
+			return fakeComplete(null, null, null);
+		},
 	} as any,
 	{ provider: "custom" } as any,
 	{ messages: [] },
 	{ maxTokens: 10 },
 );
 assert(
-	"uses runtime-registered custom provider streams",
+	"uses the coding-agent model runtime for custom providers",
 	customStreamCalls === 1 && customResponse.stopReason === "stop",
 	JSON.stringify({ customStreamCalls, stopReason: customResponse.stopReason }),
 );

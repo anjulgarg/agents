@@ -209,6 +209,7 @@ let streamShouldFail = false;
 let modelAvailable = true;
 let providerAvailable = true;
 const calls: Array<{ provider: string; model: string; baseUrl?: string; options: any }> = [];
+let runtimeCompleteCalls = 0;
 const statusCalls: Array<{ key: string; text: string | undefined }> = [];
 let fakeNow = 10_000;
 let timerCallback: (() => void) | undefined;
@@ -270,6 +271,14 @@ const registry = {
 			: undefined,
 	getProvider: (providerId: string) =>
 		providerAvailable && providerId === targetModel.provider ? provider : undefined,
+	complete: async (model: any, requestContext: any, options: any) => {
+		runtimeCompleteCalls++;
+		const requestModel =
+			model.provider === targetModel.provider
+				? { ...model, baseUrl: "https://api.enterprise.example" }
+				: model;
+		return provider.streamSimple(requestModel, requestContext, options).result();
+	},
 };
 const sessionManager = { getBranch: () => entries };
 const context = {
@@ -459,6 +468,7 @@ for (const reason of ["manual", "threshold", "overflow"] as const) {
 	assert(
 		`routes ${reason} compaction through the configured model and cleans up its timer`,
 		result?.compaction?.summary === "structured summary" &&
+			runtimeCompleteCalls > 0 &&
 			calls.at(-1)?.model === targetModel.id &&
 			calls.at(-1)?.baseUrl === "https://api.enterprise.example" &&
 			calls.at(-1)?.options.reasoning === "high" &&
@@ -600,6 +610,17 @@ assert(
 	JSON.stringify({ failedResult, notices, calls: calls.length }),
 );
 streamShouldFail = false;
+await handlers.get("session_compact_failed")?.[0]?.(
+	{ reason: "threshold", aborted: false },
+	context,
+);
+assert(
+	"session_compact_failed clears compaction timing state",
+	handlers.has("session_compact_failed") &&
+		timerCallback === undefined &&
+		statusCalls.at(-1)?.text === undefined,
+	JSON.stringify({ handlers: [...handlers.keys()], status: statusCalls.at(-1) }),
+);
 
 available = [fallbackModel];
 const staleCompletions = await command.getArgumentCompletions?.("");

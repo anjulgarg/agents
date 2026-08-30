@@ -66,6 +66,8 @@ export interface ActivityEntry {
 
 interface ActiveRun extends TokenCounters {
 	startedAt: number;
+	pausedDurationMs: number;
+	uiPromptStartedAt?: number;
 	toolCount: number;
 	changedFiles: Set<string>;
 	seenToolIds: Set<string>;
@@ -132,6 +134,7 @@ function createTokenCounters(): TokenCounters {
 function createActiveRun(startedAt: number): ActiveRun {
 	return {
 		startedAt,
+		pausedDurationMs: 0,
 		toolCount: 0,
 		changedFiles: new Set(),
 		seenToolIds: new Set(),
@@ -142,6 +145,12 @@ function createActiveRun(startedAt: number): ActiveRun {
 
 function tokenTotal(counters: TokenCounters): number {
 	return counters.receivedTokens + counters.currentReceivedEstimate;
+}
+
+function activeDuration(run: ActiveRun, now: number): number {
+	const currentPause =
+		run.uiPromptStartedAt === undefined ? 0 : Math.max(0, now - run.uiPromptStartedAt);
+	return Math.max(0, now - run.startedAt - run.pausedDurationMs - currentPause);
 }
 
 function safeNumber(value: unknown): number | undefined {
@@ -307,15 +316,10 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		if (!activeRun) return;
 		safeWorkingMessage(
 			workingContext,
-			formatLiveSlice(
-				WORKING_PHASE,
-				Math.max(0, now - activeRun.startedAt),
-				tokenTotal(activeRun),
-				{
-					toolCount: activeRun.toolCount,
-					changedFiles: [...activeRun.changedFiles],
-				},
-			),
+			formatLiveSlice(WORKING_PHASE, activeDuration(activeRun, now), tokenTotal(activeRun), {
+				toolCount: activeRun.toolCount,
+				changedFiles: [...activeRun.changedFiles],
+			}),
 		);
 	};
 
@@ -358,7 +362,7 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		try {
 			pi.appendEntry<ActivityEntry>(ACTIVITY_ENTRY_TYPE, {
 				phase: WORKING_PHASE,
-				durationMs: Math.max(0, completedAt - run.startedAt),
+				durationMs: activeDuration(run, completedAt),
 				status: "completed",
 				receivedTokens: tokenTotal(run),
 				toolCount: run.toolCount,
@@ -497,6 +501,24 @@ export default function announceStepExtension(pi: ExtensionAPI): void {
 		if (!activeRun) return;
 		if (ctx) workingContext = ctx;
 		updateWorkingLine();
+	});
+
+	pi.on("ui_prompt_start", (_event, ctx) => {
+		if (!activeRun || activeRun.uiPromptStartedAt !== undefined) return;
+		if (ctx) workingContext = ctx;
+		activeRun.uiPromptStartedAt = Date.now();
+		stopSliceTimer();
+		clearWorkingMessage(workingContext);
+	});
+
+	pi.on("ui_prompt_end", (_event, ctx) => {
+		if (!activeRun || activeRun.uiPromptStartedAt === undefined) return;
+		const now = Date.now();
+		activeRun.pausedDurationMs += Math.max(0, now - activeRun.uiPromptStartedAt);
+		activeRun.uiPromptStartedAt = undefined;
+		if (ctx) workingContext = ctx;
+		updateWorkingLine(now);
+		startSliceTimer();
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {

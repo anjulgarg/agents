@@ -53,8 +53,6 @@ export function registerSubagentLifecycle(pi: ExtensionAPI, runtime: SubagentRun
 	});
 
 	pi.on("before_agent_start", () => {
-		// A failed/manual compaction can leave no session_compact event. A new
-		// parent turn is a safe boundary for clearing that transient guard.
 		compactionInProgress = false;
 	});
 
@@ -90,6 +88,10 @@ export function registerSubagentLifecycle(pi: ExtensionAPI, runtime: SubagentRun
 	});
 
 	pi.on("session_compact", () => {
+		compactionInProgress = false;
+	});
+
+	pi.on("session_compact_failed", () => {
 		compactionInProgress = false;
 	});
 

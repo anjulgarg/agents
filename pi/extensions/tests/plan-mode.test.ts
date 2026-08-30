@@ -340,8 +340,11 @@ function createJobHarness(initialTools: string[]) {
 	assert(
 		"plan mode blocks edit, write, and job calls while keeping them active",
 		blockedEdit?.block === true &&
+			blockedEdit.terminate === true &&
 			blockedWrite?.block === true &&
+			blockedWrite.terminate === true &&
 			blockedJob?.block === true &&
+			blockedJob.terminate === true &&
 			harness.tools().join(",") === "read,bash,edit,write,job",
 		JSON.stringify({ blockedEdit, blockedWrite, blockedJob, tools: harness.tools() }),
 	);
@@ -358,7 +361,9 @@ function createJobHarness(initialTools: string[]) {
 	assert(
 		"unsafe bash commands are blocked deterministically",
 		unsafeFirst?.block === true &&
+			unsafeFirst.terminate === true &&
 			unsafeSecond?.block === true &&
+			unsafeSecond.terminate === true &&
 			unsafeFirst.reason === unsafeSecond.reason &&
 			String(unsafeFirst.reason).includes(unsafeCommand),
 		JSON.stringify({ unsafeFirst, unsafeSecond }),
@@ -378,7 +383,9 @@ function createJobHarness(initialTools: string[]) {
 	const staleMissing = await toolCall({ toolName: "job", input: {} }, harness.context);
 	assert(
 		"stale job calls without a command string are blocked",
-		staleMissing?.block === true && String(staleMissing.reason).includes("job"),
+		staleMissing?.block === true &&
+			staleMissing.terminate === true &&
+			String(staleMissing.reason).includes("job"),
 		JSON.stringify(staleMissing),
 	);
 

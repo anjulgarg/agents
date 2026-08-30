@@ -1,5 +1,7 @@
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 import {
 	clampThinkingLevel,
+	createAssistantMessageEventStream,
 	getSupportedThinkingLevels,
 	type Api,
 	type Model,
@@ -422,20 +424,6 @@ export default function compactionModelExtension(
 			return;
 		}
 
-		let providerAuth: Awaited<ReturnType<typeof ctx.modelRegistry.getProviderAuth>>;
-		try {
-			providerAuth = await ctx.modelRegistry.getProviderAuth(model.provider);
-		} catch (error) {
-			notifyFallback(
-				ctx,
-				`provider authentication lookup failed: ${safeCompactionFailureReason(error)}`,
-			);
-			return;
-		}
-		const requestModel = providerAuth?.auth.baseUrl
-			? { ...model, baseUrl: providerAuth.auth.baseUrl }
-			: model;
-
 		let provider: ReturnType<typeof ctx.modelRegistry.getProvider>;
 		try {
 			provider = ctx.modelRegistry.getProvider(model.provider);
@@ -449,28 +437,33 @@ export default function compactionModelExtension(
 		}
 
 		lastCompactionModel = {
-			provider: requestModel.provider,
-			id: requestModel.id,
-			thinkingLevel: clampThinkingLevel(requestModel, configured.thinkingLevel),
+			provider: model.provider,
+			id: model.id,
+			thinkingLevel: clampThinkingLevel(model, configured.thinkingLevel),
 		};
 
 		startCompactionTimer(event, ctx);
 		try {
-			const streamFn = (
-				requestModel: Model<Api>,
-				requestContext: Parameters<typeof provider.streamSimple>[1],
-				options?: Parameters<typeof provider.streamSimple>[2],
-			) => provider.streamSimple(requestModel, requestContext, options);
+			const streamFn: StreamFn = async (requestModel, requestContext, requestOptions) => {
+				const response = await ctx.modelRegistry.complete(
+					requestModel,
+					requestContext,
+					requestOptions,
+				);
+				const stream = createAssistantMessageEventStream();
+				stream.end(response);
+				return stream;
+			};
 			const result = await runCompaction(
 				event.preparation,
-				requestModel,
-				auth.apiKey,
-				auth.headers,
+				model,
+				undefined,
+				undefined,
 				event.customInstructions,
 				event.signal,
-				clampThinkingLevel(requestModel, configured.thinkingLevel),
+				clampThinkingLevel(model, configured.thinkingLevel),
 				streamFn,
-				auth.env,
+				undefined,
 				retrySettings(ctx),
 			);
 			lastCompactionDuration = stopCompactionTimer(ctx);
@@ -485,6 +478,12 @@ export default function compactionModelExtension(
 			notifyFallback(ctx, `compaction request failed: ${safeCompactionFailureReason(error)}`);
 			return;
 		}
+	});
+
+	pi.on("session_compact_failed", (_event, ctx) => {
+		stopCompactionTimer(ctx);
+		lastCompactionModel = undefined;
+		lastCompactionDuration = undefined;
 	});
 
 	pi.on("session_compact", (event, ctx) => {

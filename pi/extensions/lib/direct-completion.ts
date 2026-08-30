@@ -33,14 +33,13 @@ function withCancellation<T>(promise: Promise<T>, signal: AbortSignal | undefine
 /**
  * Authenticated one-shot completion with custom-provider support.
  *
- * Deterministic precedence for the completion backend:
- * 1. Runtime-registered provider `streamSimple` (via modelRegistry)
- * 2. Caller-supplied `override` complete function
- * 3. Default `completeSimple`
+ * Production requests dispatch through ModelRegistry.complete() so Pi's model
+ * runtime preserves custom providers, resolved authentication, and provider
+ * routing. A caller-supplied override retains the legacy injectable path used
+ * by focused extension tests; registered provider streams still take precedence
+ * over that override.
  *
- * Resolves request credentials and the provider's credential-derived base URL,
- * then injects apiKey/headers/env into the request options. Does not add tools
- * or mutate the model context or session.
+ * Does not add tools or mutate the model context or session.
  */
 export async function completeDirectRequest(
 	modelRegistry: ModelRegistry,
@@ -50,6 +49,13 @@ export async function completeDirectRequest(
 	override?: DirectCompleteFunction,
 ): Promise<AssistantMessage> {
 	throwIfAborted(requestOptions.signal);
+	if (!override) {
+		return withCancellation(
+			modelRegistry.complete(model, context, requestOptions),
+			requestOptions.signal,
+		);
+	}
+
 	const auth = await withCancellation(
 		modelRegistry.getApiKeyAndHeaders(model),
 		requestOptions.signal,

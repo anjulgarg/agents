@@ -1167,6 +1167,14 @@ async function testLifecycleAndPersistence(): Promise<void> {
 		},
 		isDirectory: () => true,
 	});
+	const wakeLine = pi.renderers
+		.get(JOB_WAKE_MESSAGE_TYPE)?.({ content: "wake" }, { outputPad: 3 }, plainTheme)
+		.render(80)?.[0];
+	assert(
+		"job wake messages honor Pi's configured output padding",
+		wakeLine?.startsWith("   wake") === true && !wakeLine.startsWith("    wake"),
+		JSON.stringify(wakeLine),
+	);
 
 	const record = (jobId: string, status: JobSnapshot["status"]): any => ({
 		type: "custom",
@@ -1292,12 +1300,13 @@ async function testLifecycleAndPersistence(): Promise<void> {
 		{ type: "session_before_compact", signal: failedCompact.signal },
 		{},
 	);
-	await pi.handlers.get("agent_settled")!({ type: "agent_settled" }, {});
+	await pi.handlers.get("session_compact_failed")!(
+		{ type: "session_compact_failed", aborted: false },
+		{},
+	);
 	assert(
-		"agent_settled clears wake suppression after a failed compaction without session_compact",
-		manager.suppressedCalls.join(",") === "true,false" &&
-			!failedCompact.signal.aborted &&
-			manager.settledCalls.at(-1) === true,
+		"session_compact_failed immediately clears wake suppression",
+		manager.suppressedCalls.join(",") === "true,false" && !failedCompact.signal.aborted,
 		manager.suppressedCalls.join(","),
 	);
 

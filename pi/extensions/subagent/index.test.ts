@@ -377,6 +377,18 @@ async function testPromptFreeStableSubagentMetadata(): Promise<void> {
 	const pi = new FakePi();
 	const children: FakeChild[] = [];
 	const supervisor = install(pi, children);
+	const wakeLine = pi.messageRenderers
+		.get("subagent-wake")?.(
+			{ content: "wake" },
+			{ outputPad: 3 },
+			{ fg: (_color: string, text: string) => text },
+		)
+		.render(80)?.[0];
+	assert(
+		"a. subagent wake messages honor Pi's configured output padding",
+		wakeLine?.startsWith("   wake") === true && !wakeLine.startsWith("    wake"),
+		JSON.stringify(wakeLine),
+	);
 	const promptRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-metadata-"));
 	const managementTools = [
 		"subagent_status",
@@ -1618,6 +1630,32 @@ async function testAbortCallsKillAll(): Promise<void> {
 				killAllNotifyParent.every((notify) => !notify) &&
 				children.every((child) => child.killed),
 			`killAllCalls=${killAllCalls} notifyParent=${killAllNotifyParent.join(",")} killed=${children.map((c) => c.killed)}`,
+		);
+
+		killAllCalls = 0;
+		killAllNotifyParent = [];
+		const beforeFailedCompaction = children.length;
+		supervisor.spawn([
+			{
+				task: "running-after-failed-compaction",
+				model: "test/model",
+				thinking: "off",
+				workspace: "shared",
+				cwd: "/tmp",
+				systemPromptFile: "/tmp/p-failed-compaction.md",
+			},
+		]);
+		const failedCompactionChildren = children.slice(beforeFailedCompaction);
+		const parentController = new AbortController();
+		const compactionController = new AbortController();
+		await pi.emit("agent_start", {}, fakeCtx({ signal: parentController.signal }));
+		await pi.emit("session_before_compact", { signal: compactionController.signal });
+		await pi.emit("session_compact_failed", { aborted: false });
+		parentController.abort();
+		assert(
+			`${name} (failed compaction releases abort guard)`,
+			killAllCalls >= 1 && failedCompactionChildren.every((child) => child.killed),
+			`killAllCalls=${killAllCalls} killed=${failedCompactionChildren.map((child) => child.killed)}`,
 		);
 
 		killAllCalls = 0;

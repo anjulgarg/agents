@@ -802,7 +802,10 @@ export default function (pi: ExtensionAPI) {
 			return new Text(theme.fg(context.isError ? "error" : "muted", message), 1, 0);
 		},
 		async execute() {
-			pi.sendUserMessage("/git:worktree:cleanup", { deliverAs: "followUp" });
+			pi.sendUserMessage("/git:worktree:cleanup", {
+				deliverAs: "followUp",
+				expandPromptTemplates: true,
+			});
 			return {
 				content: [{ type: "text", text: "Queued interactive worktree cleanup as a follow-up." }],
 				details: {},

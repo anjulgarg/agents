@@ -40,6 +40,31 @@ const assistant = {
 	timestamp: Date.now(),
 };
 
+async function testModelRuntimePath(): Promise<void> {
+	let completeCalls = 0;
+	let capturedOptions: Record<string, unknown> | undefined;
+	const response = await completeDirectRequest(
+		{
+			complete: async (_model: unknown, _context: unknown, options: Record<string, unknown>) => {
+				completeCalls++;
+				capturedOptions = options;
+				return assistant;
+			},
+			getApiKeyAndHeaders: () => {
+				throw new Error("native runtime path must own authentication");
+			},
+		} as never,
+		model as never,
+		{ messages: [] } as never,
+		{ maxTokens: 25 } as never,
+	);
+	assert(
+		"dispatches production requests through the coding-agent model runtime",
+		completeCalls === 1 && capturedOptions?.maxTokens === 25 && response.stopReason === "stop",
+		JSON.stringify({ completeCalls, capturedOptions, response }),
+	);
+}
+
 async function testAuthPropagation(): Promise<void> {
 	let captured: { model: typeof model; options: Record<string, unknown> } | undefined;
 	const context = Object.freeze({
@@ -249,6 +274,7 @@ async function testNoContextMutation(): Promise<void> {
 	);
 }
 
+await testModelRuntimePath();
 await testAuthPropagation();
 await testRegisteredProviderPath();
 await testOverridePath();
