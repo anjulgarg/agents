@@ -167,6 +167,99 @@ export function capturePublishContext(ctx: ExtensionCommandContext): PublishCont
 	};
 }
 
+async function publishCleanCommits(ctx: PublishContext): Promise<void> {
+	const cwd = ctx.cwd;
+	const signal = ctx.signal;
+	if ((await git(["rev-parse", "--verify", "HEAD"], cwd, signal)).code !== 0) {
+		ctx.ui.notify("Nothing to publish - working tree is clean.", "info");
+		return;
+	}
+
+	const current = await gitOk(["rev-parse", "--abbrev-ref", "HEAD"], cwd, signal);
+	if (!current || current === "HEAD") {
+		ctx.ui.notify(
+			"Working tree is clean, but detached HEAD commits cannot be published safely. Switch to a branch first.",
+			"warning",
+		);
+		return;
+	}
+
+	if ((await git(["remote", "get-url", "origin"], cwd, signal)).code !== 0) {
+		ctx.ui.notify(
+			"Working tree is clean. No 'origin' remote, so committed changes were not pushed.",
+			"warning",
+		);
+		return;
+	}
+
+	const remoteRef = `refs/remotes/origin/${current}`;
+	const hasRemoteBranch =
+		(await git(["show-ref", "--verify", "--quiet", remoteRef], cwd, signal)).code === 0;
+	if (hasRemoteBranch) {
+		const ahead = Number.parseInt(
+			await gitOk(["rev-list", "--count", `${remoteRef}..HEAD`], cwd, signal),
+			10,
+		);
+		if (!Number.isFinite(ahead) || ahead === 0) {
+			ctx.ui.notify("Nothing to publish - working tree is clean.", "info");
+			return;
+		}
+	}
+
+	const base = await defaultBranch(cwd);
+	let strategy: PublishStrategy = "current";
+	if (isDefaultBranch(current, base)) {
+		const selected = await chooseDefaultBranchStrategy(ctx.ui, current);
+		if (!selected) {
+			ctx.ui.notify("Publish cancelled.", "info");
+			return;
+		}
+		strategy = selected;
+	}
+
+	const subject = await gitOk(["log", "-1", "--pretty=format:%s"], cwd, signal);
+	const shortHash = await gitOk(["rev-parse", "--short", "HEAD"], cwd, signal);
+	let targetBranch = current;
+	if (strategy === "pull-request") {
+		targetBranch = await uniqueBranch(slugify(subject), cwd);
+		await gitOk(["switch", "-c", targetBranch], cwd, signal);
+	}
+
+	const push = await git(["push", "-u", "origin", targetBranch], cwd, signal);
+	if (push.code !== 0) {
+		ctx.ui.notify(
+			`Push failed for ${shortHash} on ${targetBranch}: ${push.stderr.trim() || push.stdout.trim()}`,
+			"error",
+		);
+		return;
+	}
+
+	if (strategy === "pull-request") {
+		let pullRequest: CommandResult;
+		try {
+			pullRequest = await run("gh", pullRequestArgs(base ?? current, targetBranch), cwd, signal);
+		} catch (error) {
+			ctx.ui.notify(
+				`Published ${shortHash} to origin/${targetBranch}, but PR creation failed: ${(error as Error).message}`,
+				"error",
+			);
+			return;
+		}
+		if (pullRequest.code !== 0) {
+			ctx.ui.notify(
+				`Published ${shortHash} to origin/${targetBranch}, but PR creation failed: ${pullRequest.stderr.trim() || pullRequest.stdout.trim()}`,
+				"error",
+			);
+			return;
+		}
+		const url = pullRequest.stdout.trim();
+		ctx.ui.notify(`Published ${shortHash} and created PR${url ? `: ${url}` : "."}`, "info");
+		return;
+	}
+
+	ctx.ui.notify(`Published ${shortHash} to origin/${targetBranch}: ${subject}`, "info");
+}
+
 async function publish(args: string, ctx: PublishContext): Promise<void> {
 	const cwd = ctx.cwd;
 	const signal = ctx.signal;
@@ -178,7 +271,7 @@ async function publish(args: string, ctx: PublishContext): Promise<void> {
 
 	const status = await gitOk(["status", "--porcelain"], cwd, signal);
 	if (!status) {
-		ctx.ui.notify("Nothing to publish - working tree is clean.", "info");
+		await publishCleanCommits(ctx);
 		return;
 	}
 
@@ -337,7 +430,7 @@ async function publish(args: string, ctx: PublishContext): Promise<void> {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("git:publish", {
-		description: "Stage all changes, draft an AI commit message, commit, and push to origin",
+		description: "Push committed changes, or stage, commit, and push working-tree changes",
 		handler: async (args, ctx) => {
 			const publishContext = capturePublishContext(ctx);
 			try {
