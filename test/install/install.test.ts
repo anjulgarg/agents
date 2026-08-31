@@ -106,7 +106,7 @@ describe("transactional install", () => {
 			),
 		).toBe(true);
 		expect(local.prompts).toEqual(["+pi/prompts/orchestrate.md"]);
-		expect(local.themes).toEqual(["+pi/themes/claude-code.json"]);
+		expect(local.themes).toEqual(["+pi/themes/foreman.json"]);
 		if (localPiConfigFiles.mcp) {
 			expect(
 				settings.packages.filter((entry: unknown) => entry === "npm:pi-mcp-adapter@2.15.0"),
@@ -381,7 +381,7 @@ describe("transactional install", () => {
 		for (const [source, destination] of [
 			["pi/extensions/question.ts", legacyExtension],
 			["pi/prompts/orchestrate.md", legacyPrompt],
-			["pi/themes/claude-code.json", legacyTheme],
+			["pi/themes/foreman.json", legacyTheme],
 		] as const) {
 			await mkdir(dirname(destination), { recursive: true });
 			await cp(join(sourceRoot, source), destination);

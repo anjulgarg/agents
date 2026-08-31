@@ -22,7 +22,7 @@ Unknown skills, unrelated JSON fields and hooks, credentials, authentication, se
 | `pi-config`    | Pi keybindings plus optional local-only model and MCP JSON pointers. Unowned keys remain local.                   |
 | `pi-package`   | The optional removable `npm:pi-mcp-adapter@2.15.0` Pi setting. It is referenced, not vendored.                    |
 | `pi-prompt`    | The `orchestrate` prompt through the local Pi package.                                                            |
-| `pi-theme`     | The `claude-code` theme through the local Pi package.                                                             |
+| `pi-theme`     | The `foreman` theme through the local Pi package.                                                                 |
 | `instructions` | Managed instruction blocks or copies for Pi, Codex, OpenCode, Claude Code, and Cursor.                            |
 
 The compaction-model extension stores its global selection under `~/.pi/agent/state/compaction-model.json`; it is not tied to an individual session and is used only for compaction. During compaction it shows a live elapsed timer and adds a visible compaction receipt with the reason, token count, and model used, plus the final duration to the persistent thread. Configured-model requests apply the credential-derived provider base URL before streaming, including enterprise GitHub Copilot endpoints. If the configured model cannot be used, the fallback warning includes a bounded, redacted lookup, authentication, provider, or request failure reason instead of collapsing every failure into an unavailable-model message.

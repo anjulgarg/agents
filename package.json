@@ -19,11 +19,11 @@
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:extensions": "tsx scripts/run-extension-tests.ts",
+    "test:extensions": "vitest run test/extensions/extension-tests.test.ts",
     "test:e2e": "vitest run test/e2e --passWithNoTests",
     "audit:repo": "tsx scripts/audit-repository.ts",
     "pack:check": "npm pack --dry-run",
-    "check": "npm run audit:repo && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:extensions && npm run build"
+    "check": "npm run audit:repo && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
     "ink": "7.1.1",
@@ -98,7 +98,7 @@
       "pi/prompts/orchestrate.md"
     ],
     "themes": [
-      "pi/themes/claude-code.json"
+      "pi/themes/foreman.json"
     ]
   }
 }

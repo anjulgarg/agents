@@ -136,7 +136,7 @@ describe("temporary-home CLI parity", () => {
 		const legacyResources = [
 			["pi/extensions/question.ts", ".pi/agent/extensions/question.ts"],
 			["pi/prompts/orchestrate.md", ".pi/agent/prompts/orchestrate.md"],
-			["pi/themes/claude-code.json", ".pi/agent/themes/claude-code.json"],
+			["pi/themes/foreman.json", ".pi/agent/themes/claude-code.json"],
 		] as const;
 		for (const [source, destination] of legacyResources) {
 			const path = join(home, destination);

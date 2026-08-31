@@ -267,6 +267,8 @@ export interface SessionUsageTotals {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
+	/** Pi-compatible cache hit rate for the latest assistant response. */
+	latestCacheHitRate?: number;
 	/** Total session cost in USD, zero for subscription-backed models. */
 	cost: number;
 }
@@ -295,18 +297,24 @@ export function computeSessionUsage(entries: readonly SessionEntry[]): SessionUs
 		totals.cacheRead += usage.cacheRead ?? 0;
 		totals.cacheWrite += usage.cacheWrite ?? 0;
 		totals.cost += usage.cost?.total ?? 0;
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+			totals.latestCacheHitRate =
+				promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
+		}
 	}
 	return totals;
 }
 
-/**
- * Session-wide cache hit rate: cache reads over all prompt tokens. Undefined
- * until the session has prompt traffic, so the segment stays hidden.
- */
+/** Pi's CH%: cache hit rate for the latest assistant response. */
 export function formatCacheHitRate(totals: SessionUsageTotals): string | undefined {
-	const promptTokens = totals.input + totals.cacheRead + totals.cacheWrite;
-	if (promptTokens <= 0) return undefined;
-	return `cache ${Math.round((totals.cacheRead / promptTokens) * 100)}%`;
+	if (
+		(totals.cacheRead <= 0 && totals.cacheWrite <= 0) ||
+		totals.latestCacheHitRate === undefined
+	) {
+		return undefined;
+	}
+	return `ch ${totals.latestCacheHitRate.toFixed(1)}%`;
 }
 
 /** Total session cost, hidden while it is zero (subscription-backed models). */
@@ -772,7 +780,7 @@ export default function (pi: ExtensionAPI) {
 
 		linkedWorktree = readGitContext(ctx.cwd).isLinkedWorktree;
 
-		ctx.ui.setTheme("claude-code");
+		ctx.ui.setTheme("foreman");
 		syncHerdrSessionName(pi.getSessionName(), ctx);
 		ctx.ui.setHeader((_tui, theme) => createHeader(theme, ctx));
 		footerCtx = ctx;

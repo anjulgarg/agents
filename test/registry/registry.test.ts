@@ -92,7 +92,7 @@ describe("component registry", () => {
 		expect(components.slice(36).map(({ id }) => id)).toEqual([
 			"pi-config:keybindings",
 			...(localPiConfigFiles.mcp ? ["pi-package:mcp-adapter", "pi-config:mcp-sentry"] : []),
-			"pi-theme:claude-code",
+			"pi-theme:foreman",
 			"pi-prompt:orchestrate",
 			"instructions:shared",
 		]);

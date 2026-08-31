@@ -11,11 +11,11 @@ pi/config/models-store.json
 tsconfig.json
 tsconfig.build.json
 eslint.config.js
-vitest.config.js
+vitest.config.*
 .prettierignore
 .prettierrc.json
 
-# Standalone resource tests and live checks
+# Extension resource tests and live checks
 pi/extensions/tests/
 pi/extensions/**/*.test.ts
 pi/extensions/**/*.smoke.ts

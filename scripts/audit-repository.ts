@@ -215,7 +215,7 @@ async function validateManifest(root: string, files: readonly string[]): Promise
 		invalid("Pi skills must be the exact three approved resources", "package.json#pi.skills");
 	if (!prompts || !equalSorted(prompts, ["pi/prompts/orchestrate.md"]))
 		invalid("Pi prompt manifest differs", "package.json#pi.prompts");
-	if (!themes || !equalSorted(themes, ["pi/themes/claude-code.json"]))
+	if (!themes || !equalSorted(themes, ["pi/themes/foreman.json"]))
 		invalid("Pi theme manifest differs", "package.json#pi.themes");
 	const declared = [
 		...(extensions ?? []),

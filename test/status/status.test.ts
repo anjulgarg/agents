@@ -107,7 +107,7 @@ async function materializeAll(home: string): Promise<void> {
 				.map(({ filter }) => filter),
 			skills: [],
 			prompts: ["+pi/prompts/orchestrate.md"],
-			themes: ["+pi/themes/claude-code.json"],
+			themes: ["+pi/themes/foreman.json"],
 		},
 	];
 	await writeJson(settingsPath, settings);

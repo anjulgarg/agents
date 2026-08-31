@@ -581,14 +581,23 @@ assert(
 );
 
 assert(
-	"cache hit rate is session-wide cache reads over all prompt tokens",
-	formatCacheHitRate(sessionUsage) === "cache 58%",
+	"cache hit rate matches Pi CH% for the latest assistant response",
+	formatCacheHitRate(sessionUsage) === "ch 97.6%",
 	String(formatCacheHitRate(sessionUsage)),
 );
 assert(
-	"cache hit rate is hidden until the session has prompt traffic",
+	"cache hit rate is hidden until the session has cache traffic",
 	formatCacheHitRate({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }) === undefined,
 	"empty session reported a cache hit rate",
+);
+const latestCacheMiss = computeSessionUsage([
+	assistantEntry(100, 900, 0, 10, 0),
+	assistantEntry(1000, 0, 0, 10, 0),
+]);
+assert(
+	"latest assistant cache miss is not masked by earlier session hits",
+	formatCacheHitRate(latestCacheMiss) === "ch 0.0%",
+	String(formatCacheHitRate(latestCacheMiss)),
 );
 assert(
 	"session cost is rounded to two decimal places",
@@ -622,11 +631,11 @@ const usageFooter = createFooter(
 );
 const usageLine = usageFooter.render(200).join("");
 assert(
-	"footer shows cache hit rate and session cost in distinct pastel colors after context",
-	usageLine.includes("\x1b[38;5;122mcache 58%\x1b[39m") &&
+	"footer shows Pi CH% and session cost in distinct pastel colors after context",
+	usageLine.includes("\x1b[38;5;122mch 97.6%\x1b[39m") &&
 		usageLine.includes("\x1b[38;5;211m$0.10\x1b[39m") &&
-		usageLine.indexOf("34k/272k") < usageLine.indexOf("cache 58%") &&
-		usageLine.indexOf("cache 58%") < usageLine.indexOf("$0.10"),
+		usageLine.indexOf("34k/272k") < usageLine.indexOf("ch 97.6%") &&
+		usageLine.indexOf("ch 97.6%") < usageLine.indexOf("$0.10"),
 	usageLine,
 );
 
@@ -652,8 +661,8 @@ assert(
 	quotaLine.includes("5h 55%") &&
 		quotaLine.includes("7d 88%") &&
 		quotaLine.indexOf("5h 55%") < quotaLine.indexOf("7d 88%") &&
-		quotaLine.indexOf("7d 88%") < quotaLine.indexOf("cache 58%") &&
-		quotaLine.indexOf("cache 58%") < quotaLine.indexOf("$0.10"),
+		quotaLine.indexOf("7d 88%") < quotaLine.indexOf("ch 97.6%") &&
+		quotaLine.indexOf("ch 97.6%") < quotaLine.indexOf("$0.10"),
 	quotaLine,
 );
 quotaFooter.dispose();
@@ -664,7 +673,7 @@ assert(
 	"cache hit rate and session cost wrap onto further lines instead of truncating",
 	usageNarrowLines.length > 1 &&
 		usageNarrowLines.every((line: string) => visibleWidth(line) <= 28) &&
-		usageNarrow.includes("cache 58%") &&
+		usageNarrow.includes("ch 97.6%") &&
 		usageNarrow.includes("$0.10"),
 	JSON.stringify(usageNarrowLines),
 );

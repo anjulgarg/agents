@@ -57,7 +57,7 @@ describe("package and repository safety", () => {
 			"pi/AGENTS.md",
 			"pi/prompts/orchestrate.md",
 			"skills/foreman-plan/SKILL.md",
-			"pi/themes/claude-code.json",
+			"pi/themes/foreman.json",
 		]) {
 			expect(files, `missing packed runtime file ${required}`).toContain(required);
 		}
@@ -137,9 +137,12 @@ describe("package and repository safety", () => {
 		expect(packageJson.private).toBe(true);
 		expect(Object.keys(packageJson.scripts)).not.toContain("publish");
 		expect(Object.values(packageJson.scripts).join(" ")).not.toMatch(/npm\s+publish/);
-		const runner = await readFile(join(sourceRoot, "scripts/run-extension-tests.ts"), "utf8");
-		expect(runner).toContain("rpc-client.smoke.ts");
-		expect(runner).toContain("supervisor.e2e.ts");
-		expect(runner).toContain("!LIVE_TESTS.has(display)");
+		const extensionTests = await readFile(
+			join(sourceRoot, "test/extensions/extension-test-runtime.ts"),
+			"utf8",
+		);
+		expect(extensionTests).toContain("rpc-client.smoke.ts");
+		expect(extensionTests).toContain("supervisor.e2e.ts");
+		expect(extensionTests).toContain("!LIVE_EXTENSION_TESTS.has(display)");
 	});
 });
