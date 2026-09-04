@@ -240,6 +240,67 @@ describe("temporary-home CLI parity", () => {
 		expect(Object.keys(receipt.components)).toEqual(["pi-extension:subagent"]);
 	});
 
+	it("T4 prunes the renamed claude-code-ui extension on upgrade", async () => {
+		const { home } = await fixtureHome();
+		const legacyExtension = join(home, ".pi/agent/extensions/claude-code-ui.ts");
+		await mkdir(dirname(legacyExtension), { recursive: true });
+		await cp(join(sourceRoot, "pi/extensions/foreman-theme.ts"), legacyExtension);
+		await writeFile(
+			join(home, ".pi/agent/settings.json"),
+			JSON.stringify({
+				packages: [
+					{
+						source: sourceRoot,
+						extensions: ["+pi/extensions/claude-code-ui.ts"],
+						skills: [],
+						prompts: [],
+						themes: [],
+					},
+				],
+			}),
+		);
+		const receiptPath = join(home, ".agents/anjulgarg-agents.json");
+		await mkdir(dirname(receiptPath), { recursive: true });
+		await writeFile(
+			receiptPath,
+			JSON.stringify({
+				schemaVersion: 1,
+				source: { kind: "local", root: sourceRoot, revision: null },
+				components: {
+					"pi-extension:claude-code-ui": {
+						installedAt: "2026-01-01T00:00:00Z",
+						sourceDigest: "x",
+						outputs: [],
+					},
+				},
+			}),
+		);
+
+		const before = jsonOutput((await runAgents(home, ["list", "--json"])).stdout);
+		expect(
+			before.components
+				.find(({ id }: any) => id === "pi-extension:foreman-theme")
+				.outputs.some(
+					({ strategy, state, path }: any) =>
+						strategy === "legacy-copy" &&
+						state === "legacy" &&
+						path.endsWith(".pi/agent/extensions/claude-code-ui.ts"),
+				),
+		).toBe(true);
+
+		await install(home, ["--component", "pi-extension:foreman-theme"]);
+		await expect(readFile(legacyExtension)).rejects.toMatchObject({ code: "ENOENT" });
+		const settings = JSON.parse(await readFile(join(home, ".pi/agent/settings.json"), "utf8"));
+		const local = settings.packages.find(
+			(entry: any) => typeof entry === "object" && entry.source === sourceRoot,
+		);
+		expect(local.extensions).toEqual(["+pi/extensions/foreman-theme.ts"]);
+		const receiptIds = Object.keys(
+			JSON.parse(await readFile(receiptPath, "utf8")).components,
+		) as string[];
+		expect(receiptIds).toEqual(["pi-extension:foreman-theme"]);
+	});
+
 	it("T6 restores a disposable migration backup to exact pre-migration bytes", async () => {
 		const { root, home } = await fixtureHome();
 		const legacy = join(home, ".pi/agent/extensions/question.ts");

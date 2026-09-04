@@ -19,6 +19,10 @@ Legacy direct extension copies are recognized before a receipt. Installing the m
 
 The `pi-extension:team` and `pi-team:product` components were removed from the catalog. An older receipt that still lists them stays valid and keeps inferring ownership for every remaining component. Installing `pi-extension:subagent`, any profile, or the default selection prunes the retired artifacts: `.pi/agent/teams/product.json`, the legacy `.pi/agent/extensions/team/index.ts` copy, the `+pi/extensions/team/index.ts` local package filter, and the retired receipt entries. An empty `.pi/agent/teams` directory is inert and can be removed manually. The complete pre-removal implementation stays available in Git under the `archive/teams` tag.
 
+## Renamed claude-code-ui extension
+
+The UI extension was renamed to match the theme it renders: `pi/extensions/claude-code-ui.ts` is now `pi/extensions/foreman-theme.ts` and its catalog id is `pi-extension:foreman-theme` (label `Foreman UI`). The retired id no longer resolves on the command line, so select `pi-extension:foreman-theme`, a profile, or the default selection. Installing it prunes the legacy `.pi/agent/extensions/claude-code-ui.ts` direct copy, replaces the stale `+pi/extensions/claude-code-ui.ts` local package filter with the new entry, and drops the retired receipt entry. `agents list` reports the old copy as a `legacy-copy` output before the install.
+
 ## Live cutover checklist
 
 1. Stop concurrent installers and coordinate active Pi sessions for `/reload`.

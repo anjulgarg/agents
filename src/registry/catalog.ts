@@ -30,7 +30,6 @@ const extensions = [
 	["branch", "branch.ts"],
 	["btw", "btw.ts"],
 	["changes", "changes.ts"],
-	["claude-code-ui", "claude-code-ui.ts"],
 	["codex-usage", "codex-usage.ts"],
 	["codex-web-search", "codex-web-search.ts"],
 	["compaction-model", "compaction-model.ts"],
@@ -39,6 +38,7 @@ const extensions = [
 	["conversation-separator", "conversation-separator.ts"],
 	["escape-unsend", "escape-unsend.ts"],
 	["find", "find/index.ts"],
+	["foreman-theme", "foreman-theme.ts"],
 	["git-checkpoint", "git-checkpoint.ts"],
 	["handoff", "handoff.ts"],
 	["hide-thinking-history", "hide-thinking-history.ts"],
@@ -105,19 +105,30 @@ function extensionDependencies(slug: string): ComponentId[] {
 function extensionLegacyPaths(slug: string, entrypoint: string): string[] {
 	const paths = [`.pi/agent/extensions/${entrypoint}`];
 	if (slug === "proactive-compaction") paths.push(".pi/agent/extensions/proactive-compaction.ts");
+	if (slug === "foreman-theme") paths.push(".pi/agent/extensions/claude-code-ui.ts");
 	if (slug === "subagent")
 		paths.push(".pi/agent/teams/product.json", ".pi/agent/extensions/team/index.ts");
 	return paths;
 }
 
+/** Display metadata for extensions whose slug does not read well as a title. */
+const extensionMetadata: Partial<Record<string, { label: string; description: string }>> = {
+	"proactive-compaction": {
+		label: "Context Overflow Guard",
+		description: "Protects active tool loops from context overflow while Pi owns compaction.",
+	},
+	// Shares its name with pi-theme:foreman, so the label calls out that this is the UI extension.
+	"foreman-theme": {
+		label: "Foreman UI",
+		description: "Renders the Foreman theme footer, editor, and slash-command interactions.",
+	},
+};
+
 const extensionComponents: ComponentDefinition[] = extensions.map(([slug, entrypoint]) => ({
 	id: `pi-extension:${slug}`,
 	category: "pi-extension",
-	label: slug === "proactive-compaction" ? "Context Overflow Guard" : title(slug),
-	description:
-		slug === "proactive-compaction"
-			? "Protects active tool loops from context overflow while Pi owns compaction."
-			: `${title(slug)} Pi extension.`,
+	label: extensionMetadata[slug]?.label ?? title(slug),
+	description: extensionMetadata[slug]?.description ?? `${title(slug)} Pi extension.`,
 	resources: [{ path: `pi/extensions/${entrypoint}`, kind: "file" }],
 	outputs: [piFilter("extensions", `pi/extensions/${entrypoint}`)],
 	dependsOn: extensionDependencies(slug),

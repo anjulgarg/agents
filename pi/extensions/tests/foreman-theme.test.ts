@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
-import claudeCodeUi, {
+import foremanTheme, {
 	computeSessionUsage,
 	contextRailPercent,
 	createFooter,
@@ -22,7 +22,7 @@ import claudeCodeUi, {
 	piLogo,
 	readGitContext,
 	splitContextRail,
-} from "../claude-code-ui.ts";
+} from "../foreman-theme.ts";
 
 function git(cwd: string, args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -269,7 +269,7 @@ assert(
 );
 
 const handlers = new Map<string, (event: any, ctx: any) => unknown>();
-claudeCodeUi({
+foremanTheme({
 	events: { on: () => {} },
 	on: (event: string, handler: (event: any, ctx: any) => unknown) => {
 		handlers.set(event, handler);

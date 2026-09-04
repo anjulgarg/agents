@@ -1,7 +1,7 @@
 import type { ExtensionContext, ReadonlyFooterDataProvider } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-import { createFooter, wrapFooterSegments } from "../claude-code-ui.ts";
+import { createFooter, wrapFooterSegments } from "../foreman-theme.ts";
 
 function assert(name: string, condition: boolean, details: string): void {
 	if (!condition) throw new Error(`FAIL: ${name}\n${details}`);

@@ -213,7 +213,7 @@ const ctx = {
 	},
 };
 
-// Pretend claude-code-ui already installed an editor factory.
+// Pretend foreman-theme already installed an editor factory.
 editorFactory = () => liveEditor;
 
 await emit("session_start", {}, ctx);

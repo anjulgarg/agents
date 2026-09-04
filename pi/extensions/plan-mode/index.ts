@@ -80,7 +80,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	function updateStatus(ctx: ExtensionContext): void {
-		// Publish the current mode for the footer (claude-code-ui renders it far-left).
+		// Publish the current mode for the footer (foreman-theme renders it far-left).
 		// Kept as setStatus too so the indicator still shows without a custom footer.
 		const mode: AgentMode = planModeEnabled ? "plan" : "auto";
 		pi.events.emit(MODE_EVENT, { mode });
