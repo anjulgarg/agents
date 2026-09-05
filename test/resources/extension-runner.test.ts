@@ -38,7 +38,7 @@ describe("extension test infrastructure", () => {
 
 	it("discovers extension tests without live model tests", () => {
 		const tests = collectExtensionTests(process.cwd());
-		expect(tests).toHaveLength(59);
+		expect(tests).toHaveLength(58);
 		for (const liveTest of LIVE_EXTENSION_TESTS) {
 			expect(tests.some((path) => path.endsWith(liveTest))).toBe(false);
 		}
