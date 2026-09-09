@@ -5,8 +5,8 @@
  *
  * navigateTree is only on ExtensionCommandContext (slash commands). Event
  * handlers cannot call it safely, and patching ExtensionRunner fails under
- * jiti's module isolation. After settle we submit `/escape-unsend` through the
- * editor so the main loop runs session.prompt() with a real command context.
+ * jiti's module isolation. After settle we submit `/escape-unsend` through
+ * pi.sendUserMessage() so command dispatch supplies a real command context.
  */
 
 import type {
@@ -14,7 +14,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { matchesKey, type EditorComponent } from "@earendil-works/pi-tui";
+import { matchesKey } from "@earendil-works/pi-tui";
 
 type PendingPrompt = {
 	entryId: string;
@@ -128,7 +128,6 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 	let escapeRequested = false;
 	let unsendOnSettle = false;
 	let unsending = false;
-	let liveEditor: EditorComponent | undefined;
 	let terminalInputUnsubscribe: (() => void) | undefined;
 
 	const markProgress = (message?: { content?: unknown }): void => {
@@ -140,20 +139,13 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 		return pending;
 	};
 
-	const wrapEditor = (ctx: ExtensionContext): void => {
-		const previous = ctx.ui.getEditorComponent();
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-			const editor = previous?.(tui, theme, keybindings);
-			liveEditor = editor;
-			return editor as EditorComponent;
-		});
-	};
-
 	const queueUnsendCommand = (): boolean => {
-		const submit = liveEditor?.onSubmit;
-		if (!submit) return false;
-		void Promise.resolve(submit(`/${UNSEND_COMMAND}`)).catch(() => undefined);
-		return true;
+		try {
+			pi.sendUserMessage(`/${UNSEND_COMMAND}`, { expandPromptTemplates: true });
+			return true;
+		} catch {
+			return false;
+		}
 	};
 
 	pi.registerCommand(UNSEND_COMMAND, {
@@ -183,11 +175,9 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 		escapeRequested = false;
 		unsendOnSettle = false;
 		unsending = false;
-		liveEditor = undefined;
 		terminalInputUnsubscribe?.();
 		terminalInputUnsubscribe = undefined;
 		if (ctx.mode === "tui") {
-			wrapEditor(ctx);
 			terminalInputUnsubscribe = ctx.ui.onTerminalInput((data) => {
 				if (matchesKey(data, "escape") && !ctx.isIdle()) escapeRequested = true;
 			});
@@ -259,7 +249,7 @@ export default function escapeUnsend(pi: ExtensionAPI): void {
 		setTimeout(() => {
 			if (!queueUnsendCommand()) {
 				unsending = false;
-				ctx.ui.notify("Could not unsend: editor submit unavailable", "error");
+				ctx.ui.notify("Could not unsend: command dispatch unavailable", "error");
 			}
 		}, 0);
 	});

@@ -138,6 +138,33 @@ assert(
 type Handler = (event: any, ctx: any) => unknown | Promise<unknown>;
 const handlers = new Map<string, Handler[]>();
 const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+const navigations: string[] = [];
+const editorTexts: string[] = [];
+const submitted: string[] = [];
+const dispatchOptions: Array<{ expandPromptTemplates?: boolean } | undefined> = [];
+const pendingDispatches: Array<Promise<void>> = [];
+const terminalInputHandlers: Array<(data: string) => unknown> = [];
+const emitTerminalInput = (data: string): void => {
+	for (const handler of terminalInputHandlers) handler(data);
+};
+const branch = [
+	{ id: "root-user", type: "message", message: { role: "user", content: "older" } },
+	{ id: "assistant-1", type: "message", message: { role: "assistant", content: "ok" } },
+];
+const commandCtx = {
+	mode: "tui",
+	sessionManager: { getBranch: () => branch },
+	navigateTree: async (entryId: string) => {
+		navigations.push(entryId);
+		return { cancelled: false };
+	},
+	waitForIdle: async () => undefined,
+	ui: {
+		setEditorText: (value: string) => editorTexts.push(value),
+		notify: () => undefined,
+	},
+};
+
 escapeUnsend({
 	on: (event: string, handler: Handler) => {
 		const list = handlers.get(event) ?? [];
@@ -150,48 +177,25 @@ escapeUnsend({
 	) => {
 		commands.set(name, options);
 	},
+	sendUserMessage: (text: string, options?: { expandPromptTemplates?: boolean }) => {
+		submitted.push(text);
+		dispatchOptions.push(options);
+		const command = commands.get(text.replace(/^\//, ""));
+		if (!command) throw new Error(`missing command: ${text}`);
+		pendingDispatches.push(command.handler("", commandCtx));
+	},
 } as any);
 
 const emit = async (event: string, payload: any, ctx: any): Promise<void> => {
 	for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
 };
 
-const flushTimers = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
-
-const navigations: string[] = [];
-const editorTexts: string[] = [];
-const submitted: string[] = [];
-const terminalInputHandlers: Array<(data: string) => unknown> = [];
-const emitTerminalInput = (data: string): void => {
-	for (const handler of terminalInputHandlers) handler(data);
-};
-const branch = [
-	{ id: "root-user", type: "message", message: { role: "user", content: "older" } },
-	{ id: "assistant-1", type: "message", message: { role: "assistant", content: "ok" } },
-];
-
-let editorFactory: ((tui: any, theme: any, kb: any) => any) | undefined;
-const liveEditor = {
-	onSubmit: async (text: string) => {
-		submitted.push(text);
-		const command = commands.get("escape-unsend");
-		if (!command) throw new Error("missing escape-unsend command");
-		await command.handler("", {
-			mode: "tui",
-			sessionManager: { getBranch: () => branch },
-			navigateTree: async (entryId: string) => {
-				navigations.push(entryId);
-				return { cancelled: false };
-			},
-			waitForIdle: async () => undefined,
-			ui: {
-				setEditorText: (value: string) => editorTexts.push(value),
-				notify: () => undefined,
-			},
-		});
-	},
+const flushTimers = async (): Promise<void> => {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	await Promise.all(pendingDispatches.splice(0));
 };
 
+let editorInstallCalls = 0;
 const ctx = {
 	mode: "tui",
 	isIdle: () => false,
@@ -201,10 +205,9 @@ const ctx = {
 			terminalInputHandlers.push(handler);
 			return () => undefined;
 		},
-		getEditorComponent: () => editorFactory,
-		setEditorComponent: (factory: typeof editorFactory) => {
-			editorFactory = factory;
-			factory?.(null, null, null);
+		getEditorComponent: () => undefined,
+		setEditorComponent: () => {
+			editorInstallCalls += 1;
 		},
 		setEditorText: (text: string) => editorTexts.push(text),
 		notify: (message: string) => {
@@ -213,14 +216,11 @@ const ctx = {
 	},
 };
 
-// Pretend foreman-theme already installed an editor factory.
-editorFactory = () => liveEditor;
-
 await emit("session_start", {}, ctx);
 assert(
-	"session_start wraps the editor so submit stays available",
-	typeof editorFactory === "function" && editorFactory(null, null, null) === liveEditor,
-	"editor wrap",
+	"session_start leaves the editor untouched when no custom editor exists yet",
+	editorInstallCalls === 0,
+	`editor installs: ${editorInstallCalls}`,
 );
 
 await emit("agent_start", {}, ctx);
@@ -250,9 +250,10 @@ await flushTimers();
 assert(
 	"an immediate abort submits /escape-unsend and restores only the new prompt",
 	submitted.join(",") === "/escape-unsend" &&
+		dispatchOptions[0]?.expandPromptTemplates === true &&
 		navigations.join(",") === "user-2" &&
 		editorTexts.join("|") === "oops wrong prompt",
-	JSON.stringify({ submitted, navigations, editorTexts }),
+	JSON.stringify({ submitted, dispatchOptions, navigations, editorTexts }),
 );
 
 submitted.length = 0;

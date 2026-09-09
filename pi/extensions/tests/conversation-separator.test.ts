@@ -140,3 +140,102 @@ assert(
 	hiddenSeparator.length === 0 && entries.length === 2,
 	JSON.stringify({ hiddenSeparator, entries }),
 );
+
+const toolEndingEntries = [
+	{
+		type: "custom_message",
+		customType: "subagent-wake",
+		display: false,
+		content: "Subagent task done",
+	},
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", name: "subagent_result" }],
+		},
+	},
+	{
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolName: "subagent_result",
+			content: [{ type: "text", text: "review evidence" }],
+		},
+	},
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", name: "subagent_resume" }],
+		},
+	},
+	{
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolName: "subagent_resume",
+			content: [{ type: "text", text: "Parent run will settle now" }],
+		},
+	},
+];
+const toolEndingContext = {
+	...context,
+	sessionManager: { getEntries: () => toolEndingEntries },
+};
+settled?.({}, toolEndingContext);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert(
+	"hidden wake turns ending on a terminating tool result append no separator",
+	entries.length === 2,
+	JSON.stringify(entries),
+);
+
+const historicalToolEndingEntries = [
+	...toolEndingEntries,
+	{
+		type: "custom",
+		id: "tool-ending-separator",
+		customType: CONVERSATION_SEPARATOR_ENTRY_TYPE,
+	},
+];
+handlers.get("session_start")?.(
+	{},
+	{
+		...context,
+		sessionManager: { getEntries: () => historicalToolEndingEntries },
+	},
+);
+const hiddenToolEndingSeparator = renderer?.(
+	historicalToolEndingEntries.at(-1),
+	{},
+	{ fg: (_name: string, text: string) => text },
+).render(12) as string[];
+assert(
+	"persisted separators after silent tool-ending wake turns stay hidden after resume",
+	hiddenToolEndingSeparator.length === 0,
+	JSON.stringify(hiddenToolEndingSeparator),
+);
+
+const visibleWakeContext = {
+	...context,
+	sessionManager: {
+		getEntries: () => [
+			toolEndingEntries[0],
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Review complete." }],
+				},
+			},
+		],
+	},
+};
+settled?.({}, visibleWakeContext);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert(
+	"hidden wake turns retain a separator when they produce user-facing text",
+	entries.length === 3,
+	JSON.stringify(entries),
+);

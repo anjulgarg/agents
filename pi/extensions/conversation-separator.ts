@@ -1,6 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { isNoopSubagentWakeAssistant, sessionEntries } from "./subagent/wake-turn.ts";
+import {
+	isHiddenSubagentWakeEntry,
+	isNoopAssistantEntry,
+	sessionEntries,
+} from "./subagent/wake-turn.ts";
 
 export const CONVERSATION_SEPARATOR_ENTRY_TYPE = "conversation-separator";
 const FAINT_ON = "\x1b[2m";
@@ -25,33 +29,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object";
 }
 
-function latestTurnIsNoopSubagentWake(entries: unknown[]): boolean {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const candidate = entries[index];
-		if (!isRecord(candidate) || candidate.type === "custom") continue;
-		if (candidate.type !== "message") return false;
-		return isNoopSubagentWakeAssistant(entries, index);
+function isSilentSubagentWakeTurn(entries: unknown[], endIndex = entries.length): boolean {
+	for (let index = endIndex - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (!isRecord(entry)) continue;
+		if (isHiddenSubagentWakeEntry(entry)) return true;
+		if (entry.type === "custom") continue;
+		if (entry.type === "custom_message") {
+			if (entry.display === false) continue;
+			return false;
+		}
+		if (entry.type !== "message" || !isRecord(entry.message)) return false;
+		if (entry.message.role === "toolResult") continue;
+		if (entry.message.role !== "assistant" || !isNoopAssistantEntry(entry)) return false;
 	}
 	return false;
 }
 
-function hiddenNoopSeparatorIds(entries: unknown[]): Set<string> {
+function hiddenSilentSeparatorIds(entries: unknown[]): Set<string> {
 	const hidden = new Set<string>();
 	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
 		if (
-			!isRecord(entry) ||
-			entry.type !== "custom" ||
-			entry.customType !== CONVERSATION_SEPARATOR_ENTRY_TYPE ||
-			typeof entry.id !== "string"
+			isRecord(entry) &&
+			entry.type === "custom" &&
+			entry.customType === CONVERSATION_SEPARATOR_ENTRY_TYPE &&
+			typeof entry.id === "string" &&
+			isSilentSubagentWakeTurn(entries, index)
 		)
-			continue;
-		for (let before = index - 1; before >= 0; before--) {
-			const candidate = entries[before];
-			if (!isRecord(candidate) || candidate.type === "custom") continue;
-			if (isNoopSubagentWakeAssistant(entries, before)) hidden.add(entry.id);
-			break;
-		}
+			hidden.add(entry.id);
 	}
 	return hidden;
 }
@@ -70,7 +76,7 @@ export default function conversationSeparator(pi: ExtensionAPI): void {
 	);
 
 	pi.on("agent_settled", (_event, ctx) => {
-		if (ctx.mode !== "tui" || latestTurnIsNoopSubagentWake(sessionEntries(ctx))) return;
+		if (ctx.mode !== "tui" || isSilentSubagentWakeTurn(sessionEntries(ctx))) return;
 		if (pending) clearTimeout(pending);
 		pending = setTimeout(() => {
 			pending = undefined;
@@ -79,7 +85,7 @@ export default function conversationSeparator(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		hiddenSeparatorIds = hiddenNoopSeparatorIds(sessionEntries(ctx));
+		hiddenSeparatorIds = hiddenSilentSeparatorIds(sessionEntries(ctx));
 	});
 
 	pi.on("session_shutdown", () => {
